@@ -287,7 +287,8 @@ class CameraService : Service(), LifecycleOwner {
         
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
         val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 80, out)
+        // Increase compression quality to 85 for better image quality
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
         val imageBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
@@ -314,6 +315,8 @@ class CameraService : Service(), LifecycleOwner {
     
     fun setCameraOrientation(orientation: String) {
         cameraOrientation = orientation
+        // Clear resolution cache when orientation changes to force refresh with new filter
+        resolutionCache.clear()
     }
     
     fun getCameraOrientation(): String = cameraOrientation
@@ -518,7 +521,20 @@ class CameraService : Service(), LifecycleOwner {
             val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
             config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
         }.flatten()
-        val distinct = sizes.distinctBy { Pair(it.width, it.height) }
+        
+        // Filter resolutions based on camera orientation
+        val filtered = sizes.filter { size ->
+            val isLandscape = size.width > size.height
+            val isPortrait = size.height > size.width
+            
+            when (cameraOrientation) {
+                "landscape" -> isLandscape || size.width == size.height
+                "portrait" -> isPortrait || size.width == size.height
+                else -> true // If orientation not set, allow all
+            }
+        }
+        
+        val distinct = filtered.distinctBy { Pair(it.width, it.height) }
             .sortedByDescending { it.width * it.height }
         resolutionCache[targetFacing] = distinct
         return distinct
@@ -772,7 +788,8 @@ class CameraService : Service(), LifecycleOwner {
             
             return if (bitmap != null) {
                 val stream = ByteArrayOutputStream()
-                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                // Use 85% quality for snapshots for better image quality
+                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, 85, stream)
                 val bytes = stream.toByteArray()
                 newFixedLengthResponse(Response.Status.OK, "image/jpeg", bytes.inputStream(), bytes.size.toLong())
             } else {
@@ -794,7 +811,8 @@ class CameraService : Service(), LifecycleOwner {
                         if (bitmap != null) {
                             val annotated = annotateBitmap(bitmap)
                             val jpegStream = ByteArrayOutputStream()
-                            annotated.compress(Bitmap.CompressFormat.JPEG, 80, jpegStream)
+                            // Use 75% quality for streaming to reduce bandwidth while maintaining quality
+                            annotated.compress(Bitmap.CompressFormat.JPEG, 75, jpegStream)
                             val jpegBytes = jpegStream.toByteArray()
                             
                             val frameStream = ByteArrayOutputStream()
