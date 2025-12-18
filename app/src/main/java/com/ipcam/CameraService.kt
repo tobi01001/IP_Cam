@@ -237,6 +237,9 @@ class CameraService : Service(), LifecycleOwner {
             }
             
             // Add CORS headers for browser compatibility
+            // Note: Using wildcard (*) for local network IP camera is acceptable
+            // as it's intended for use on trusted local networks only.
+            // For production use with internet exposure, implement proper authentication.
             response.addHeader("Access-Control-Allow-Origin", "*")
             response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
             response.addHeader("Access-Control-Allow-Headers", "Content-Type")
@@ -326,6 +329,8 @@ class CameraService : Service(), LifecycleOwner {
             val inputStream = object : java.io.InputStream() {
                 private var buffer = ByteArray(0)
                 private var position = 0
+                private var retryCount = 0
+                private val maxRetries = 50  // Max 5 seconds waiting for first frame
                 
                 override fun read(): Int {
                     if (position >= buffer.size) {
@@ -333,6 +338,7 @@ class CameraService : Service(), LifecycleOwner {
                         val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
                         
                         if (bitmap != null) {
+                            retryCount = 0  // Reset retry count when we get a frame
                             val jpegStream = ByteArrayOutputStream()
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, jpegStream)
                             val jpegBytes = jpegStream.toByteArray()
@@ -355,6 +361,11 @@ class CameraService : Service(), LifecycleOwner {
                             }
                         } else {
                             // No frame available, wait a bit
+                            if (retryCount >= maxRetries) {
+                                Log.w(TAG, "No frame available after ${maxRetries} retries, ending stream")
+                                return -1
+                            }
+                            retryCount++
                             try {
                                 Thread.sleep(100)
                             } catch (e: InterruptedException) {
