@@ -66,8 +66,9 @@ class CameraService : Service(), LifecycleOwner {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
-    private var manualRotation: Int = -1 // -1 means auto, otherwise 0, 90, 180, 270
-    private var deviceOrientation: Int = 0 // Current device orientation
+    private var cameraOrientation: String = "landscape" // "portrait" or "landscape" - base camera recording mode
+    private var rotation: Int = 0 // 0, 90, 180, 270 - applied to the camera-oriented image
+    private var deviceOrientation: Int = 0 // Current device orientation (for app UI only, not camera)
     private var orientationEventListener: OrientationEventListener? = null
     
     // Callbacks for MainActivity to receive updates
@@ -201,8 +202,9 @@ class CameraService : Service(), LifecycleOwner {
     private fun processImage(image: ImageProxy) {
         try {
             val bitmap = imageProxyToBitmap(image)
-            // Apply rotation before saving
-            val rotatedBitmap = applyRotation(bitmap)
+            // First apply camera orientation, then apply rotation
+            val orientedBitmap = applyCameraOrientation(bitmap)
+            val rotatedBitmap = applyRotation(orientedBitmap)
             synchronized(this) {
                 lastFrameBitmap?.recycle()
                 lastFrameBitmap = rotatedBitmap
@@ -218,10 +220,36 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
-    private fun applyRotation(bitmap: Bitmap): Bitmap {
-        val rotation = if (manualRotation == -1) deviceOrientation else manualRotation
+    private fun applyCameraOrientation(bitmap: Bitmap): Bitmap {
+        // Determine the base rotation needed to achieve the desired camera orientation
+        // Camera sensor is typically landscape-oriented by default
+        val baseRotation = when (cameraOrientation) {
+            "portrait" -> 90 // Rotate to portrait
+            "landscape" -> 0 // Keep landscape (default sensor orientation)
+            else -> 0
+        }
         
-        // Avoid unnecessary bitmap creation if no rotation is needed
+        if (baseRotation == 0) {
+            return bitmap
+        }
+        
+        val matrix = Matrix()
+        matrix.postRotate(baseRotation.toFloat())
+        
+        return try {
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            if (rotated != bitmap) {
+                bitmap.recycle()
+            }
+            rotated
+        } catch (e: Exception) {
+            Log.e(TAG, "Error applying camera orientation", e)
+            bitmap
+        }
+    }
+    
+    private fun applyRotation(bitmap: Bitmap): Bitmap {
+        // Apply the user-specified rotation on top of the camera orientation
         if (rotation == 0) {
             return bitmap
         }
@@ -284,44 +312,27 @@ class CameraService : Service(), LifecycleOwner {
         requestBindCamera()
     }
     
-    fun setRotation(rotation: Int) {
-        manualRotation = rotation
+    fun setCameraOrientation(orientation: String) {
+        cameraOrientation = orientation
     }
     
-    fun getRotation(): Int = manualRotation
+    fun getCameraOrientation(): String = cameraOrientation
+    
+    fun setRotation(rot: Int) {
+        rotation = rot
+    }
+    
+    fun getRotation(): Int = rotation
     
     fun onDeviceOrientationChanged() {
-        // This is called when device orientation changes
-        // The OrientationEventListener handles this automatically now
-        // This method is kept for compatibility but not actively used
+        // Device orientation changes only affect the app UI, not the camera recording
+        // This method is kept for compatibility but device orientation doesn't affect camera
     }
     
     private fun setupOrientationListener() {
-        orientationEventListener = object : OrientationEventListener(this) {
-            private var lastReportedOrientation = -1
-            
-            override fun onOrientationChanged(orientation: Int) {
-                if (manualRotation == -1 && orientation != ORIENTATION_UNKNOWN) {
-                    // Update device orientation based on sensor with hysteresis to prevent jitter
-                    val newOrientation = when {
-                        orientation >= 330 || orientation < 30 -> 0
-                        orientation in 60..120 -> 270
-                        orientation in 150..210 -> 180
-                        orientation in 240..300 -> 90
-                        else -> lastReportedOrientation // Keep current orientation in transition zones
-                    }
-                    // Only update if orientation actually changed
-                    if (newOrientation != -1 && deviceOrientation != newOrientation) {
-                        deviceOrientation = newOrientation
-                        lastReportedOrientation = newOrientation
-                    }
-                }
-            }
-        }
-        
-        if (orientationEventListener?.canDetectOrientation() == true) {
-            orientationEventListener?.enable()
-        }
+        // Device orientation listener is disabled since camera recording is independent of device orientation
+        // The camera orientation mode (portrait/landscape) is set manually or stays at default (landscape)
+        orientationEventListener = null
     }
     
     fun setOnCameraStateChangedCallback(callback: (CameraSelector) -> Unit) {
@@ -538,6 +549,7 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/status" -> serveStatus()
                 uri == "/formats" -> serveFormats()
                 uri == "/setFormat" -> serveSetFormat(session)
+                uri == "/setCameraOrientation" -> serveSetCameraOrientation(session)
                 uri == "/setRotation" -> serveSetRotation(session)
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
@@ -591,9 +603,16 @@ class CameraService : Service(), LifecycleOwner {
                             <button onclick="applyFormat()">Apply Format</button>
                         </div>
                         <div class="row">
+                            <label for="orientationSelect">Camera Orientation:</label>
+                            <select id="orientationSelect">
+                                <option value="landscape">Landscape (Default)</option>
+                                <option value="portrait">Portrait</option>
+                            </select>
+                            <button onclick="applyCameraOrientation()">Apply Orientation</button>
+                        </div>
+                        <div class="row">
                             <label for="rotationSelect">Rotation:</label>
                             <select id="rotationSelect">
-                                <option value="auto">Auto (Follow Device)</option>
                                 <option value="0">0° (Normal)</option>
                                 <option value="90">90° (Right)</option>
                                 <option value="180">180° (Upside Down)</option>
@@ -603,6 +622,7 @@ class CameraService : Service(), LifecycleOwner {
                         </div>
                         <div class="note" id="formatStatus"></div>
                         <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
+                        <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
                         <h2>API Endpoints</h2>
                         <div class="endpoint">
                             <strong>Snapshot:</strong> <code>GET /snapshot</code><br>
@@ -629,8 +649,12 @@ class CameraService : Service(), LifecycleOwner {
                             Apply a supported resolution (or omit to return to auto)
                         </div>
                         <div class="endpoint">
-                            <strong>Set Rotation:</strong> <code>GET /setRotation?value=auto|0|90|180|270</code><br>
-                            Set camera rotation (auto follows device orientation)
+                            <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
+                            Set the base camera recording mode (landscape or portrait)
+                        </div>
+                        <div class="endpoint">
+                            <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
+                            Rotate the video feed by the specified degrees
                         </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
@@ -703,6 +727,20 @@ class CameraService : Service(), LifecycleOwner {
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to set format';
+                                });
+                        }
+
+                        function applyCameraOrientation() {
+                            const value = document.getElementById('orientationSelect').value;
+                            const url = '/setCameraOrientation?value=' + encodeURIComponent(value);
+                            fetch(url)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    setTimeout(reloadStream, 200);
+                                })
+                                .catch(() => {
+                                    document.getElementById('formatStatus').textContent = 'Failed to set camera orientation';
                                 });
                         }
 
@@ -822,15 +860,15 @@ class CameraService : Service(), LifecycleOwner {
         
         private fun serveStatus(): Response {
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            val rotationStr = if (manualRotation == -1) "auto" else manualRotation.toString()
             val json = """
                 {
                     "status": "running",
                     "camera": "$cameraName",
                     "url": "${getServerUrl()}",
                     "resolution": "${selectedResolution?.let { sizeLabel(it) } ?: "auto"}",
-                    "rotation": "$rotationStr",
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setRotation"]
+                    "cameraOrientation": "$cameraOrientation",
+                    "rotation": "$rotation",
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation"]
                 }
             """.trimIndent()
             
@@ -902,9 +940,8 @@ class CameraService : Service(), LifecycleOwner {
             val params = session.parameters
             val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
             
-            val rotation = when (value) {
-                "auto", null -> -1
-                "0" -> 0
+            val newRotation = when (value) {
+                "0", null -> 0
                 "90" -> 90
                 "180" -> 180
                 "270" -> 270
@@ -912,22 +949,44 @@ class CameraService : Service(), LifecycleOwner {
                     return newFixedLengthResponse(
                         Response.Status.BAD_REQUEST,
                         "application/json",
-                        """{"status":"error","message":"Invalid rotation value. Use auto, 0, 90, 180, or 270"}"""
+                        """{"status":"error","message":"Invalid rotation value. Use 0, 90, 180, or 270"}"""
                     )
                 }
             }
             
-            manualRotation = rotation
-            val message = if (rotation == -1) {
-                "Rotation set to auto (following device orientation)"
-            } else {
-                "Rotation set to ${rotation}°"
-            }
+            rotation = newRotation
+            val message = "Rotation set to ${newRotation}°"
             
             return newFixedLengthResponse(
                 Response.Status.OK,
                 "application/json",
-                """{"status":"ok","message":"$message","rotation":"${if (rotation == -1) "auto" else rotation.toString()}"}"""
+                """{"status":"ok","message":"$message","rotation":"$newRotation"}"""
+            )
+        }
+        
+        private fun serveSetCameraOrientation(session: IHTTPSession): Response {
+            val params = session.parameters
+            val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
+            
+            val newOrientation = when (value) {
+                "landscape", null -> "landscape"
+                "portrait" -> "portrait"
+                else -> {
+                    return newFixedLengthResponse(
+                        Response.Status.BAD_REQUEST,
+                        "application/json",
+                        """{"status":"error","message":"Invalid orientation. Use portrait or landscape"}"""
+                    )
+                }
+            }
+            
+            cameraOrientation = newOrientation
+            val message = "Camera orientation set to $newOrientation"
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"$message","cameraOrientation":"$newOrientation"}"""
             )
         }
     }
