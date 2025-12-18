@@ -223,7 +223,7 @@ class CameraService : Service(), LifecycleOwner {
             val uri = session.uri
             Log.d(TAG, "Request: $uri")
             
-            return when {
+            val response = when {
                 uri == "/" || uri == "/index.html" -> serveIndexPage()
                 uri == "/snapshot" -> serveSnapshot()
                 uri == "/stream" -> serveStream()
@@ -235,6 +235,13 @@ class CameraService : Service(), LifecycleOwner {
                     "Not Found"
                 )
             }
+            
+            // Add CORS headers for browser compatibility
+            response.addHeader("Access-Control-Allow-Origin", "*")
+            response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+            response.addHeader("Access-Control-Allow-Headers", "Content-Type")
+            
+            return response
         }
         
         private fun serveIndexPage(): Response {
@@ -315,39 +322,61 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveStream(): Response {
-            // Create a custom chunked response for MJPEG streaming
-            val response = newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", null as java.io.InputStream?)
-            
-            // Start a background thread to send frames
-            Thread {
-                try {
-                    val output = response.data as? java.io.OutputStream
-                    if (output != null) {
-                        while (!Thread.currentThread().isInterrupted) {
-                            val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+            // Create a custom InputStream for MJPEG streaming
+            val inputStream = object : java.io.InputStream() {
+                private var buffer = ByteArray(0)
+                private var position = 0
+                
+                override fun read(): Int {
+                    if (position >= buffer.size) {
+                        // Generate next frame
+                        val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+                        
+                        if (bitmap != null) {
+                            val jpegStream = ByteArrayOutputStream()
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, jpegStream)
+                            val jpegBytes = jpegStream.toByteArray()
                             
-                            if (bitmap != null) {
-                                val stream = ByteArrayOutputStream()
-                                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                                val bytes = stream.toByteArray()
-                                
-                                output.write("--jpgboundary\r\n".toByteArray())
-                                output.write("Content-Type: image/jpeg\r\n".toByteArray())
-                                output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray())
-                                output.write(bytes)
-                                output.write("\r\n".toByteArray())
-                                output.flush()
+                            val frameStream = ByteArrayOutputStream()
+                            frameStream.write("--jpgboundary\r\n".toByteArray())
+                            frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                            frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
+                            frameStream.write(jpegBytes)
+                            frameStream.write("\r\n".toByteArray())
+                            
+                            buffer = frameStream.toByteArray()
+                            position = 0
+                            
+                            // Small delay for ~10 fps
+                            try {
+                                Thread.sleep(100)
+                            } catch (e: InterruptedException) {
+                                return -1
                             }
-                            
-                            Thread.sleep(100) // ~10 fps
+                        } else {
+                            // No frame available, wait a bit
+                            try {
+                                Thread.sleep(100)
+                            } catch (e: InterruptedException) {
+                                return -1
+                            }
+                            return read()
                         }
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Streaming stopped", e)
+                    
+                    return if (position < buffer.size) {
+                        buffer[position++].toInt() and 0xFF
+                    } else {
+                        -1
+                    }
                 }
-            }.start()
+                
+                override fun available(): Int {
+                    return buffer.size - position
+                }
+            }
             
-            return response
+            return newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", inputStream)
         }
         
         private fun serveSwitch(): Response {
