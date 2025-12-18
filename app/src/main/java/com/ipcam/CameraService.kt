@@ -100,6 +100,10 @@ class CameraService : Service(), LifecycleOwner {
         super.onCreate()
         lifecycleRegistry = LifecycleRegistry(this)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
+        
+        // Load saved settings
+        loadSettings()
+        
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         acquireLocks()
@@ -174,12 +178,23 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun bindCamera() {
-        imageAnalysis = ImageAnalysis.Builder()
+        val builder = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .apply {
-                selectedResolution?.let { setTargetResolution(it) }
-            }
-            .build()
+        
+        // Use ResolutionSelector instead of deprecated setTargetResolution
+        selectedResolution?.let { resolution ->
+            val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setResolutionFilter { supportedSizes, _ ->
+                    // Filter to find exact match or closest
+                    supportedSizes.filter { size ->
+                        size.width == resolution.width && size.height == resolution.height
+                    }.ifEmpty { supportedSizes }
+                }
+                .build()
+            builder.setResolutionSelector(resolutionSelector)
+        }
+        
+        imageAnalysis = builder.build()
             .also {
                 it.setAnalyzer(cameraExecutor) { image ->
                     processImage(image)
@@ -203,21 +218,55 @@ class CameraService : Service(), LifecycleOwner {
     private fun processImage(image: ImageProxy) {
         try {
             val bitmap = imageProxyToBitmap(image)
-            // First apply camera orientation, then apply rotation
-            val orientedBitmap = applyCameraOrientation(bitmap)
-            val rotatedBitmap = applyRotation(orientedBitmap)
+            Log.d(TAG, "ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+            
+            // Apply camera orientation and rotation without creating squared bitmaps
+            val finalBitmap = applyRotationCorrectly(bitmap)
+            Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+            
             synchronized(this) {
                 lastFrameBitmap?.recycle()
-                lastFrameBitmap = rotatedBitmap
+                lastFrameBitmap = finalBitmap
                 lastFrameTimestamp = System.currentTimeMillis()
             }
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
-            val safeConfig = rotatedBitmap.config ?: Bitmap.Config.ARGB_8888
-            onFrameAvailableCallback?.invoke(annotateBitmap(rotatedBitmap).copy(safeConfig, false))
+            val safeConfig = finalBitmap.config ?: Bitmap.Config.ARGB_8888
+            onFrameAvailableCallback?.invoke(annotateBitmap(finalBitmap).copy(safeConfig, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
             image.close()
+        }
+    }
+    
+    private fun applyRotationCorrectly(bitmap: Bitmap): Bitmap {
+        // Calculate total rotation: camera orientation + manual rotation
+        val baseRotation = when (cameraOrientation) {
+            "portrait" -> 90
+            "landscape" -> 0
+            else -> 0
+        }
+        
+        val totalRotation = (baseRotation + rotation) % 360
+        
+        if (totalRotation == 0) {
+            return bitmap
+        }
+        
+        // Use a properly sized matrix to avoid creating squared bitmaps
+        val matrix = Matrix()
+        matrix.postRotate(totalRotation.toFloat())
+        
+        return try {
+            // Create bitmap with exact dimensions needed for rotated image
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
+            if (rotated != bitmap) {
+                bitmap.recycle()
+            }
+            rotated
+        } catch (e: Exception) {
+            Log.e(TAG, "Error rotating bitmap", e)
+            bitmap
         }
     }
     
@@ -296,6 +345,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
+        saveSettings()
         requestBindCamera()
         // Notify MainActivity of the camera change
         onCameraStateChangedCallback?.invoke(currentCamera)
@@ -311,6 +361,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
+        saveSettings()
         requestBindCamera()
     }
     
@@ -318,21 +369,68 @@ class CameraService : Service(), LifecycleOwner {
         cameraOrientation = orientation
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
+        saveSettings()
     }
     
     fun getCameraOrientation(): String = cameraOrientation
     
     fun setRotation(rot: Int) {
         rotation = rot
+        saveSettings()
     }
     
     fun getRotation(): Int = rotation
     
     fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
+        saveSettings()
     }
     
     fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
+    
+    private fun loadSettings() {
+        val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
+        cameraOrientation = prefs.getString("cameraOrientation", "landscape") ?: "landscape"
+        rotation = prefs.getInt("rotation", 0)
+        showResolutionOverlay = prefs.getBoolean("showResolutionOverlay", true)
+        
+        val resWidth = prefs.getInt("resolutionWidth", -1)
+        val resHeight = prefs.getInt("resolutionHeight", -1)
+        if (resWidth > 0 && resHeight > 0) {
+            selectedResolution = Size(resWidth, resHeight)
+        }
+        
+        val cameraType = prefs.getString("cameraType", "back")
+        currentCamera = if (cameraType == "front") {
+            CameraSelector.DEFAULT_FRONT_CAMERA
+        } else {
+            CameraSelector.DEFAULT_BACK_CAMERA
+        }
+        
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}")
+    }
+    
+    private fun saveSettings() {
+        val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
+        prefs.edit().apply {
+            putString("cameraOrientation", cameraOrientation)
+            putInt("rotation", rotation)
+            putBoolean("showResolutionOverlay", showResolutionOverlay)
+            
+            selectedResolution?.let {
+                putInt("resolutionWidth", it.width)
+                putInt("resolutionHeight", it.height)
+            } ?: run {
+                remove("resolutionWidth")
+                remove("resolutionHeight")
+            }
+            
+            val cameraType = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) "front" else "back"
+            putString("cameraType", cameraType)
+            
+            apply()
+        }
+    }
     
     fun onDeviceOrientationChanged() {
         // Device orientation changes only affect the app UI, not the camera recording
