@@ -173,10 +173,10 @@ class MainActivity : AppCompatActivity() {
         )
         
         val currentCamera = cameraService?.getCurrentCamera()
-        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
-            getString(R.string.camera_back)
-        } else {
-            getString(R.string.camera_front)
+        val cameraName = when {
+            currentCamera == null -> "Not available"
+            currentCamera == CameraSelector.DEFAULT_BACK_CAMERA -> getString(R.string.camera_back)
+            else -> getString(R.string.camera_front)
         }
         cameraSelectionText.text = getString(R.string.camera_selection, cameraName)
         

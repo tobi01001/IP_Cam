@@ -156,8 +156,8 @@ class CameraService : Service(), LifecycleOwner {
                 lastFrameBitmap?.recycle()
                 lastFrameBitmap = bitmap
             }
-            // Notify MainActivity if it's listening
-            onFrameAvailableCallback?.invoke(bitmap)
+            // Notify MainActivity if it's listening - create a copy to avoid recycling issues
+            onFrameAvailableCallback?.invoke(bitmap.copy(bitmap.config, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
