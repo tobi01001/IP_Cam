@@ -451,8 +451,24 @@ class CameraService : Service(), LifecycleOwner {
             canvas.drawText(text, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
         }
         
-        drawLabel(timeText, alignRight = false, topOffset = padding)
-        drawLabel(batteryText, alignRight = true, topOffset = padding)
+        // Calculate widths to check for overlap
+        val timeWidth = textPaint.measureText(timeText) + padding * 3
+        val batteryWidth = textPaint.measureText(batteryText) + padding * 3
+        val availableWidth = canvas.width.toFloat()
+        
+        // Check if labels would overlap
+        val wouldOverlap = (timeWidth + batteryWidth) > availableWidth
+        
+        if (wouldOverlap) {
+            // Stack vertically if they would overlap
+            val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
+            drawLabel(timeText, alignRight = false, topOffset = padding)
+            drawLabel(batteryText, alignRight = true, topOffset = padding + textHeight + padding * 2)
+        } else {
+            // Draw side by side
+            drawLabel(timeText, alignRight = false, topOffset = padding)
+            drawLabel(batteryText, alignRight = true, topOffset = padding)
+        }
         
         return mutable
     }
