@@ -221,7 +221,18 @@ class CameraService : Service(), LifecycleOwner {
         
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
-            Log.d(TAG, "Request: $uri")
+            val method = session.method
+            Log.d(TAG, "Request: $method $uri")
+            
+            // Handle CORS preflight requests
+            if (method == Method.OPTIONS) {
+                val response = newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "")
+                response.addHeader("Access-Control-Allow-Origin", "*")
+                response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
+                response.addHeader("Access-Control-Allow-Headers", "Content-Type")
+                response.addHeader("Access-Control-Max-Age", "3600")
+                return response
+            }
             
             val response = when {
                 uri == "/" || uri == "/index.html" -> serveIndexPage()
@@ -329,16 +340,13 @@ class CameraService : Service(), LifecycleOwner {
             val inputStream = object : java.io.InputStream() {
                 private var buffer = ByteArray(0)
                 private var position = 0
-                private var retryCount = 0
-                private val maxRetries = 50  // Max 5 seconds waiting for first frame
                 
                 override fun read(): Int {
-                    if (position >= buffer.size) {
+                    while (position >= buffer.size) {
                         // Generate next frame
                         val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
                         
                         if (bitmap != null) {
-                            retryCount = 0  // Reset retry count when we get a frame
                             val jpegStream = ByteArrayOutputStream()
                             bitmap.compress(Bitmap.CompressFormat.JPEG, 80, jpegStream)
                             val jpegBytes = jpegStream.toByteArray()
@@ -359,19 +367,15 @@ class CameraService : Service(), LifecycleOwner {
                             } catch (e: InterruptedException) {
                                 return -1
                             }
+                            break
                         } else {
-                            // No frame available, wait a bit
-                            if (retryCount >= maxRetries) {
-                                Log.w(TAG, "No frame available after ${maxRetries} retries, ending stream")
-                                return -1
-                            }
-                            retryCount++
+                            // No frame available, wait a bit and retry
                             try {
                                 Thread.sleep(100)
                             } catch (e: InterruptedException) {
                                 return -1
                             }
-                            return read()
+                            // Continue loop to retry
                         }
                     }
                     
