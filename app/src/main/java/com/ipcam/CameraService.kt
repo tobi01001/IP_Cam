@@ -47,6 +47,10 @@ class CameraService : Service(), LifecycleOwner {
     private var imageAnalysis: ImageAnalysis? = null
     private lateinit var lifecycleRegistry: LifecycleRegistry
     
+    // Callbacks for MainActivity to receive updates
+    private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
+    private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
+    
     companion object {
         private const val TAG = "CameraService"
         private const val CHANNEL_ID = "CameraServiceChannel"
@@ -152,6 +156,8 @@ class CameraService : Service(), LifecycleOwner {
                 lastFrameBitmap?.recycle()
                 lastFrameBitmap = bitmap
             }
+            // Notify MainActivity if it's listening - create a copy to avoid recycling issues
+            onFrameAvailableCallback?.invoke(bitmap.copy(bitmap.config, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
@@ -184,6 +190,23 @@ class CameraService : Service(), LifecycleOwner {
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
         bindCamera()
+        // Notify MainActivity of the camera change
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    fun getCurrentCamera(): CameraSelector = currentCamera
+    
+    fun setOnCameraStateChangedCallback(callback: (CameraSelector) -> Unit) {
+        onCameraStateChangedCallback = callback
+    }
+    
+    fun setOnFrameAvailableCallback(callback: (Bitmap) -> Unit) {
+        onFrameAvailableCallback = callback
+    }
+    
+    fun clearCallbacks() {
+        onCameraStateChangedCallback = null
+        onFrameAvailableCallback = null
     }
     
     fun isServerRunning(): Boolean = httpServer?.isAlive == true
@@ -402,6 +425,8 @@ class CameraService : Service(), LifecycleOwner {
             }
             
             bindCamera()
+            // Notify MainActivity of the camera change
+            onCameraStateChangedCallback?.invoke(currentCamera)
             
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
             val json = """{"status": "ok", "camera": "$cameraName"}"""

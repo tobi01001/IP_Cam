@@ -6,24 +6,20 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.IBinder
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.Preview
-import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
-import com.google.common.util.concurrent.ListenableFuture
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 
 class MainActivity : AppCompatActivity() {
-    private lateinit var previewView: PreviewView
+    private lateinit var previewImageView: ImageView
     private lateinit var serverStatusText: TextView
     private lateinit var serverUrlText: TextView
     private lateinit var cameraSelectionText: TextView
@@ -31,18 +27,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchCameraButton: Button
     private lateinit var startStopButton: Button
     
-    private lateinit var cameraProviderFuture: ListenableFuture<ProcessCameraProvider>
-    private lateinit var cameraExecutor: ExecutorService
-    
     private var cameraService: CameraService? = null
     private var isServiceBound = false
-    private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            startCameraPreview()
+            // Camera permission granted, service will handle camera
+            Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(this, getString(R.string.permission_required), Toast.LENGTH_SHORT).show()
         }
@@ -53,10 +46,25 @@ class MainActivity : AppCompatActivity() {
             val binder = service as CameraService.LocalBinder
             cameraService = binder.getService()
             isServiceBound = true
+            
+            // Set up callbacks to receive updates from the service
+            cameraService?.setOnCameraStateChangedCallback { _ ->
+                runOnUiThread {
+                    updateUI()
+                }
+            }
+            
+            cameraService?.setOnFrameAvailableCallback { bitmap ->
+                runOnUiThread {
+                    previewImageView.setImageBitmap(bitmap)
+                }
+            }
+            
             updateUI()
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
+            cameraService?.clearCallbacks()
             cameraService = null
             isServiceBound = false
             updateUI()
@@ -67,16 +75,13 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
         
-        previewView = findViewById(R.id.previewView)
+        previewImageView = findViewById(R.id.previewImageView)
         serverStatusText = findViewById(R.id.serverStatusText)
         serverUrlText = findViewById(R.id.serverUrlText)
         cameraSelectionText = findViewById(R.id.cameraSelectionText)
         endpointsText = findViewById(R.id.endpointsText)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         startStopButton = findViewById(R.id.startStopButton)
-        
-        cameraExecutor = Executors.newSingleThreadExecutor()
-        cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         
         setupEndpointsText()
         
@@ -107,7 +112,7 @@ class MainActivity : AppCompatActivity() {
                 this,
                 Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED -> {
-                startCameraPreview()
+                // Permission already granted
             }
             else -> {
                 requestPermissionLauncher.launch(Manifest.permission.CAMERA)
@@ -115,39 +120,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
-    private fun startCameraPreview() {
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            bindPreview(cameraProvider)
-        }, ContextCompat.getMainExecutor(this))
-    }
-    
-    private fun bindPreview(cameraProvider: ProcessCameraProvider) {
-        val preview = Preview.Builder().build()
-        preview.setSurfaceProvider(previewView.surfaceProvider)
-        
-        try {
-            cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(this, currentCamera, preview)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-    
     private fun switchCamera() {
-        currentCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+        val currentCamera = cameraService?.getCurrentCamera() ?: CameraSelector.DEFAULT_BACK_CAMERA
+        val newCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
             CameraSelector.DEFAULT_FRONT_CAMERA
         } else {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
         
-        cameraService?.switchCamera(currentCamera)
-        
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
-            bindPreview(cameraProvider)
-        }, ContextCompat.getMainExecutor(this))
-        
+        cameraService?.switchCamera(newCamera)
         updateUI()
     }
     
@@ -167,12 +148,14 @@ class MainActivity : AppCompatActivity() {
     
     private fun stopServer() {
         if (isServiceBound) {
+            cameraService?.clearCallbacks()
             unbindService(serviceConnection)
             isServiceBound = false
         }
         val intent = Intent(this, CameraService::class.java)
         stopService(intent)
         cameraService = null
+        previewImageView.setImageBitmap(null)
         updateUI()
     }
     
@@ -189,10 +172,11 @@ class MainActivity : AppCompatActivity() {
             cameraService?.getServerUrl() ?: "Not available"
         )
         
-        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
-            getString(R.string.camera_back)
-        } else {
-            getString(R.string.camera_front)
+        val currentCamera = cameraService?.getCurrentCamera()
+        val cameraName = when {
+            currentCamera == null -> "Not available"
+            currentCamera == CameraSelector.DEFAULT_BACK_CAMERA -> getString(R.string.camera_back)
+            else -> getString(R.string.camera_front)
         }
         cameraSelectionText.text = getString(R.string.camera_selection, cameraName)
         
@@ -201,17 +185,28 @@ class MainActivity : AppCompatActivity() {
         } else {
             getString(R.string.start_server)
         }
+        
+        switchCameraButton.isEnabled = isRunning
     }
     
     override fun onResume() {
         super.onResume()
+        // Rebind to service if it's running
+        if (!isServiceBound && cameraService == null) {
+            val intent = Intent(this, CameraService::class.java)
+            try {
+                bindService(intent, serviceConnection, 0)
+            } catch (e: Exception) {
+                // Service not running, which is fine
+            }
+        }
         updateUI()
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        cameraExecutor.shutdown()
         if (isServiceBound) {
+            cameraService?.clearCallbacks()
             unbindService(serviceConnection)
         }
     }
