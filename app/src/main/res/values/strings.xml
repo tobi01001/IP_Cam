@@ -20,4 +20,11 @@
     <string name="endpoint_formats">GET /formats - List supported resolutions for the active camera</string>
     <string name="endpoint_set_format">GET /setFormat?value=WIDTHxHEIGHT - Apply a supported resolution</string>
     <string name="camera_preview_description">Live camera preview</string>
+    <string name="permission_rationale_title">Camera Permission Required</string>
+    <string name="permission_rationale_message">This app requires camera access to stream video. Please grant the camera permission to continue.</string>
+    <string name="permission_denied_message">Camera permission is required to use this app. Please grant the permission in app settings.</string>
+    <string name="go_to_settings">Open Settings</string>
+    <string name="resolution_label">Resolution:</string>
+    <string name="resolution_auto">Auto (Default)</string>
+    <string name="permission_not_granted">Permission not granted - cannot start server</string>
 </resources>

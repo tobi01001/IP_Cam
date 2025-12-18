@@ -241,6 +241,17 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getCurrentCamera(): CameraSelector = currentCamera
     
+    fun getSupportedResolutions(): List<Size> {
+        return getSupportedResolutions(currentCamera)
+    }
+    
+    fun getSelectedResolution(): Size? = selectedResolution
+    
+    fun setResolution(resolution: Size?) {
+        selectedResolution = resolution
+        requestBindCamera()
+    }
+    
     fun setOnCameraStateChangedCallback(callback: (CameraSelector) -> Unit) {
         onCameraStateChangedCallback = callback
     }
