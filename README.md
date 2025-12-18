@@ -10,6 +10,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
 - **Camera Selection**: Switch between front and back cameras
 - **Configurable Formats**: Choose supported resolutions from the web UI
+- **Orientation Control**: Auto-detect device orientation or manually set rotation (0°, 90°, 180°, 270°)
 - **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
 - **Low Latency**: Optimized for fast streaming (~10 fps)
@@ -73,6 +74,7 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /status`** - Get server status and camera information (returns JSON)
 - **`GET /formats`** - List supported resolutions for the active camera
 - **`GET /setFormat?value=WIDTHxHEIGHT`** - Apply a supported resolution (omit to return to auto)
+- **`GET /setRotation?value=auto|0|90|180|270`** - Set camera rotation (auto follows device orientation)
 
 #### Example Usage
 
@@ -95,6 +97,55 @@ curl http://192.168.1.100:8080/switch
 ```bash
 curl http://192.168.1.100:8080/status
 ```
+
+**Set camera rotation to 90 degrees:**
+```bash
+curl http://192.168.1.100:8080/setRotation?value=90
+```
+
+**Set camera rotation to auto (follow device orientation):**
+```bash
+curl http://192.168.1.100:8080/setRotation?value=auto
+```
+
+### Camera Orientation Control
+
+The IP_Cam app supports both automatic and manual camera orientation control:
+
+#### Auto-Detection Mode
+By default, the camera orientation follows your device's physical orientation. As you rotate your phone:
+- **Portrait (0°)**: Normal upright orientation
+- **Landscape Right (90°)**: Device rotated 90° clockwise
+- **Upside Down (180°)**: Device rotated 180°
+- **Landscape Left (270°)**: Device rotated 90° counter-clockwise
+
+The video stream and app preview automatically rotate to match your device's current orientation.
+
+#### Manual Override
+You can manually set a specific orientation that overrides the auto-detection:
+
+**In the App:**
+1. Start the server
+2. Use the "Rotation" dropdown to select your desired orientation
+3. Choose from: Auto, 0°, 90°, 180°, or 270°
+
+**Via Web Interface:**
+1. Open the camera's web interface in a browser
+2. Use the "Rotation" dropdown and click "Apply Rotation"
+
+**Via API:**
+```bash
+# Set to specific angle
+curl http://192.168.1.100:8080/setRotation?value=90
+
+# Return to auto-detection
+curl http://192.168.1.100:8080/setRotation?value=auto
+```
+
+#### Use Cases
+- **Auto Mode**: Perfect for handheld use or when the phone position changes
+- **Fixed Rotation**: Ideal for permanently mounted cameras where you want consistent orientation
+- **Landscape Streaming**: Force 90° or 270° for wide-angle monitoring regardless of how the phone is mounted
 
 ### Integration with Surveillance Systems
 
@@ -266,6 +317,8 @@ The app requires the following permissions:
 - **Image Format**: JPEG
 - **Default Port**: 8080
 - **Frame Rate**: ~10 fps
+- **Orientation Detection**: OrientationEventListener for auto-rotation
+- **Rotation Support**: Auto-detection or manual override (0°, 90°, 180°, 270°)
 
 ### Architecture
 
@@ -280,7 +333,8 @@ IP_Cam uses a service-based architecture to ensure reliable camera streaming:
 
 **MainActivity (UI)**
 - Displays live camera preview from CameraService
-- Provides controls for starting/stopping server and switching cameras
+- Provides controls for starting/stopping server, switching cameras, and setting rotation
+- Handles device configuration changes (orientation changes)
 - Receives frame updates via callback mechanism
 - Does NOT manage camera directly (preventing conflicts)
 
@@ -289,6 +343,7 @@ IP_Cam uses a service-based architecture to ensure reliable camera streaming:
 - **Synchronized Switching**: Camera switches from web or app update both interfaces immediately
 - **Background Operation**: Server and streaming work reliably even when app is in background or closed
 - **Single Stream Source**: Web stream and app preview use the same camera frames
+- **Flexible Orientation**: Auto-detection or manual override for any mounting scenario
 
 **How Camera Switching Works:**
 1. User triggers switch (via app button or `/switch` web endpoint)
@@ -296,6 +351,14 @@ IP_Cam uses a service-based architecture to ensure reliable camera streaming:
 3. CameraService notifies MainActivity via callback
 4. Both web stream and app preview update to show new camera
 5. State remains synchronized across all interfaces
+
+**How Orientation Control Works:**
+1. OrientationEventListener continuously monitors device orientation
+2. In auto mode, rotation is applied based on current device angle
+3. In manual mode, user-specified rotation overrides auto-detection
+4. Rotation is applied to each frame using a transformation matrix
+5. Both video stream and app preview reflect the selected orientation
+6. Orientation setting can be changed via app UI or `/setRotation` API endpoint
 
 ## License
 MIT License - see LICENSE file for details
