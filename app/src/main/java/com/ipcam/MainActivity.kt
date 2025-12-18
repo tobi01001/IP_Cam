@@ -7,13 +7,21 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
+import android.util.Size
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.ImageView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.core.content.ContextCompat
@@ -24,20 +32,31 @@ class MainActivity : AppCompatActivity() {
     private lateinit var serverUrlText: TextView
     private lateinit var cameraSelectionText: TextView
     private lateinit var endpointsText: TextView
+    private lateinit var resolutionSpinner: Spinner
     private lateinit var switchCameraButton: Button
     private lateinit var startStopButton: Button
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
+    private var hasCameraPermission = false
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
-            // Camera permission granted, service will handle camera
+            hasCameraPermission = true
             Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
+            updateUI()
         } else {
-            Toast.makeText(this, getString(R.string.permission_required), Toast.LENGTH_SHORT).show()
+            hasCameraPermission = false
+            // Check if we should show rationale (user denied but didn't select "Don't ask again")
+            if (shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+                showPermissionRationale()
+            } else {
+                // User selected "Don't ask again" - guide them to settings
+                showPermissionDeniedDialog()
+            }
+            updateUI()
         }
     }
     
@@ -51,6 +70,7 @@ class MainActivity : AppCompatActivity() {
             cameraService?.setOnCameraStateChangedCallback { _ ->
                 runOnUiThread {
                     updateUI()
+                    loadResolutions()
                 }
             }
             
@@ -61,6 +81,7 @@ class MainActivity : AppCompatActivity() {
             }
             
             updateUI()
+            loadResolutions()
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -80,10 +101,12 @@ class MainActivity : AppCompatActivity() {
         serverUrlText = findViewById(R.id.serverUrlText)
         cameraSelectionText = findViewById(R.id.cameraSelectionText)
         endpointsText = findViewById(R.id.endpointsText)
+        resolutionSpinner = findViewById(R.id.resolutionSpinner)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         startStopButton = findViewById(R.id.startStopButton)
         
         setupEndpointsText()
+        setupResolutionSpinner()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -114,10 +137,110 @@ class MainActivity : AppCompatActivity() {
                 this,
                 Manifest.permission.CAMERA
             ) == PackageManager.PERMISSION_GRANTED -> {
-                // Permission already granted
+                hasCameraPermission = true
+                updateUI()
+            }
+            shouldShowRequestPermissionRationale(Manifest.permission.CAMERA) -> {
+                // Show rationale before requesting permission
+                showPermissionRationale()
             }
             else -> {
+                // Request permission directly
                 requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+    
+    private fun showPermissionRationale() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.permission_rationale_title)
+            .setMessage(R.string.permission_rationale_message)
+            .setPositiveButton("OK") { _, _ ->
+                requestPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+                updateUI()
+            }
+            .create()
+            .show()
+    }
+    
+    private fun showPermissionDeniedDialog() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.permission_rationale_title)
+            .setMessage(R.string.permission_denied_message)
+            .setPositiveButton(R.string.go_to_settings) { _, _ ->
+                // Open app settings
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                val uri = Uri.fromParts("package", packageName, null)
+                intent.data = uri
+                startActivity(intent)
+            }
+            .setNegativeButton("Cancel") { dialog, _ ->
+                dialog.dismiss()
+            }
+            .create()
+            .show()
+    }
+    
+    private fun setupResolutionSpinner() {
+        resolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedItem = parent?.getItemAtPosition(position) as? String
+                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                    applyResolution(selectedItem)
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+    }
+    
+    private fun loadResolutions() {
+        val service = cameraService ?: return
+        if (!service.isServerRunning()) {
+            // Set default when server is not running
+            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, 
+                listOf(getString(R.string.resolution_auto)))
+            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            resolutionSpinner.adapter = adapter
+            return
+        }
+        
+        val resolutions = service.getSupportedResolutions()
+        val items = mutableListOf(getString(R.string.resolution_auto))
+        items.addAll(resolutions.map { "${it.width}x${it.height}" })
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        resolutionSpinner.adapter = adapter
+        
+        // Set current selection
+        val currentResolution = service.getSelectedResolution()
+        if (currentResolution != null) {
+            val index = items.indexOf("${currentResolution.width}x${currentResolution.height}")
+            if (index >= 0) {
+                resolutionSpinner.setSelection(index)
+            }
+        }
+    }
+    
+    private fun applyResolution(selection: String) {
+        val service = cameraService ?: return
+        
+        if (selection == getString(R.string.resolution_auto)) {
+            service.setResolution(null)
+        } else {
+            val parts = selection.split("x")
+            if (parts.size == 2) {
+                val width = parts[0].toIntOrNull()
+                val height = parts[1].toIntOrNull()
+                if (width != null && height != null) {
+                    service.setResolution(Size(width, height))
+                }
             }
         }
     }
@@ -132,6 +255,7 @@ class MainActivity : AppCompatActivity() {
         
         cameraService?.switchCamera(newCamera)
         updateUI()
+        loadResolutions()
     }
     
     private fun toggleServer() {
@@ -143,6 +267,13 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun startServer() {
+        // Check permission before starting server
+        if (!hasCameraPermission) {
+            Toast.makeText(this, R.string.permission_not_granted, Toast.LENGTH_LONG).show()
+            checkCameraPermission()
+            return
+        }
+        
         val intent = Intent(this, CameraService::class.java)
         ContextCompat.startForegroundService(this, intent)
         bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
@@ -188,7 +319,10 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.start_server)
         }
         
+        // Disable start button if permission not granted
+        startStopButton.isEnabled = isRunning || hasCameraPermission
         switchCameraButton.isEnabled = isRunning
+        resolutionSpinner.isEnabled = isRunning
     }
     
     override fun onResume() {
