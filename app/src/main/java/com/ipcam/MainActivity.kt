@@ -8,8 +8,10 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Size
 import android.view.View
@@ -127,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         checkCameraPermission()
+        checkBatteryOptimization()
     }
     
     private fun setupEndpointsText() {
@@ -194,6 +197,34 @@ class MainActivity : AppCompatActivity() {
             }
             .create()
             .show()
+    }
+    
+    private fun checkBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val packageName = packageName
+            
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                AlertDialog.Builder(this)
+                    .setTitle("Battery Optimization")
+                    .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
+                    .setPositiveButton("Disable Optimization") { _, _ ->
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        try {
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(this, "Could not open battery settings", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("Skip") { dialog, _ ->
+                        dialog.dismiss()
+                    }
+                    .create()
+                    .show()
+            }
+        }
     }
     
     private fun setupResolutionSpinner() {

@@ -6,6 +6,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -71,6 +72,8 @@ class CameraService : Service(), LifecycleOwner {
     private var deviceOrientation: Int = 0 // Current device orientation (for app UI only, not camera)
     private var orientationEventListener: OrientationEventListener? = null
     private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
+    private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
+    private var networkReceiver: BroadcastReceiver? = null
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -83,6 +86,8 @@ class CameraService : Service(), LifecycleOwner {
          private const val PORT = 8080
          private const val FRAME_STALE_THRESHOLD_MS = 5_000L
          private const val RESOLUTION_DELIMITER = "x"
+         private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
+         private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
      }
     
     override val lifecycle: Lifecycle
@@ -107,6 +112,7 @@ class CameraService : Service(), LifecycleOwner {
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
         acquireLocks()
+        registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         startServer()
@@ -125,13 +131,37 @@ class CameraService : Service(), LifecycleOwner {
         return START_STICKY
     }
     
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        Log.d(TAG, "Task removed - restarting service")
+        
+        // Restart the service immediately when task is removed
+        val restartIntent = Intent(applicationContext, CameraService::class.java)
+        val pendingIntent = PendingIntent.getService(
+            applicationContext,
+            1,
+            restartIntent,
+            PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE
+        )
+        
+        val alarmManager = getSystemService(Context.ALARM_SERVICE) as android.app.AlarmManager
+        alarmManager.set(
+            android.app.AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            android.os.SystemClock.elapsedRealtime() + 1000,
+            pendingIntent
+        )
+    }
+    
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "IP Camera Service",
-                NotificationManager.IMPORTANCE_LOW
-            )
+                NotificationManager.IMPORTANCE_DEFAULT  // Changed from LOW to DEFAULT for better persistence
+            ).apply {
+                description = "Keeps camera service running in background"
+                setShowBadge(true)
+            }
             val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
         }
@@ -149,6 +179,9 @@ class CameraService : Service(), LifecycleOwner {
             .setContentText("Server running on ${getServerUrl()}")
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingIntent)
+            .setOngoing(true)  // Make notification persistent
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)  // Increase priority
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .build()
     }
     
@@ -481,6 +514,7 @@ class CameraService : Service(), LifecycleOwner {
     override fun onDestroy() {
         super.onDestroy()
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        unregisterNetworkReceiver()
         orientationEventListener?.disable()
         httpServer?.stop()
         cameraProvider?.unbindAll()
@@ -515,20 +549,82 @@ class CameraService : Service(), LifecycleOwner {
     private fun startWatchdog() {
         serviceScope.launch {
             while (isActive) {
-                delay(FRAME_STALE_THRESHOLD_MS)
+                delay(watchdogRetryDelay)
+                
+                var needsRecovery = false
+                
+                // Check server health
                 if (httpServer?.isAlive != true) {
+                    Log.w(TAG, "Watchdog: Server not alive, restarting...")
                     startServer()
+                    needsRecovery = true
                 }
+                
+                // Check camera health
                 val frameAge = System.currentTimeMillis() - lastFrameTimestamp
                 if (frameAge > FRAME_STALE_THRESHOLD_MS) {
+                    Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
                     if (cameraProvider == null) {
                         startCamera()
                     } else {
                         requestBindCamera()
                     }
+                    needsRecovery = true
+                }
+                
+                // Exponential backoff for retry delay
+                if (needsRecovery) {
+                    watchdogRetryDelay = (watchdogRetryDelay * 2).coerceAtMost(WATCHDOG_MAX_RETRY_DELAY_MS)
+                    Log.d(TAG, "Watchdog: Increasing retry delay to ${watchdogRetryDelay}ms")
+                } else {
+                    // Reset to initial delay when everything is healthy
+                    if (watchdogRetryDelay != WATCHDOG_RETRY_DELAY_MS) {
+                        watchdogRetryDelay = WATCHDOG_RETRY_DELAY_MS
+                        Log.d(TAG, "Watchdog: System healthy, reset retry delay")
+                    }
                 }
             }
         }
+    }
+    
+    private fun registerNetworkReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(android.net.ConnectivityManager.CONNECTIVITY_ACTION)
+            addAction(android.net.wifi.WifiManager.NETWORK_STATE_CHANGED_ACTION)
+        }
+        
+        networkReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                when (intent?.action) {
+                    android.net.ConnectivityManager.CONNECTIVITY_ACTION,
+                    android.net.wifi.WifiManager.NETWORK_STATE_CHANGED_ACTION -> {
+                        Log.d(TAG, "Network state changed, checking server...")
+                        serviceScope.launch {
+                            delay(2000) // Wait for network to stabilize
+                            if (httpServer?.isAlive != true) {
+                                Log.d(TAG, "Network recovered, restarting server")
+                                startServer()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        registerReceiver(networkReceiver, filter)
+        Log.d(TAG, "Network receiver registered")
+    }
+    
+    private fun unregisterNetworkReceiver() {
+        networkReceiver?.let {
+            try {
+                unregisterReceiver(it)
+                Log.d(TAG, "Network receiver unregistered")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unregistering network receiver", e)
+            }
+        }
+        networkReceiver = null
     }
     
     private fun annotateBitmap(source: Bitmap): Bitmap {

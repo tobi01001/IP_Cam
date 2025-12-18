@@ -10,10 +10,14 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
 - **Camera Selection**: Switch between front and back cameras
 - **Configurable Formats**: Choose supported resolutions from the web UI
-- **Orientation Control**: Auto-detect device orientation or manually set rotation (0°, 90°, 180°, 270°)
+- **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
+- **Resolution Debugging**: Optional overlay showing actual bitmap dimensions
+- **Persistent Service**: Foreground service with automatic restart and battery optimization
+- **Network Monitoring**: Automatically restarts server on network changes
+- **Settings Persistence**: All settings saved and restored across app restarts
 - **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
-- **Low Latency**: Optimized for fast streaming (~10 fps)
+- **Low Latency**: Optimized for fast streaming with JPEG compression
 
 ## Target Device
 Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
@@ -146,6 +150,56 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 - **Auto Mode**: Perfect for handheld use or when the phone position changes
 - **Fixed Rotation**: Ideal for permanently mounted cameras where you want consistent orientation
 - **Landscape Streaming**: Force 90° or 270° for wide-angle monitoring regardless of how the phone is mounted
+
+### Service Persistence and Reliability
+
+IP_Cam is designed to run reliably as a long-term camera service with multiple persistence mechanisms:
+
+#### Foreground Service
+- Runs as a foreground service with persistent notification
+- Higher priority prevents Android from killing the service
+- Camera type required for background camera access
+- Automatic restart on system kill (START_STICKY)
+
+#### Battery Optimization
+On first run, the app will request battery optimization exemption:
+- **Recommended**: Allow the exemption for reliable 24/7 operation
+- **Impact**: Prevents Android from aggressively stopping the service
+- **Manual Setting**: Settings → Battery → Battery Optimization → IP_Cam → Don't optimize
+
+#### Automatic Recovery
+The service includes multiple recovery mechanisms:
+- **Watchdog**: Monitors server and camera health every few seconds
+- **Exponential Backoff**: Intelligently retries failed components
+- **Task Removal Handler**: Immediately restarts service if app is swiped away
+- **Network Monitoring**: Detects WiFi state changes and restarts server accordingly
+
+#### Wake Locks
+The service maintains system wake locks to prevent interruptions:
+- **Partial Wake Lock**: Keeps CPU running for camera processing
+- **WiFi High Performance Lock**: Maintains stable network connection
+- **Automatic Management**: Locks acquired on start, released on stop
+
+#### Settings Persistence
+All camera settings are automatically saved and restored:
+- Camera type (front/back)
+- Camera orientation (landscape/portrait)
+- Rotation setting (0°/90°/180°/270°)
+- Selected resolution
+- Resolution overlay preference
+
+Settings persist across:
+- App restarts
+- Screen off/on cycles
+- Device reboots
+- Service crashes
+
+#### Best Practices for 24/7 Operation
+1. **Disable battery optimization** when prompted
+2. **Keep device plugged in** to prevent battery drain
+3. **Use airplane mode + WiFi** to reduce cellular radio activity and heat
+4. **Mount device** in a location with good ventilation
+5. **Monitor temperature** to prevent overheating
 
 ### Integration with Surveillance Systems
 
