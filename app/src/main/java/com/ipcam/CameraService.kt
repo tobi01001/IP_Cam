@@ -26,7 +26,9 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleService
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
@@ -35,7 +37,7 @@ import java.net.InetAddress
 import java.nio.ByteBuffer
 import java.util.concurrent.Executors
 
-class CameraService : LifecycleService() {
+class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
     private var httpServer: CameraHttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
@@ -43,6 +45,7 @@ class CameraService : LifecycleService() {
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     private var cameraProvider: ProcessCameraProvider? = null
     private var imageAnalysis: ImageAnalysis? = null
+    private lateinit var lifecycleRegistry: LifecycleRegistry
     
     companion object {
         private const val TAG = "CameraService"
@@ -51,19 +54,24 @@ class CameraService : LifecycleService() {
         private const val PORT = 8080
     }
     
+    override val lifecycle: Lifecycle
+        get() = lifecycleRegistry
+    
     inner class LocalBinder : Binder() {
         fun getService(): CameraService = this@CameraService
     }
     
     override fun onBind(intent: Intent): IBinder {
-        super.onBind(intent)
         return binder
     }
     
     override fun onCreate() {
         super.onCreate()
+        lifecycleRegistry = LifecycleRegistry(this)
+        lifecycleRegistry.currentState = Lifecycle.State.CREATED
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
+        lifecycleRegistry.currentState = Lifecycle.State.STARTED
         startServer()
         startCamera()
     }
@@ -202,6 +210,7 @@ class CameraService : LifecycleService() {
     
     override fun onDestroy() {
         super.onDestroy()
+        lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
         httpServer?.stop()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
@@ -209,7 +218,6 @@ class CameraService : LifecycleService() {
     }
     
     inner class CameraHttpServer(port: Int) : NanoHTTPD(port) {
-        private var streamingJob: Job? = null
         
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
@@ -307,35 +315,37 @@ class CameraService : LifecycleService() {
         }
         
         private fun serveStream(): Response {
-            val response = newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", null)
+            // Create a custom chunked response for MJPEG streaming
+            val response = newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", null as java.io.InputStream?)
             
-            streamingJob?.cancel()
-            streamingJob = CoroutineScope(Dispatchers.IO).launch {
+            // Start a background thread to send frames
+            Thread {
                 try {
-                    val outputStream = response.data
-                    
-                    while (isActive) {
-                        val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
-                        
-                        if (bitmap != null) {
-                            val stream = ByteArrayOutputStream()
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
-                            val bytes = stream.toByteArray()
+                    val output = response.data as? java.io.OutputStream
+                    if (output != null) {
+                        while (!Thread.currentThread().isInterrupted) {
+                            val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
                             
-                            outputStream.write("--jpgboundary\r\n".toByteArray())
-                            outputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                            outputStream.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray())
-                            outputStream.write(bytes)
-                            outputStream.write("\r\n".toByteArray())
-                            outputStream.flush()
+                            if (bitmap != null) {
+                                val stream = ByteArrayOutputStream()
+                                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, stream)
+                                val bytes = stream.toByteArray()
+                                
+                                output.write("--jpgboundary\r\n".toByteArray())
+                                output.write("Content-Type: image/jpeg\r\n".toByteArray())
+                                output.write("Content-Length: ${bytes.size}\r\n\r\n".toByteArray())
+                                output.write(bytes)
+                                output.write("\r\n".toByteArray())
+                                output.flush()
+                            }
+                            
+                            Thread.sleep(100) // ~10 fps
                         }
-                        
-                        delay(100) // ~10 fps
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Streaming error", e)
+                    Log.e(TAG, "Streaming stopped", e)
                 }
-            }
+            }.start()
             
             return response
         }
