@@ -408,8 +408,8 @@ class MainActivity : AppCompatActivity() {
     
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Notify service of configuration change if rotation is in auto mode
-        cameraService?.onDeviceOrientationChanged()
+        // Configuration changes (like rotation) are automatically handled by OrientationEventListener
+        // in the CameraService, so no action needed here
     }
     
     override fun onDestroy() {

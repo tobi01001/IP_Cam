@@ -31,8 +31,6 @@ import android.os.PowerManager
 import android.util.Log
 import android.util.Size
 import android.view.OrientationEventListener
-import android.view.Surface
-import android.view.WindowManager
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -223,6 +221,7 @@ class CameraService : Service(), LifecycleOwner {
     private fun applyRotation(bitmap: Bitmap): Bitmap {
         val rotation = if (manualRotation == -1) deviceOrientation else manualRotation
         
+        // Avoid unnecessary bitmap creation if no rotation is needed
         if (rotation == 0) {
             return bitmap
         }
@@ -231,11 +230,12 @@ class CameraService : Service(), LifecycleOwner {
         matrix.postRotate(rotation.toFloat())
         
         return try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true).also {
-                if (it != bitmap) {
-                    bitmap.recycle()
-                }
+            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+            // Only recycle the original if a new bitmap was created
+            if (rotated != bitmap) {
+                bitmap.recycle()
             }
+            rotated
         } catch (e: Exception) {
             Log.e(TAG, "Error rotating bitmap", e)
             bitmap
@@ -292,33 +292,28 @@ class CameraService : Service(), LifecycleOwner {
     
     fun onDeviceOrientationChanged() {
         // This is called when device orientation changes
-        // Update the device orientation for auto-rotation mode
-        if (manualRotation == -1) {
-            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            deviceOrientation = when (windowManager.defaultDisplay.rotation) {
-                Surface.ROTATION_0 -> 0
-                Surface.ROTATION_90 -> 90
-                Surface.ROTATION_180 -> 180
-                Surface.ROTATION_270 -> 270
-                else -> 0
-            }
-        }
+        // The OrientationEventListener handles this automatically now
+        // This method is kept for compatibility but not actively used
     }
     
     private fun setupOrientationListener() {
         orientationEventListener = object : OrientationEventListener(this) {
+            private var lastReportedOrientation = -1
+            
             override fun onOrientationChanged(orientation: Int) {
                 if (manualRotation == -1 && orientation != ORIENTATION_UNKNOWN) {
-                    // Update device orientation based on sensor
+                    // Update device orientation based on sensor with hysteresis to prevent jitter
                     val newOrientation = when {
-                        orientation >= 315 || orientation < 45 -> 0
-                        orientation in 45..134 -> 270
-                        orientation in 135..224 -> 180
-                        orientation in 225..314 -> 90
-                        else -> 0
+                        orientation >= 330 || orientation < 30 -> 0
+                        orientation in 60..120 -> 270
+                        orientation in 150..210 -> 180
+                        orientation in 240..300 -> 90
+                        else -> lastReportedOrientation // Keep current orientation in transition zones
                     }
-                    if (deviceOrientation != newOrientation) {
+                    // Only update if orientation actually changed
+                    if (newOrientation != -1 && deviceOrientation != newOrientation) {
                         deviceOrientation = newOrientation
+                        lastReportedOrientation = newOrientation
                     }
                 }
             }
