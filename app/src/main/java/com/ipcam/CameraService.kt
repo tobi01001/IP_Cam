@@ -90,7 +90,7 @@ class CameraService : LifecycleService() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("IP Camera Server")
             .setContentText("Server running on ${getServerUrl()}")
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingIntent)
             .build()
     }
@@ -185,6 +185,7 @@ class CameraService : LifecycleService() {
         return "http://$ipAddress:$PORT"
     }
     
+    @Suppress("DEPRECATION")
     private fun getIpAddress(): String {
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val wifiInfo = wifiManager.connectionInfo
@@ -208,7 +209,6 @@ class CameraService : LifecycleService() {
     }
     
     inner class CameraHttpServer(port: Int) : NanoHTTPD(port) {
-        private val streamingClients = mutableListOf<OutputStream>()
         private var streamingJob: Job? = null
         
         override fun serve(session: IHTTPSession): Response {
@@ -280,6 +280,9 @@ class CameraService : LifecycleService() {
                                 .then(data => {
                                     alert('Switched to ' + data.camera);
                                     setTimeout(() => location.reload(), 500);
+                                })
+                                .catch(error => {
+                                    alert('Error switching camera: ' + error);
                                 });
                         }
                     </script>
