@@ -70,6 +70,7 @@ class CameraService : Service(), LifecycleOwner {
     private var rotation: Int = 0 // 0, 90, 180, 270 - applied to the camera-oriented image
     private var deviceOrientation: Int = 0 // Current device orientation (for app UI only, not camera)
     private var orientationEventListener: OrientationEventListener? = null
+    private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -327,6 +328,12 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getRotation(): Int = rotation
     
+    fun setShowResolutionOverlay(show: Boolean) {
+        showResolutionOverlay = show
+    }
+    
+    fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
+    
     fun onDeviceOrientationChanged() {
         // Device orientation changes only affect the app UI, not the camera recording
         // This method is kept for compatibility but device orientation doesn't affect camera
@@ -484,6 +491,20 @@ class CameraService : Service(), LifecycleOwner {
             drawLabel(batteryText, alignRight = true, topOffset = padding)
         }
         
+        // Add resolution overlay in bottom right for debugging
+        if (showResolutionOverlay) {
+            val resolutionText = "${source.width}x${source.height}"
+            val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
+            val textWidth = textPaint.measureText(resolutionText)
+            val left = canvas.width - padding - textWidth - padding
+            val bottom = canvas.height.toFloat() - padding
+            val top = bottom - textHeight - padding
+            val right = canvas.width.toFloat() - padding
+            
+            canvas.drawRoundRect(left, top, right, bottom, 12f, 12f, bgPaint)
+            canvas.drawText(resolutionText, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
+        }
+        
         return mutable
     }
     
@@ -567,6 +588,7 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/setFormat" -> serveSetFormat(session)
                 uri == "/setCameraOrientation" -> serveSetCameraOrientation(session)
                 uri == "/setRotation" -> serveSetRotation(session)
+                uri == "/setResolutionOverlay" -> serveSetResolutionOverlay(session)
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -636,9 +658,16 @@ class CameraService : Service(), LifecycleOwner {
                             </select>
                             <button onclick="applyRotation()">Apply Rotation</button>
                         </div>
+                        <div class="row">
+                            <label>
+                                <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
+                                Show Resolution Overlay (Bottom Right)
+                            </label>
+                        </div>
                         <div class="note" id="formatStatus"></div>
                         <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
                         <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
+                        <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                         <h2>API Endpoints</h2>
                         <div class="endpoint">
                             <strong>Snapshot:</strong> <code>GET /snapshot</code><br>
@@ -671,6 +700,10 @@ class CameraService : Service(), LifecycleOwner {
                         <div class="endpoint">
                             <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
                             Rotate the video feed by the specified degrees
+                        </div>
+                        <div class="endpoint">
+                            <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
+                            Toggle resolution display in bottom right corner for debugging
                         </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
@@ -771,6 +804,21 @@ class CameraService : Service(), LifecycleOwner {
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to set rotation';
+                                });
+                        }
+
+                        function toggleResolutionOverlay() {
+                            const checkbox = document.getElementById('resolutionOverlayCheckbox');
+                            const value = checkbox.checked ? 'true' : 'false';
+                            const url = '/setResolutionOverlay?value=' + value;
+                            fetch(url)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    setTimeout(reloadStream, 200);
+                                })
+                                .catch(() => {
+                                    document.getElementById('formatStatus').textContent = 'Failed to toggle resolution overlay';
                                 });
                         }
 
@@ -886,7 +934,8 @@ class CameraService : Service(), LifecycleOwner {
                     "resolution": "${selectedResolution?.let { sizeLabel(it) } ?: "auto"}",
                     "cameraOrientation": "$cameraOrientation",
                     "rotation": "$rotation",
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation"]
+                    "showResolutionOverlay": $showResolutionOverlay,
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
                 }
             """.trimIndent()
             
@@ -1005,6 +1054,32 @@ class CameraService : Service(), LifecycleOwner {
                 Response.Status.OK,
                 "application/json",
                 """{"status":"ok","message":"$message","cameraOrientation":"$newOrientation"}"""
+            )
+        }
+        
+        private fun serveSetResolutionOverlay(session: IHTTPSession): Response {
+            val params = session.parameters
+            val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
+            
+            val showOverlay = when (value) {
+                "true", "1", "yes" -> true
+                "false", "0", "no", null -> false
+                else -> {
+                    return newFixedLengthResponse(
+                        Response.Status.BAD_REQUEST,
+                        "application/json",
+                        """{"status":"error","message":"Invalid value. Use true or false"}"""
+                    )
+                }
+            }
+            
+            showResolutionOverlay = showOverlay
+            val message = "Resolution overlay ${if (showOverlay) "enabled" else "disabled"}"
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"$message","showResolutionOverlay":$showOverlay}"""
             )
         }
     }
