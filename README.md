@@ -9,6 +9,8 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **HTTP Web Server**: Access the camera through any web browser
 - **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
 - **Camera Selection**: Switch between front and back cameras
+- **Configurable Formats**: Choose supported resolutions from the web UI
+- **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
 - **Low Latency**: Optimized for fast streaming (~10 fps)
 
@@ -69,6 +71,8 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /stream`** - MJPEG video stream
 - **`GET /switch`** - Switch between front and back camera (returns JSON)
 - **`GET /status`** - Get server status and camera information (returns JSON)
+- **`GET /formats`** - List supported resolutions for the active camera
+- **`GET /setFormat?value=WIDTHxHEIGHT`** - Apply a supported resolution (omit to return to auto)
 
 #### Example Usage
 
@@ -356,10 +360,11 @@ Old Android phones make excellent IP cameras because:
 ### How can I keep the phone running 24/7?
 For continuous operation:
 1. Keep the phone plugged into power (recommended: use original charger)
-2. Disable battery optimization for IP_Cam app in Android settings
-3. Set screen timeout to a reasonable value (or use "Stay Awake" developer option when charging)
-4. Ensure good ventilation to prevent overheating
-5. Consider removing the case if the phone gets too warm
+2. Disable battery optimization for IP_Cam in Settings > Battery > Battery optimization and allow background activity
+3. Lock/pin the app in the recent-apps view so the system does not swipe it away
+4. Set Wi-Fi to stay on during sleep and keep the device where signal is strong
+5. Set screen timeout to a reasonable value (or use "Stay Awake" developer option when charging)
+6. Ensure good ventilation to prevent overheating; remove the case if the phone gets too warm
 
 ### Is this secure to use?
 **Security considerations:**
@@ -378,4 +383,3 @@ For continuous operation:
 - **Image Quality**: JPEG compression at 80% quality
 - **Resolution**: Depends on your phone's camera (usually 1080p or higher)
 - Quality is a balance between bandwidth and visual clarity
-

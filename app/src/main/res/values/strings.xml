@@ -17,5 +17,7 @@
     <string name="endpoint_stream">GET /stream - Live MJPEG stream</string>
     <string name="endpoint_switch">GET /switch - Switch camera (front/back)</string>
     <string name="endpoint_status">GET /status - Server status and camera info</string>
+    <string name="endpoint_formats">GET /formats - List supported resolutions for the active camera</string>
+    <string name="endpoint_set_format">GET /setFormat?value=WIDTHxHEIGHT - Apply a supported resolution</string>
     <string name="camera_preview_description">Live camera preview</string>
 </resources>

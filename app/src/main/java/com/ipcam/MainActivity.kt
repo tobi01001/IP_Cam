@@ -102,6 +102,8 @@ class MainActivity : AppCompatActivity() {
             ${getString(R.string.endpoint_stream)}
             ${getString(R.string.endpoint_switch)}
             ${getString(R.string.endpoint_status)}
+            ${getString(R.string.endpoint_formats)}
+            ${getString(R.string.endpoint_set_format)}
         """.trimIndent()
         endpointsText.text = endpoints
     }
