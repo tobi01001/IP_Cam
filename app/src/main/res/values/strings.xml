@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">IP Camera</string>
+    <string name="start_server">Start Server</string>
+    <string name="stop_server">Stop Server</string>
+    <string name="server_status">Server Status: %s</string>
+    <string name="server_url">Server URL: %s</string>
+    <string name="camera_selection">Camera: %s</string>
+    <string name="switch_camera">Switch Camera</string>
+    <string name="camera_front">Front</string>
+    <string name="camera_back">Back</string>
+    <string name="status_stopped">Stopped</string>
+    <string name="status_running">Running</string>
+    <string name="permission_required">Camera permission is required</string>
+    <string name="endpoints_title">Available Endpoints:</string>
+    <string name="endpoint_snapshot">GET /snapshot - Capture a single image</string>
+    <string name="endpoint_stream">GET /stream - Live MJPEG stream</string>
+    <string name="endpoint_switch">GET /switch - Switch camera (front/back)</string>
+    <string name="endpoint_status">GET /status - Server status and camera info</string>
+</resources>
