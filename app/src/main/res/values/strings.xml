@@ -27,11 +27,14 @@
     <string name="resolution_label">Resolution:</string>
     <string name="resolution_auto">Auto (Default)</string>
     <string name="permission_not_granted">Permission not granted - cannot start server</string>
+    <string name="camera_orientation_label">Camera Orientation:</string>
+    <string name="camera_orientation_landscape">Landscape (Default)</string>
+    <string name="camera_orientation_portrait">Portrait</string>
     <string name="rotation_label">Rotation:</string>
-    <string name="rotation_auto">Auto (Follow Device)</string>
     <string name="rotation_0">0° (Normal)</string>
     <string name="rotation_90">90° (Right)</string>
     <string name="rotation_180">180° (Upside Down)</string>
     <string name="rotation_270">270° (Left)</string>
-    <string name="endpoint_rotation">GET /setRotation?value=auto|0|90|180|270 - Set rotation</string>
+    <string name="endpoint_camera_orientation">GET /setCameraOrientation?value=landscape|portrait - Set camera orientation</string>
+    <string name="endpoint_rotation">GET /setRotation?value=0|90|180|270 - Set rotation</string>
 </resources>
