@@ -69,6 +69,10 @@ class CameraService : Service(), LifecycleOwner {
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
+    // Cache display metrics and battery info to avoid Binder calls from HTTP threads
+    private var cachedDensity: Float = 0f
+    private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
+    private var lastBatteryUpdate: Long = 0
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -105,6 +109,8 @@ class CameraService : Service(), LifecycleOwner {
          private const val JPEG_QUALITY_STREAM = 75 // Balanced quality for streaming
          // Stream timing
          private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
+         // Battery cache update interval
+         private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
      }
      
      /**
@@ -170,6 +176,10 @@ class CameraService : Service(), LifecycleOwner {
         
         // Load saved settings
         loadSettings()
+        
+        // Cache display density to avoid Binder calls from HTTP threads
+        cachedDensity = resources.displayMetrics.density
+        updateBatteryCache()
         
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
@@ -701,7 +711,8 @@ class CameraService : Service(), LifecycleOwner {
     private fun annotateBitmap(source: Bitmap): Bitmap {
         val mutable = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
         val canvas = Canvas(mutable)
-        val density = resources.displayMetrics.density
+        // Use cached density to avoid Binder calls from HTTP threads
+        val density = cachedDensity
         val padding = 8f * density
         val textSize = 14f * density
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -715,7 +726,8 @@ class CameraService : Service(), LifecycleOwner {
             style = Paint.Style.FILL
         }
         val timeText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        val batteryInfo = getBatteryInfo()
+        // Use cached battery info to avoid Binder calls from HTTP threads
+        val batteryInfo = getCachedBatteryInfo()
         val batteryText = buildString {
             append(batteryInfo.level)
             append("%")
@@ -774,6 +786,22 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
+    
+    private fun updateBatteryCache() {
+        cachedBatteryInfo = getBatteryInfo()
+        lastBatteryUpdate = System.currentTimeMillis()
+    }
+    
+    private fun getCachedBatteryInfo(): BatteryInfo {
+        // Update battery cache if it's older than 30 seconds
+        if (System.currentTimeMillis() - lastBatteryUpdate > BATTERY_CACHE_UPDATE_INTERVAL_MS) {
+            // Schedule update on main thread to avoid Binder issues
+            serviceScope.launch(Dispatchers.Main) {
+                updateBatteryCache()
+            }
+        }
+        return cachedBatteryInfo
+    }
     
     private fun getBatteryInfo(): BatteryInfo {
         val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
