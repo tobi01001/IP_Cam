@@ -54,6 +54,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.atomic.AtomicInteger
 
 class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
@@ -96,6 +97,13 @@ class CameraService : Service(), LifecycleOwner {
          private const val HTTP_CORE_POOL_SIZE = 2
          private const val HTTP_MAX_POOL_SIZE = 8
          private const val HTTP_KEEP_ALIVE_TIME = 60L
+         private const val HTTP_QUEUE_CAPACITY = 50 // Max queued requests before rejecting
+         // JPEG compression quality settings
+         private const val JPEG_QUALITY_CAMERA = 70 // Lower quality to reduce memory pressure
+         private const val JPEG_QUALITY_SNAPSHOT = 85 // Higher quality for snapshots
+         private const val JPEG_QUALITY_STREAM = 75 // Balanced quality for streaming
+         // Stream timing
+         private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
      }
      
      /**
@@ -103,13 +111,14 @@ class CameraService : Service(), LifecycleOwner {
       * Prevents resource exhaustion from unbounded thread creation.
       */
     private inner class BoundedAsyncRunner : NanoHTTPD.AsyncRunner {
+        private val threadCounter = AtomicInteger(0)
         private val threadPoolExecutor = ThreadPoolExecutor(
             HTTP_CORE_POOL_SIZE,
             HTTP_MAX_POOL_SIZE,
             HTTP_KEEP_ALIVE_TIME,
             TimeUnit.SECONDS,
-            LinkedBlockingQueue(),
-            { r -> Thread(r, "NanoHttpd Request Thread") }
+            LinkedBlockingQueue(HTTP_QUEUE_CAPACITY),
+            { r -> Thread(r, "NanoHttpd-${threadCounter.incrementAndGet()}") }
         ).apply {
             // Allow core threads to timeout to conserve resources
             allowCoreThreadTimeOut(true)
@@ -422,8 +431,8 @@ class CameraService : Service(), LifecycleOwner {
         
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
         val out = ByteArrayOutputStream()
-        // Lower compression quality to 70 to reduce memory pressure and prevent SIGABRT
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 70, out)
+        // Lower compression quality to reduce memory pressure and prevent SIGABRT
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), JPEG_QUALITY_CAMERA, out)
         val imageBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
@@ -1087,8 +1096,8 @@ class CameraService : Service(), LifecycleOwner {
             
             return if (bitmap != null) {
                 val stream = ByteArrayOutputStream()
-                // Use 85% quality for snapshots for better image quality
-                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, 85, stream)
+                // Use higher quality for snapshots
+                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_SNAPSHOT, stream)
                 val bytes = stream.toByteArray()
                 newFixedLengthResponse(Response.Status.OK, "image/jpeg", bytes.inputStream(), bytes.size.toLong())
             } else {
@@ -1114,8 +1123,8 @@ class CameraService : Service(), LifecycleOwner {
                             try {
                                 val annotated = annotateBitmap(bitmap)
                                 val jpegStream = ByteArrayOutputStream()
-                                // Use 75% quality for streaming to reduce bandwidth while maintaining quality
-                                annotated.compress(Bitmap.CompressFormat.JPEG, 75, jpegStream)
+                                // Use balanced quality for streaming
+                                annotated.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, jpegStream)
                                 val jpegBytes = jpegStream.toByteArray()
                                 
                                 val frameStream = ByteArrayOutputStream()
@@ -1134,7 +1143,7 @@ class CameraService : Service(), LifecycleOwner {
                             
                             // Small delay for ~10 fps
                             try {
-                                Thread.sleep(100)
+                                Thread.sleep(STREAM_FRAME_DELAY_MS)
                             } catch (e: InterruptedException) {
                                 streamActive = false
                                 return -1
@@ -1143,7 +1152,7 @@ class CameraService : Service(), LifecycleOwner {
                         } else {
                             // No frame available, wait a bit and retry
                             try {
-                                Thread.sleep(100)
+                                Thread.sleep(STREAM_FRAME_DELAY_MS)
                             } catch (e: InterruptedException) {
                                 streamActive = false
                                 return -1
