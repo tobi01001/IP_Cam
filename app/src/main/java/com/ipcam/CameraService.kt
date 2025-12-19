@@ -340,17 +340,20 @@ class CameraService : Service(), LifecycleOwner {
             val finalBitmap = applyRotationCorrectly(bitmap)
             Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
             
+            // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
+            val annotatedBitmap = annotateBitmap(finalBitmap)
+            
             // Synchronized bitmap update to prevent concurrent access during recycle
             synchronized(bitmapLock) {
                 val oldBitmap = lastFrameBitmap
-                lastFrameBitmap = finalBitmap
+                lastFrameBitmap = annotatedBitmap
                 lastFrameTimestamp = System.currentTimeMillis()
                 // Recycle old bitmap after updating reference, checking if not already recycled
                 oldBitmap?.takeIf { !it.isRecycled }?.recycle()
             }
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
-            val safeConfig = finalBitmap.config ?: Bitmap.Config.ARGB_8888
-            onFrameAvailableCallback?.invoke(annotateBitmap(finalBitmap).copy(safeConfig, false))
+            val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
+            onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
@@ -717,7 +720,19 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun annotateBitmap(source: Bitmap): Bitmap {
-        val mutable = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
+        // Safety check: return source if already recycled
+        if (source.isRecycled) {
+            Log.w(TAG, "annotateBitmap called with recycled bitmap")
+            return source
+        }
+        
+        val mutable = try {
+            source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to copy bitmap for annotation", e)
+            return source
+        }
+        
         val canvas = Canvas(mutable)
         // Use cached density to avoid Binder calls from HTTP threads
         val density = cachedDensity
@@ -1147,8 +1162,8 @@ class CameraService : Service(), LifecycleOwner {
             
             return if (bitmap != null) {
                 val stream = ByteArrayOutputStream()
-                // Use higher quality for snapshots
-                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_SNAPSHOT, stream)
+                // Bitmap is already annotated in processImage, just compress it
+                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_SNAPSHOT, stream)
                 val bytes = stream.toByteArray()
                 newFixedLengthResponse(Response.Status.OK, "image/jpeg", bytes.inputStream(), bytes.size.toLong())
             } else {
@@ -1172,10 +1187,9 @@ class CameraService : Service(), LifecycleOwner {
                         
                         if (bitmap != null) {
                             try {
-                                val annotated = annotateBitmap(bitmap)
+                                // Bitmap is already annotated in processImage, just compress it
                                 val jpegStream = ByteArrayOutputStream()
-                                // Use balanced quality for streaming
-                                annotated.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, jpegStream)
+                                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, jpegStream)
                                 val jpegBytes = jpegStream.toByteArray()
                                 
                                 val frameStream = ByteArrayOutputStream()
