@@ -905,7 +905,7 @@ class CameraService : Service(), LifecycleOwner {
             val top = topOffset
             val right = if (alignRight) canvas.width - padding else padding + textWidth + padding
             val bottom = top + textHeight + padding
-            canvas.drawRoundRect(left, top, right, bottom, 12f, 12f, bgPaint)
+
             canvas.drawText(text, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
         }
         

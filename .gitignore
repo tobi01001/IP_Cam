@@ -94,3 +94,4 @@ lint/tmp/
 /.idea/misc.xml
 /.idea/runConfigurations.xml
 /.idea/.gitignore
+/.idea/deviceManager.xml
