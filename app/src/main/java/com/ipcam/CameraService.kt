@@ -88,7 +88,7 @@ class CameraService : Service(), LifecycleOwner {
     private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
-    private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
+    @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -293,15 +293,6 @@ class CameraService : Service(), LifecycleOwner {
         return null
     }
     
-    /**
-     * Check if the port is being used by this app instance.
-     * @param port The port to check
-     * @return true if this app's server is already running on the port
-     */
-    private fun isPortUsedByThisApp(port: Int): Boolean {
-        return httpServer?.isAlive == true && actualPort == port
-    }
-    
     private fun createNotification(contentText: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -332,13 +323,6 @@ class CameraService : Service(), LifecycleOwner {
             
             // Stop any existing server instance
             httpServer?.stop()
-            
-            // Check if the preferred port is being used by another instance of this app
-            if (isPortUsedByThisApp(PORT)) {
-                Log.d(TAG, "Port $PORT is already in use by this app instance. Reusing existing server.")
-                updateNotification("Server running on port $actualPort")
-                return
-            }
             
             // Try to find an available port, starting with the preferred port
             val availablePort = findAvailablePort(PORT)
