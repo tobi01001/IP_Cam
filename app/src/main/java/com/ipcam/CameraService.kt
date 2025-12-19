@@ -73,6 +73,7 @@ class CameraService : Service(), LifecycleOwner {
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
     private var lastBatteryUpdate: Long = 0
+    @Volatile private var batteryUpdatePending: Boolean = false
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -179,7 +180,14 @@ class CameraService : Service(), LifecycleOwner {
         
         // Cache display density to avoid Binder calls from HTTP threads
         cachedDensity = resources.displayMetrics.density
-        updateBatteryCache()
+        // Schedule initial battery cache update to ensure context is initialized
+        serviceScope.launch(Dispatchers.Main) {
+            try {
+                updateBatteryCache()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to initialize battery cache", e)
+            }
+        }
         
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
@@ -793,11 +801,19 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun getCachedBatteryInfo(): BatteryInfo {
-        // Update battery cache if it's older than 30 seconds
-        if (System.currentTimeMillis() - lastBatteryUpdate > BATTERY_CACHE_UPDATE_INTERVAL_MS) {
+        // Update battery cache if it's older than 30 seconds and no update is pending
+        if (System.currentTimeMillis() - lastBatteryUpdate > BATTERY_CACHE_UPDATE_INTERVAL_MS 
+            && !batteryUpdatePending) {
+            batteryUpdatePending = true
             // Schedule update on main thread to avoid Binder issues
             serviceScope.launch(Dispatchers.Main) {
-                updateBatteryCache()
+                try {
+                    updateBatteryCache()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to update battery cache", e)
+                } finally {
+                    batteryUpdatePending = false
+                }
             }
         }
         return cachedBatteryInfo
