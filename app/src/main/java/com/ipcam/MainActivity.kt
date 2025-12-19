@@ -46,6 +46,11 @@ class MainActivity : AppCompatActivity() {
     private var isServiceBound = false
     private var hasCameraPermission = false
     
+    companion object {
+        private const val PREFS_NAME = "IPCamSettings"
+        private const val PREF_AUTO_START = "autoStartServer"
+    }
+    
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -399,24 +404,35 @@ class MainActivity : AppCompatActivity() {
     
     private fun setupAutoStartCheckBox() {
         // Load saved autostart preference
-        val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean("autoStartServer", false)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         autoStartCheckBox.isChecked = autoStart
         
         // Save preference when changed
         autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
-            prefs.edit().putBoolean("autoStartServer", isChecked).apply()
+            prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
             Log.d("MainActivity", "Auto-start preference changed to: $isChecked")
         }
     }
     
     private fun checkAutoStart() {
-        val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean("autoStartServer", false)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         
-        if (autoStart && hasCameraPermission && cameraService?.isServerRunning() != true) {
-            Log.d("MainActivity", "Auto-starting server")
-            startServer()
+        // Only auto-start if:
+        // 1. Auto-start is enabled
+        // 2. Camera permission is granted
+        // 3. Server is not already running (could be running from boot receiver)
+        if (autoStart && hasCameraPermission) {
+            // Check if service is already running by trying to bind
+            val isServiceRunning = cameraService?.isServerRunning() == true
+            
+            if (!isServiceRunning) {
+                Log.d("MainActivity", "Auto-starting server")
+                startServer()
+            } else {
+                Log.d("MainActivity", "Server already running, skipping auto-start")
+            }
         }
     }
     

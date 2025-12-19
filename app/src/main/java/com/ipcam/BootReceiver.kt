@@ -9,6 +9,8 @@ import androidx.core.content.ContextCompat
 class BootReceiver : BroadcastReceiver() {
     companion object {
         private const val TAG = "BootReceiver"
+        private const val PREFS_NAME = "IPCamSettings"
+        private const val PREF_AUTO_START = "autoStartServer"
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -18,11 +20,13 @@ class BootReceiver : BroadcastReceiver() {
             Log.d(TAG, "Boot completed, checking autostart preference")
             
             // Check if autostart is enabled
-            val prefs = context.getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
-            val autoStart = prefs.getBoolean("autoStartServer", false)
+            val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
             
             if (autoStart) {
                 Log.d(TAG, "Autostart enabled, starting CameraService")
+                // Note: Service will check for camera permission on startup and handle accordingly
+                // The service is designed to handle missing permissions gracefully
                 val serviceIntent = Intent(context, CameraService::class.java)
                 try {
                     ContextCompat.startForegroundService(context, serviceIntent)
