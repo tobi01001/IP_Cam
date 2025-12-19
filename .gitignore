@@ -86,3 +86,11 @@ lint/tmp/
 
 # Android Profiling
 *.hprof
+/.idea/AndroidProjectSystem.xml
+/.idea/compiler.xml
+/.idea/deploymentTargetSelector.xml
+/.idea/markdown.xml
+/.idea/migrations.xml
+/.idea/misc.xml
+/.idea/runConfigurations.xml
+/.idea/.gitignore
