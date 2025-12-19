@@ -287,6 +287,11 @@ class CameraService : Service(), LifecycleOwner {
             }
             port++
             attempts++
+            
+            // Ensure we don't exceed MAX_PORT after increment
+            if (port > MAX_PORT) {
+                break
+            }
         }
         
         Log.e(TAG, "Could not find available port after $attempts attempts starting from $startPort")
