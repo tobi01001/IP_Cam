@@ -54,6 +54,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 
 class CameraService : Service(), LifecycleOwner {
@@ -118,7 +119,8 @@ class CameraService : Service(), LifecycleOwner {
             HTTP_KEEP_ALIVE_TIME,
             TimeUnit.SECONDS,
             LinkedBlockingQueue(HTTP_QUEUE_CAPACITY),
-            { r -> Thread(r, "NanoHttpd-${threadCounter.incrementAndGet()}") }
+            { r -> Thread(r, "NanoHttpd-${threadCounter.incrementAndGet()}") },
+            ThreadPoolExecutor.CallerRunsPolicy() // Graceful degradation under load
         ).apply {
             // Allow core threads to timeout to conserve resources
             allowCoreThreadTimeOut(true)
@@ -141,7 +143,12 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         override fun exec(code: NanoHTTPD.ClientHandler?) {
-            code?.let { threadPoolExecutor.execute(it) }
+            try {
+                code?.let { threadPoolExecutor.execute(it) }
+            } catch (e: RejectedExecutionException) {
+                Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
+                // Request will be dropped - client will need to retry
+            }
         }
     }
     
