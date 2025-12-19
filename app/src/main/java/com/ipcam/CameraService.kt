@@ -46,6 +46,7 @@ import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.ByteBuffer
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -167,6 +168,19 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
+    private fun isPortAvailable(port: Int): Boolean {
+        return try {
+            ServerSocket(port).use { 
+                // Port is available
+                true
+            }
+        } catch (e: IOException) {
+            // Port is already in use
+            Log.w(TAG, "Port $port is not available: ${e.message}")
+            false
+        }
+    }
+    
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -187,7 +201,15 @@ class CameraService : Service(), LifecycleOwner {
     
     private fun startServer() {
         try {
+            // Stop existing server if running
             httpServer?.stop()
+            
+            // Check if port is available (only if server is not already running)
+            if (httpServer == null && !isPortAvailable(PORT)) {
+                Log.e(TAG, "Port $PORT is not available. Cannot start server.")
+                return
+            }
+            
             httpServer = CameraHttpServer(PORT)
             httpServer?.start()
             Log.d(TAG, "Server started on port $PORT")
@@ -817,6 +839,8 @@ class CameraService : Service(), LifecycleOwner {
                         button:hover { background-color: #45a049; }
                         .endpoint { background-color: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #4CAF50; }
                         code { background-color: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
+                        .endpoint a { color: #1976D2; text-decoration: none; font-weight: 500; }
+                        .endpoint a:hover { text-decoration: underline; color: #1565C0; }
                         .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
                         select { padding: 8px; border-radius: 4px; }
                         .note { font-size: 13px; color: #444; }
@@ -864,40 +888,40 @@ class CameraService : Service(), LifecycleOwner {
                         <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                         <h2>API Endpoints</h2>
                         <div class="endpoint">
-                            <strong>Snapshot:</strong> <code>GET /snapshot</code><br>
+                            <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
                             Returns a single JPEG image
                         </div>
                         <div class="endpoint">
-                            <strong>Stream:</strong> <code>GET /stream</code><br>
+                            <strong>Stream:</strong> <a href="/stream" target="_blank"><code>GET /stream</code></a><br>
                             Returns MJPEG stream
                         </div>
                         <div class="endpoint">
-                            <strong>Switch Camera:</strong> <code>GET /switch</code><br>
+                            <strong>Switch Camera:</strong> <a href="/switch" target="_blank"><code>GET /switch</code></a><br>
                             Switches between front and back camera
                         </div>
                         <div class="endpoint">
-                            <strong>Status:</strong> <code>GET /status</code><br>
+                            <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
                             Returns server status as JSON
                         </div>
                         <div class="endpoint">
-                            <strong>Formats:</strong> <code>GET /formats</code><br>
+                            <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
                             Lists supported camera resolutions for the active lens
                         </div>
                         <div class="endpoint">
                             <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
-                            Apply a supported resolution (or omit to return to auto)
+                            Apply a supported resolution (or omit to return to auto). Requires <code>value</code> parameter.
                         </div>
                         <div class="endpoint">
                             <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
-                            Set the base camera recording mode (landscape or portrait)
+                            Set the base camera recording mode (landscape or portrait). Requires <code>value</code> parameter.
                         </div>
                         <div class="endpoint">
                             <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
-                            Rotate the video feed by the specified degrees
+                            Rotate the video feed by the specified degrees. Requires <code>value</code> parameter.
                         </div>
                         <div class="endpoint">
                             <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
-                            Toggle resolution display in bottom right corner for debugging
+                            Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
                         </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
