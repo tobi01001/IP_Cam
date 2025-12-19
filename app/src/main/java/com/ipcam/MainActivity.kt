@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.util.Size
 import android.view.View
 import android.widget.AdapterView
@@ -39,10 +40,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var rotationSpinner: Spinner
     private lateinit var switchCameraButton: Button
     private lateinit var startStopButton: Button
+    private lateinit var autoStartCheckBox: android.widget.CheckBox
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
     private var hasCameraPermission = false
+    
+    companion object {
+        private const val PREFS_NAME = "IPCamSettings"
+        private const val PREF_AUTO_START = "autoStartServer"
+    }
     
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -114,11 +121,13 @@ class MainActivity : AppCompatActivity() {
         rotationSpinner = findViewById(R.id.rotationSpinner)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         startStopButton = findViewById(R.id.startStopButton)
+        autoStartCheckBox = findViewById(R.id.autoStartCheckBox)
         
         setupEndpointsText()
         setupResolutionSpinner()
         setupCameraOrientationSpinner()
         setupRotationSpinner()
+        setupAutoStartCheckBox()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -130,6 +139,9 @@ class MainActivity : AppCompatActivity() {
         
         checkCameraPermission()
         checkBatteryOptimization()
+        
+        // Auto-start server if enabled
+        checkAutoStart()
     }
     
     private fun setupEndpointsText() {
@@ -388,6 +400,40 @@ class MainActivity : AppCompatActivity() {
         }
         
         service.setCameraOrientation(orientation)
+    }
+    
+    private fun setupAutoStartCheckBox() {
+        // Load saved autostart preference
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        autoStartCheckBox.isChecked = autoStart
+        
+        // Save preference when changed
+        autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
+            Log.d("MainActivity", "Auto-start preference changed to: $isChecked")
+        }
+    }
+    
+    private fun checkAutoStart() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        
+        // Only auto-start if:
+        // 1. Auto-start is enabled
+        // 2. Camera permission is granted
+        // 3. Server is not already running (could be running from boot receiver)
+        if (autoStart && hasCameraPermission) {
+            // Check if service is already running by trying to bind
+            val isServiceRunning = cameraService?.isServerRunning() == true
+            
+            if (!isServiceRunning) {
+                Log.d("MainActivity", "Auto-starting server")
+                startServer()
+            } else {
+                Log.d("MainActivity", "Server already running, skipping auto-start")
+            }
+        }
     }
     
     private fun switchCamera() {

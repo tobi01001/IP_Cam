@@ -37,4 +37,5 @@
     <string name="rotation_270">270° (Left)</string>
     <string name="endpoint_camera_orientation">GET /setCameraOrientation?value=landscape|portrait - Set camera orientation</string>
     <string name="endpoint_rotation">GET /setRotation?value=0|90|180|270 - Set rotation</string>
+    <string name="auto_start_server">Auto-start server on app launch and device boot</string>
 </resources>
