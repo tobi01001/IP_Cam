@@ -75,10 +75,12 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /snapshot`** - Capture and return a single JPEG image
 - **`GET /stream`** - MJPEG video stream
 - **`GET /switch`** - Switch between front and back camera (returns JSON)
-- **`GET /status`** - Get server status and camera information (returns JSON)
+- **`GET /status`** - Get server status and camera information (returns JSON with connection info)
 - **`GET /formats`** - List supported resolutions for the active camera
 - **`GET /setFormat?value=WIDTHxHEIGHT`** - Apply a supported resolution (omit to return to auto)
-- **`GET /setRotation?value=auto|0|90|180|270`** - Set camera rotation (auto follows device orientation)
+- **`GET /setCameraOrientation?value=landscape|portrait`** - Set camera recording mode
+- **`GET /setRotation?value=0|90|180|270`** - Set camera rotation
+- **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
 
 #### Example Usage
 
@@ -200,6 +202,40 @@ Settings persist across:
 3. **Use airplane mode + WiFi** to reduce cellular radio activity and heat
 4. **Mount device** in a location with good ventilation
 5. **Monitor temperature** to prevent overheating
+
+### Connection Limits and Monitoring
+
+IP_Cam uses a bounded thread pool to handle concurrent client connections efficiently while preventing resource exhaustion.
+
+#### Connection Limits
+- **Maximum parallel connections**: 8 simultaneous active connections
+- **Queue capacity**: Up to 50 requests can be queued when all threads are busy
+- **Rejection policy**: Requests beyond the queue limit are gracefully rejected
+
+These limits are designed for typical IP camera use cases on mobile devices and balance performance with resource constraints.
+
+#### Monitoring Active Connections
+The web interface displays real-time connection information:
+- **Status Display**: Shows "Active Connections: X/8" in the web UI header
+- **Auto-refresh**: Connection count updates every 2 seconds
+- **Status Endpoint**: The `/status` API endpoint includes connection information:
+
+```json
+{
+  "status": "running",
+  "camera": "back",
+  "activeConnections": 3,
+  "maxConnections": 8,
+  "connections": "3/8",
+  ...
+}
+```
+
+#### Adjusting Connection Limits
+To modify the connection limits (e.g., for devices with more resources):
+1. Edit `HTTP_MAX_POOL_SIZE` constant in `CameraService.kt`
+2. Test thoroughly on target hardware to ensure stability
+3. Consider memory, CPU capacity, and thermal limits
 
 ### Integration with Surveillance Systems
 

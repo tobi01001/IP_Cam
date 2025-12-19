@@ -107,6 +107,8 @@ class CameraService : Service(), LifecycleOwner {
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
          // Thread pool settings for NanoHTTPD
+         // Maximum parallel connections: HTTP_MAX_POOL_SIZE (8 concurrent connections)
+         // Requests beyond max are queued up to HTTP_QUEUE_CAPACITY (50), then rejected
          private const val HTTP_CORE_POOL_SIZE = 2
          private const val HTTP_MAX_POOL_SIZE = 8
          private const val HTTP_KEEP_ALIVE_TIME = 60L
