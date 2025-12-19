@@ -169,15 +169,19 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun isPortAvailable(port: Int): Boolean {
+        var serverSocket: ServerSocket? = null
         return try {
-            ServerSocket(port).use { 
-                // Port is available
-                true
-            }
+            // Create a server socket to check if the port is available
+            serverSocket = ServerSocket(port)
+            serverSocket.reuseAddress = true
+            true
         } catch (e: IOException) {
             // Port is already in use
             Log.w(TAG, "Port $port is not available: ${e.message}")
             false
+        } finally {
+            // Always close the socket
+            serverSocket?.close()
         }
     }
     
@@ -201,11 +205,17 @@ class CameraService : Service(), LifecycleOwner {
     
     private fun startServer() {
         try {
-            // Stop existing server if running
+            // If server is already running, just return
+            if (httpServer?.isAlive == true) {
+                Log.d(TAG, "Server is already running on port $PORT")
+                return
+            }
+            
+            // Stop any existing server instance
             httpServer?.stop()
             
-            // Check if port is available (only if server is not already running)
-            if (httpServer == null && !isPortAvailable(PORT)) {
+            // Check if port is available before attempting to start
+            if (!isPortAvailable(PORT)) {
                 Log.e(TAG, "Port $PORT is not available. Cannot start server.")
                 return
             }
