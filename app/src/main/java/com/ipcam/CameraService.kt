@@ -52,18 +52,31 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicInteger
 
 class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
     @Volatile private var httpServer: CameraHttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
-    private var lastFrameBitmap: Bitmap? = null
+    private var lastFrameBitmap: Bitmap? = null // For MainActivity preview only
+    @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
     @Volatile private var lastFrameTimestamp: Long = 0
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var cameraProvider: ProcessCameraProvider? = null
+    private val bitmapLock = Any() // Lock for bitmap access synchronization
+    private val jpegLock = Any() // Lock for JPEG bytes access
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
+    // Cache display metrics and battery info to avoid Binder calls from HTTP threads
+    private var cachedDensity: Float = 0f
+    private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
+    private var lastBatteryUpdate: Long = 0
+    @Volatile private var batteryUpdatePending: Boolean = false
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -89,7 +102,65 @@ class CameraService : Service(), LifecycleOwner {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         // Thread pool settings for NanoHTTPD
+         private const val HTTP_CORE_POOL_SIZE = 2
+         private const val HTTP_MAX_POOL_SIZE = 8
+         private const val HTTP_KEEP_ALIVE_TIME = 60L
+         private const val HTTP_QUEUE_CAPACITY = 50 // Max queued requests before rejecting
+         // JPEG compression quality settings
+         private const val JPEG_QUALITY_CAMERA = 70 // Lower quality to reduce memory pressure
+         private const val JPEG_QUALITY_SNAPSHOT = 85 // Higher quality for snapshots
+         private const val JPEG_QUALITY_STREAM = 75 // Balanced quality for streaming
+         // Stream timing
+         private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
+         // Battery cache update interval
+         private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
      }
+     
+     /**
+      * Custom AsyncRunner for NanoHTTPD with bounded thread pool.
+      * Prevents resource exhaustion from unbounded thread creation.
+      */
+    private inner class BoundedAsyncRunner : NanoHTTPD.AsyncRunner {
+        private val threadCounter = AtomicInteger(0)
+        private val threadPoolExecutor = ThreadPoolExecutor(
+            HTTP_CORE_POOL_SIZE,
+            HTTP_MAX_POOL_SIZE,
+            HTTP_KEEP_ALIVE_TIME,
+            TimeUnit.SECONDS,
+            LinkedBlockingQueue(HTTP_QUEUE_CAPACITY),
+            { r -> Thread(r, "NanoHttpd-${threadCounter.incrementAndGet()}") },
+            ThreadPoolExecutor.CallerRunsPolicy() // Graceful degradation under load
+        ).apply {
+            // Allow core threads to timeout to conserve resources
+            allowCoreThreadTimeOut(true)
+        }
+        
+        override fun closeAll() {
+            threadPoolExecutor.shutdown()
+            try {
+                if (!threadPoolExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    threadPoolExecutor.shutdownNow()
+                }
+            } catch (e: InterruptedException) {
+                threadPoolExecutor.shutdownNow()
+                Thread.currentThread().interrupt()
+            }
+        }
+        
+        override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
+            // Client handler cleanup is handled by NanoHTTPD
+        }
+        
+        override fun exec(code: NanoHTTPD.ClientHandler?) {
+            try {
+                code?.let { threadPoolExecutor.execute(it) }
+            } catch (e: RejectedExecutionException) {
+                Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
+                // Request will be dropped - client will need to retry
+            }
+        }
+    }
     
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -109,6 +180,17 @@ class CameraService : Service(), LifecycleOwner {
         
         // Load saved settings
         loadSettings()
+        
+        // Cache display density to avoid Binder calls from HTTP threads
+        cachedDensity = resources.displayMetrics.density
+        // Schedule initial battery cache update to ensure context is initialized
+        serviceScope.launch(Dispatchers.Main) {
+            try {
+                updateBatteryCache()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to initialize battery cache", e)
+            }
+        }
         
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
@@ -221,8 +303,12 @@ class CameraService : Service(), LifecycleOwner {
             }
             
             httpServer = CameraHttpServer(PORT)
+            httpServer = CameraHttpServer(PORT).apply {
+                // Use custom bounded thread pool to prevent resource exhaustion
+                setAsyncRunner(BoundedAsyncRunner())
+            }
             httpServer?.start()
-            Log.d(TAG, "Server started on port $PORT")
+            Log.d(TAG, "Server started on port $PORT with bounded thread pool")
         } catch (e: IOException) {
             Log.e(TAG, "Failed to start server", e)
         }
@@ -289,14 +375,31 @@ class CameraService : Service(), LifecycleOwner {
             val finalBitmap = applyRotationCorrectly(bitmap)
             Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
             
-            synchronized(this) {
-                lastFrameBitmap?.recycle()
-                lastFrameBitmap = finalBitmap
+            // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
+            val annotatedBitmap = annotateBitmap(finalBitmap)
+            
+            // Pre-compress to JPEG for HTTP serving (avoid Bitmap.compress on HTTP threads)
+            val jpegBytes = ByteArrayOutputStream().use { stream ->
+                annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, stream)
+                stream.toByteArray()
+            }
+            
+            // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
+            synchronized(bitmapLock) {
+                val oldBitmap = lastFrameBitmap
+                lastFrameBitmap = annotatedBitmap
+                // Recycle old bitmap after updating reference, checking if not already recycled
+                oldBitmap?.takeIf { !it.isRecycled }?.recycle()
+            }
+            
+            synchronized(jpegLock) {
+                lastFrameJpegBytes = jpegBytes
                 lastFrameTimestamp = System.currentTimeMillis()
             }
+            
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
-            val safeConfig = finalBitmap.config ?: Bitmap.Config.ARGB_8888
-            onFrameAvailableCallback?.invoke(annotateBitmap(finalBitmap).copy(safeConfig, false))
+            val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
+            onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
         } finally {
@@ -402,8 +505,8 @@ class CameraService : Service(), LifecycleOwner {
         
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
         val out = ByteArrayOutputStream()
-        // Increase compression quality to 85 for better image quality
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
+        // Lower compression quality to reduce memory pressure and prevent SIGABRT
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), JPEG_QUALITY_CAMERA, out)
         val imageBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
@@ -551,7 +654,13 @@ class CameraService : Service(), LifecycleOwner {
         httpServer?.stop()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
-        lastFrameBitmap?.recycle()
+        synchronized(bitmapLock) {
+            lastFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+            lastFrameBitmap = null
+        }
+        synchronized(jpegLock) {
+            lastFrameJpegBytes = null
+        }
         serviceScope.cancel()
         wakeLock?.let { if (it.isHeld) it.release() }
         wifiLock?.let { if (it.isHeld) it.release() }
@@ -660,9 +769,22 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun annotateBitmap(source: Bitmap): Bitmap {
-        val mutable = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
+        // Safety check: return source if already recycled
+        if (source.isRecycled) {
+            Log.w(TAG, "annotateBitmap called with recycled bitmap")
+            return source
+        }
+        
+        val mutable = try {
+            source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to copy bitmap for annotation", e)
+            return source
+        }
+        
         val canvas = Canvas(mutable)
-        val density = resources.displayMetrics.density
+        // Use cached density to avoid Binder calls from HTTP threads
+        val density = cachedDensity
         val padding = 8f * density
         val textSize = 14f * density
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -676,7 +798,8 @@ class CameraService : Service(), LifecycleOwner {
             style = Paint.Style.FILL
         }
         val timeText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        val batteryInfo = getBatteryInfo()
+        // Use cached battery info to avoid Binder calls from HTTP threads
+        val batteryInfo = getCachedBatteryInfo()
         val batteryText = buildString {
             append(batteryInfo.level)
             append("%")
@@ -735,6 +858,30 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
+    
+    private fun updateBatteryCache() {
+        cachedBatteryInfo = getBatteryInfo()
+        lastBatteryUpdate = System.currentTimeMillis()
+    }
+    
+    private fun getCachedBatteryInfo(): BatteryInfo {
+        // Update battery cache if it's older than 30 seconds and no update is pending
+        if (System.currentTimeMillis() - lastBatteryUpdate > BATTERY_CACHE_UPDATE_INTERVAL_MS 
+            && !batteryUpdatePending) {
+            batteryUpdatePending = true
+            // Schedule update on main thread to avoid Binder issues
+            serviceScope.launch(Dispatchers.Main) {
+                try {
+                    updateBatteryCache()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to update battery cache", e)
+                } finally {
+                    batteryUpdatePending = false
+                }
+            }
+        }
+        return cachedBatteryInfo
+    }
     
     private fun getBatteryInfo(): BatteryInfo {
         val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
@@ -1060,14 +1207,13 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveSnapshot(): Response {
-            val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+            // Use pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
+            val jpegBytes = synchronized(jpegLock) { 
+                lastFrameJpegBytes
+            }
             
-            return if (bitmap != null) {
-                val stream = ByteArrayOutputStream()
-                // Use 85% quality for snapshots for better image quality
-                annotateBitmap(bitmap).compress(Bitmap.CompressFormat.JPEG, 85, stream)
-                val bytes = stream.toByteArray()
-                newFixedLengthResponse(Response.Status.OK, "image/jpeg", bytes.inputStream(), bytes.size.toLong())
+            return if (jpegBytes != null) {
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", jpegBytes.inputStream(), jpegBytes.size.toLong())
             } else {
                 newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, MIME_PLAINTEXT, "No frame available")
             }
@@ -1078,48 +1224,53 @@ class CameraService : Service(), LifecycleOwner {
             val inputStream = object : java.io.InputStream() {
                 private var buffer = ByteArray(0)
                 private var position = 0
+                private var streamActive = true
                 
                 override fun read(): Int {
-                    while (position >= buffer.size) {
-                        // Generate next frame
-                        val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+                    while (position >= buffer.size && streamActive) {
+                        // Get pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
+                        val jpegBytes = synchronized(jpegLock) { 
+                            lastFrameJpegBytes
+                        }
                         
-                        if (bitmap != null) {
-                            val annotated = annotateBitmap(bitmap)
-                            val jpegStream = ByteArrayOutputStream()
-                            // Use 75% quality for streaming to reduce bandwidth while maintaining quality
-                            annotated.compress(Bitmap.CompressFormat.JPEG, 75, jpegStream)
-                            val jpegBytes = jpegStream.toByteArray()
-                            
-                            val frameStream = ByteArrayOutputStream()
-                            frameStream.write("--jpgboundary\r\n".toByteArray())
-                            frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                            frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
-                            frameStream.write(jpegBytes)
-                            frameStream.write("\r\n".toByteArray())
-                            
-                            buffer = frameStream.toByteArray()
-                            position = 0
+                        if (jpegBytes != null) {
+                            try {
+                                // Just package the pre-compressed JPEG bytes
+                                val frameStream = ByteArrayOutputStream()
+                                frameStream.write("--jpgboundary\r\n".toByteArray())
+                                frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                                frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
+                                frameStream.write(jpegBytes)
+                                frameStream.write("\r\n".toByteArray())
+                                
+                                buffer = frameStream.toByteArray()
+                                position = 0
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error packaging frame for stream", e)
+                                // Continue to retry on next iteration
+                            }
                             
                             // Small delay for ~10 fps
                             try {
-                                Thread.sleep(100)
+                                Thread.sleep(STREAM_FRAME_DELAY_MS)
                             } catch (e: InterruptedException) {
+                                streamActive = false
                                 return -1
                             }
                             break
                         } else {
                             // No frame available, wait a bit and retry
                             try {
-                                Thread.sleep(100)
+                                Thread.sleep(STREAM_FRAME_DELAY_MS)
                             } catch (e: InterruptedException) {
+                                streamActive = false
                                 return -1
                             }
                             // Continue loop to retry
                         }
                     }
                     
-                    return if (position < buffer.size) {
+                    return if (position < buffer.size && streamActive) {
                         buffer[position++].toInt() and 0xFF
                     } else {
                         -1
@@ -1127,7 +1278,12 @@ class CameraService : Service(), LifecycleOwner {
                 }
                 
                 override fun available(): Int {
-                    return buffer.size - position
+                    return if (streamActive) buffer.size - position else 0
+                }
+                
+                override fun close() {
+                    streamActive = false
+                    super.close()
                 }
             }
             
