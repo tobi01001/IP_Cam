@@ -171,12 +171,13 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         override fun exec(code: NanoHTTPD.ClientHandler?) {
+            if (code == null) return
+            
+            // Increment active connection counter when a new client handler starts
+            activeConnections.incrementAndGet()
+            
             try {
-                code?.let { 
-                    // Increment active connection counter when a new client handler starts
-                    activeConnections.incrementAndGet()
-                    threadPoolExecutor.execute(it) 
-                }
+                threadPoolExecutor.execute(code)
             } catch (e: RejectedExecutionException) {
                 Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
                 // Decrement counter since the connection won't be processed
