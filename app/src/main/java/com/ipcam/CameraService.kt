@@ -51,6 +51,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.LinkedBlockingQueue
 
 class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
@@ -60,6 +63,7 @@ class CameraService : Service(), LifecycleOwner {
     @Volatile private var lastFrameTimestamp: Long = 0
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var cameraProvider: ProcessCameraProvider? = null
+    private val bitmapLock = Any() // Lock for bitmap access synchronization
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
@@ -88,7 +92,49 @@ class CameraService : Service(), LifecycleOwner {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         // Thread pool settings for NanoHTTPD
+         private const val HTTP_CORE_POOL_SIZE = 2
+         private const val HTTP_MAX_POOL_SIZE = 8
+         private const val HTTP_KEEP_ALIVE_TIME = 60L
      }
+     
+     /**
+      * Custom AsyncRunner for NanoHTTPD with bounded thread pool.
+      * Prevents resource exhaustion from unbounded thread creation.
+      */
+    private inner class BoundedAsyncRunner : NanoHTTPD.AsyncRunner {
+        private val threadPoolExecutor = ThreadPoolExecutor(
+            HTTP_CORE_POOL_SIZE,
+            HTTP_MAX_POOL_SIZE,
+            HTTP_KEEP_ALIVE_TIME,
+            TimeUnit.SECONDS,
+            LinkedBlockingQueue(),
+            { r -> Thread(r, "NanoHttpd Request Thread") }
+        ).apply {
+            // Allow core threads to timeout to conserve resources
+            allowCoreThreadTimeOut(true)
+        }
+        
+        override fun closeAll() {
+            threadPoolExecutor.shutdown()
+            try {
+                if (!threadPoolExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                    threadPoolExecutor.shutdownNow()
+                }
+            } catch (e: InterruptedException) {
+                threadPoolExecutor.shutdownNow()
+                Thread.currentThread().interrupt()
+            }
+        }
+        
+        override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
+            // Client handler cleanup is handled by NanoHTTPD
+        }
+        
+        override fun exec(code: NanoHTTPD.ClientHandler?) {
+            code?.let { threadPoolExecutor.execute(it) }
+        }
+    }
     
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
@@ -188,9 +234,12 @@ class CameraService : Service(), LifecycleOwner {
     private fun startServer() {
         try {
             httpServer?.stop()
-            httpServer = CameraHttpServer(PORT)
+            httpServer = CameraHttpServer(PORT).apply {
+                // Use custom bounded thread pool to prevent resource exhaustion
+                setAsyncRunner(BoundedAsyncRunner())
+            }
             httpServer?.start()
-            Log.d(TAG, "Server started on port $PORT")
+            Log.d(TAG, "Server started on port $PORT with bounded thread pool")
         } catch (e: IOException) {
             Log.e(TAG, "Failed to start server", e)
         }
@@ -257,10 +306,13 @@ class CameraService : Service(), LifecycleOwner {
             val finalBitmap = applyRotationCorrectly(bitmap)
             Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
             
-            synchronized(this) {
-                lastFrameBitmap?.recycle()
+            // Synchronized bitmap update to prevent concurrent access during recycle
+            synchronized(bitmapLock) {
+                val oldBitmap = lastFrameBitmap
                 lastFrameBitmap = finalBitmap
                 lastFrameTimestamp = System.currentTimeMillis()
+                // Recycle old bitmap after updating reference
+                oldBitmap?.recycle()
             }
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
             val safeConfig = finalBitmap.config ?: Bitmap.Config.ARGB_8888
@@ -370,8 +422,8 @@ class CameraService : Service(), LifecycleOwner {
         
         val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
         val out = ByteArrayOutputStream()
-        // Increase compression quality to 85 for better image quality
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 85, out)
+        // Lower compression quality to 70 to reduce memory pressure and prevent SIGABRT
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 70, out)
         val imageBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
@@ -519,7 +571,10 @@ class CameraService : Service(), LifecycleOwner {
         httpServer?.stop()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
-        lastFrameBitmap?.recycle()
+        synchronized(bitmapLock) {
+            lastFrameBitmap?.recycle()
+            lastFrameBitmap = null
+        }
         serviceScope.cancel()
         wakeLock?.let { if (it.isHeld) it.release() }
         wifiLock?.let { if (it.isHeld) it.release() }
@@ -1026,7 +1081,9 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveSnapshot(): Response {
-            val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+            val bitmap = synchronized(bitmapLock) { 
+                lastFrameBitmap?.takeIf { !it.isRecycled }
+            }
             
             return if (bitmap != null) {
                 val stream = ByteArrayOutputStream()
@@ -1044,33 +1101,42 @@ class CameraService : Service(), LifecycleOwner {
             val inputStream = object : java.io.InputStream() {
                 private var buffer = ByteArray(0)
                 private var position = 0
+                private var streamActive = true
                 
                 override fun read(): Int {
-                    while (position >= buffer.size) {
-                        // Generate next frame
-                        val bitmap = synchronized(this@CameraService) { lastFrameBitmap }
+                    while (position >= buffer.size && streamActive) {
+                        // Generate next frame with synchronized bitmap access
+                        val bitmap = synchronized(bitmapLock) { 
+                            lastFrameBitmap?.takeIf { !it.isRecycled }
+                        }
                         
                         if (bitmap != null) {
-                            val annotated = annotateBitmap(bitmap)
-                            val jpegStream = ByteArrayOutputStream()
-                            // Use 75% quality for streaming to reduce bandwidth while maintaining quality
-                            annotated.compress(Bitmap.CompressFormat.JPEG, 75, jpegStream)
-                            val jpegBytes = jpegStream.toByteArray()
-                            
-                            val frameStream = ByteArrayOutputStream()
-                            frameStream.write("--jpgboundary\r\n".toByteArray())
-                            frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                            frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
-                            frameStream.write(jpegBytes)
-                            frameStream.write("\r\n".toByteArray())
-                            
-                            buffer = frameStream.toByteArray()
-                            position = 0
+                            try {
+                                val annotated = annotateBitmap(bitmap)
+                                val jpegStream = ByteArrayOutputStream()
+                                // Use 75% quality for streaming to reduce bandwidth while maintaining quality
+                                annotated.compress(Bitmap.CompressFormat.JPEG, 75, jpegStream)
+                                val jpegBytes = jpegStream.toByteArray()
+                                
+                                val frameStream = ByteArrayOutputStream()
+                                frameStream.write("--jpgboundary\r\n".toByteArray())
+                                frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                                frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
+                                frameStream.write(jpegBytes)
+                                frameStream.write("\r\n".toByteArray())
+                                
+                                buffer = frameStream.toByteArray()
+                                position = 0
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error encoding frame for stream", e)
+                                // Continue to retry on next iteration
+                            }
                             
                             // Small delay for ~10 fps
                             try {
                                 Thread.sleep(100)
                             } catch (e: InterruptedException) {
+                                streamActive = false
                                 return -1
                             }
                             break
@@ -1079,13 +1145,14 @@ class CameraService : Service(), LifecycleOwner {
                             try {
                                 Thread.sleep(100)
                             } catch (e: InterruptedException) {
+                                streamActive = false
                                 return -1
                             }
                             // Continue loop to retry
                         }
                     }
                     
-                    return if (position < buffer.size) {
+                    return if (position < buffer.size && streamActive) {
                         buffer[position++].toInt() and 0xFF
                     } else {
                         -1
@@ -1093,7 +1160,12 @@ class CameraService : Service(), LifecycleOwner {
                 }
                 
                 override fun available(): Int {
-                    return buffer.size - position
+                    return if (streamActive) buffer.size - position else 0
+                }
+                
+                override fun close() {
+                    streamActive = false
+                    super.close()
                 }
             }
             
