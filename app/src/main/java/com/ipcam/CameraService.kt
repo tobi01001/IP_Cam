@@ -61,11 +61,13 @@ class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
     @Volatile private var httpServer: CameraHttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
-    private var lastFrameBitmap: Bitmap? = null
+    private var lastFrameBitmap: Bitmap? = null // For MainActivity preview only
+    @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
     @Volatile private var lastFrameTimestamp: Long = 0
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var cameraProvider: ProcessCameraProvider? = null
     private val bitmapLock = Any() // Lock for bitmap access synchronization
+    private val jpegLock = Any() // Lock for JPEG bytes access
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
@@ -343,14 +345,25 @@ class CameraService : Service(), LifecycleOwner {
             // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
             val annotatedBitmap = annotateBitmap(finalBitmap)
             
-            // Synchronized bitmap update to prevent concurrent access during recycle
+            // Pre-compress to JPEG for HTTP serving (avoid Bitmap.compress on HTTP threads)
+            val jpegBytes = ByteArrayOutputStream().use { stream ->
+                annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, stream)
+                stream.toByteArray()
+            }
+            
+            // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
             synchronized(bitmapLock) {
                 val oldBitmap = lastFrameBitmap
                 lastFrameBitmap = annotatedBitmap
-                lastFrameTimestamp = System.currentTimeMillis()
                 // Recycle old bitmap after updating reference, checking if not already recycled
                 oldBitmap?.takeIf { !it.isRecycled }?.recycle()
             }
+            
+            synchronized(jpegLock) {
+                lastFrameJpegBytes = jpegBytes
+                lastFrameTimestamp = System.currentTimeMillis()
+            }
+            
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
             val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
             onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
@@ -611,6 +624,9 @@ class CameraService : Service(), LifecycleOwner {
         synchronized(bitmapLock) {
             lastFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
             lastFrameBitmap = null
+        }
+        synchronized(jpegLock) {
+            lastFrameJpegBytes = null
         }
         serviceScope.cancel()
         wakeLock?.let { if (it.isHeld) it.release() }
@@ -1156,16 +1172,13 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveSnapshot(): Response {
-            val bitmap = synchronized(bitmapLock) { 
-                lastFrameBitmap?.takeIf { !it.isRecycled }
+            // Use pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
+            val jpegBytes = synchronized(jpegLock) { 
+                lastFrameJpegBytes
             }
             
-            return if (bitmap != null) {
-                val stream = ByteArrayOutputStream()
-                // Bitmap is already annotated in processImage, just compress it
-                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_SNAPSHOT, stream)
-                val bytes = stream.toByteArray()
-                newFixedLengthResponse(Response.Status.OK, "image/jpeg", bytes.inputStream(), bytes.size.toLong())
+            return if (jpegBytes != null) {
+                newFixedLengthResponse(Response.Status.OK, "image/jpeg", jpegBytes.inputStream(), jpegBytes.size.toLong())
             } else {
                 newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, MIME_PLAINTEXT, "No frame available")
             }
@@ -1180,18 +1193,14 @@ class CameraService : Service(), LifecycleOwner {
                 
                 override fun read(): Int {
                     while (position >= buffer.size && streamActive) {
-                        // Generate next frame with synchronized bitmap access
-                        val bitmap = synchronized(bitmapLock) { 
-                            lastFrameBitmap?.takeIf { !it.isRecycled }
+                        // Get pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
+                        val jpegBytes = synchronized(jpegLock) { 
+                            lastFrameJpegBytes
                         }
                         
-                        if (bitmap != null) {
+                        if (jpegBytes != null) {
                             try {
-                                // Bitmap is already annotated in processImage, just compress it
-                                val jpegStream = ByteArrayOutputStream()
-                                bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, jpegStream)
-                                val jpegBytes = jpegStream.toByteArray()
-                                
+                                // Just package the pre-compressed JPEG bytes
                                 val frameStream = ByteArrayOutputStream()
                                 frameStream.write("--jpgboundary\r\n".toByteArray())
                                 frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
@@ -1202,7 +1211,7 @@ class CameraService : Service(), LifecycleOwner {
                                 buffer = frameStream.toByteArray()
                                 position = 0
                             } catch (e: Exception) {
-                                Log.e(TAG, "Error encoding frame for stream", e)
+                                Log.e(TAG, "Error packaging frame for stream", e)
                                 // Continue to retry on next iteration
                             }
                             
