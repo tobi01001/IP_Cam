@@ -8,8 +8,10 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Size
 import android.view.View
@@ -33,6 +35,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraSelectionText: TextView
     private lateinit var endpointsText: TextView
     private lateinit var resolutionSpinner: Spinner
+    private lateinit var cameraOrientationSpinner: Spinner
+    private lateinit var rotationSpinner: Spinner
     private lateinit var switchCameraButton: Button
     private lateinit var startStopButton: Button
     
@@ -71,6 +75,8 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     updateUI()
                     loadResolutions()
+                    loadCameraOrientationOptions()
+                    loadRotationOptions()
                 }
             }
             
@@ -82,6 +88,8 @@ class MainActivity : AppCompatActivity() {
             
             updateUI()
             loadResolutions()
+            loadCameraOrientationOptions()
+            loadRotationOptions()
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -102,11 +110,15 @@ class MainActivity : AppCompatActivity() {
         cameraSelectionText = findViewById(R.id.cameraSelectionText)
         endpointsText = findViewById(R.id.endpointsText)
         resolutionSpinner = findViewById(R.id.resolutionSpinner)
+        cameraOrientationSpinner = findViewById(R.id.cameraOrientationSpinner)
+        rotationSpinner = findViewById(R.id.rotationSpinner)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         startStopButton = findViewById(R.id.startStopButton)
         
         setupEndpointsText()
         setupResolutionSpinner()
+        setupCameraOrientationSpinner()
+        setupRotationSpinner()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -117,6 +129,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         checkCameraPermission()
+        checkBatteryOptimization()
     }
     
     private fun setupEndpointsText() {
@@ -127,6 +140,8 @@ class MainActivity : AppCompatActivity() {
             ${getString(R.string.endpoint_status)}
             ${getString(R.string.endpoint_formats)}
             ${getString(R.string.endpoint_set_format)}
+            ${getString(R.string.endpoint_camera_orientation)}
+            ${getString(R.string.endpoint_rotation)}
         """.trimIndent()
         endpointsText.text = endpoints
     }
@@ -184,6 +199,34 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
     
+    private fun checkBatteryOptimization() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            val packageName = packageName
+            
+            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+                AlertDialog.Builder(this)
+                    .setTitle("Battery Optimization")
+                    .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
+                    .setPositiveButton("Disable Optimization") { _, _ ->
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        try {
+                            startActivity(intent)
+                        } catch (e: Exception) {
+                            Toast.makeText(this, "Could not open battery settings", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    .setNegativeButton("Skip") { dialog, _ ->
+                        dialog.dismiss()
+                    }
+                    .create()
+                    .show()
+            }
+        }
+    }
+    
     private fun setupResolutionSpinner() {
         resolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
@@ -197,6 +240,42 @@ class MainActivity : AppCompatActivity() {
                 // Do nothing
             }
         }
+    }
+    
+    private fun setupRotationSpinner() {
+        rotationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedItem = parent?.getItemAtPosition(position) as? String
+                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                    applyRotation(selectedItem)
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+        
+        // Set initial rotation options
+        loadRotationOptions()
+    }
+    
+    private fun setupCameraOrientationSpinner() {
+        cameraOrientationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedItem = parent?.getItemAtPosition(position) as? String
+                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                    applyCameraOrientation(selectedItem)
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+        
+        // Set initial camera orientation options
+        loadCameraOrientationOptions()
     }
     
     private fun loadResolutions() {
@@ -245,6 +324,72 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    private fun loadRotationOptions() {
+        val items = listOf(
+            getString(R.string.rotation_0),
+            getString(R.string.rotation_90),
+            getString(R.string.rotation_180),
+            getString(R.string.rotation_270)
+        )
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        rotationSpinner.adapter = adapter
+        
+        // Set current selection based on service state
+        val currentRotation = cameraService?.getRotation() ?: 0
+        val index = when (currentRotation) {
+            0 -> 0
+            90 -> 1
+            180 -> 2
+            270 -> 3
+            else -> 0
+        }
+        rotationSpinner.setSelection(index)
+    }
+    
+    private fun applyRotation(selection: String) {
+        val service = cameraService ?: return
+        
+        val rotation = when (selection) {
+            getString(R.string.rotation_0) -> 0
+            getString(R.string.rotation_90) -> 90
+            getString(R.string.rotation_180) -> 180
+            getString(R.string.rotation_270) -> 270
+            else -> 0
+        }
+        
+        service.setRotation(rotation)
+    }
+    
+    private fun loadCameraOrientationOptions() {
+        val items = listOf(
+            getString(R.string.camera_orientation_landscape),
+            getString(R.string.camera_orientation_portrait)
+        )
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        cameraOrientationSpinner.adapter = adapter
+        
+        // Set current selection based on service state
+        val currentOrientation = cameraService?.getCameraOrientation() ?: "landscape"
+        val index = if (currentOrientation == "portrait") 1 else 0
+        cameraOrientationSpinner.setSelection(index)
+    }
+    
+    private fun applyCameraOrientation(selection: String) {
+        val service = cameraService ?: return
+        
+        val orientation = when (selection) {
+            getString(R.string.camera_orientation_landscape) -> "landscape"
+            getString(R.string.camera_orientation_portrait) -> "portrait"
+            else -> "landscape"
+        }
+        
+        service.setCameraOrientation(orientation)
+    }
+    
     private fun switchCamera() {
         val currentCamera = cameraService?.getCurrentCamera() ?: CameraSelector.DEFAULT_BACK_CAMERA
         val newCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -256,6 +401,8 @@ class MainActivity : AppCompatActivity() {
         cameraService?.switchCamera(newCamera)
         updateUI()
         loadResolutions()
+        loadCameraOrientationOptions()
+        loadRotationOptions()
     }
     
     private fun toggleServer() {
@@ -323,6 +470,8 @@ class MainActivity : AppCompatActivity() {
         startStopButton.isEnabled = isRunning || hasCameraPermission
         switchCameraButton.isEnabled = isRunning
         resolutionSpinner.isEnabled = isRunning
+        cameraOrientationSpinner.isEnabled = isRunning
+        rotationSpinner.isEnabled = isRunning
     }
     
     override fun onResume() {
@@ -337,6 +486,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateUI()
+    }
+    
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Configuration changes (like rotation) are automatically handled by OrientationEventListener
+        // in the CameraService, so no action needed here
     }
     
     override fun onDestroy() {
