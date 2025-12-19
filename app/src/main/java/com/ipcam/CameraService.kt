@@ -937,8 +937,6 @@ class CameraService : Service(), LifecycleOwner {
             val bottom = canvas.height.toFloat() - padding
             val top = bottom - textHeight - padding
             val right = canvas.width.toFloat() - padding
-            
-            canvas.drawRoundRect(left, top, right, bottom, 12f, 12f, bgPaint)
             canvas.drawText(resolutionText, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
         }
         
