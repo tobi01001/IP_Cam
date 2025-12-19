@@ -320,8 +320,8 @@ class CameraService : Service(), LifecycleOwner {
                 val oldBitmap = lastFrameBitmap
                 lastFrameBitmap = finalBitmap
                 lastFrameTimestamp = System.currentTimeMillis()
-                // Recycle old bitmap after updating reference
-                oldBitmap?.recycle()
+                // Recycle old bitmap after updating reference, checking if not already recycled
+                oldBitmap?.takeIf { !it.isRecycled }?.recycle()
             }
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
             val safeConfig = finalBitmap.config ?: Bitmap.Config.ARGB_8888
@@ -581,7 +581,7 @@ class CameraService : Service(), LifecycleOwner {
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
         synchronized(bitmapLock) {
-            lastFrameBitmap?.recycle()
+            lastFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
             lastFrameBitmap = null
         }
         serviceScope.cancel()
