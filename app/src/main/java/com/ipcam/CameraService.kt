@@ -61,6 +61,7 @@ import java.util.concurrent.atomic.AtomicInteger
 class CameraService : Service(), LifecycleOwner {
     private val binder = LocalBinder()
     @Volatile private var httpServer: CameraHttpServer? = null
+    @Volatile private var asyncRunner: BoundedAsyncRunner? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
     private var lastFrameBitmap: Bitmap? = null // For MainActivity preview only
     @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
@@ -126,6 +127,7 @@ class CameraService : Service(), LifecycleOwner {
       */
     private inner class BoundedAsyncRunner : NanoHTTPD.AsyncRunner {
         private val threadCounter = AtomicInteger(0)
+        private val activeConnections = AtomicInteger(0)
         private val threadPoolExecutor = ThreadPoolExecutor(
             HTTP_CORE_POOL_SIZE,
             HTTP_MAX_POOL_SIZE,
@@ -138,6 +140,16 @@ class CameraService : Service(), LifecycleOwner {
             // Allow core threads to timeout to conserve resources
             allowCoreThreadTimeOut(true)
         }
+        
+        /**
+         * Get the current number of active connections being processed
+         */
+        fun getActiveConnections(): Int = activeConnections.get()
+        
+        /**
+         * Get the maximum number of connections that can be processed simultaneously
+         */
+        fun getMaxConnections(): Int = HTTP_MAX_POOL_SIZE
         
         override fun closeAll() {
             threadPoolExecutor.shutdown()
@@ -152,14 +164,21 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
-            // Client handler cleanup is handled by NanoHTTPD
+            // Decrement active connection counter when a client handler finishes
+            activeConnections.decrementAndGet()
         }
         
         override fun exec(code: NanoHTTPD.ClientHandler?) {
             try {
-                code?.let { threadPoolExecutor.execute(it) }
+                code?.let { 
+                    // Increment active connection counter when a new client handler starts
+                    activeConnections.incrementAndGet()
+                    threadPoolExecutor.execute(it) 
+                }
             } catch (e: RejectedExecutionException) {
                 Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
+                // Decrement counter since the connection won't be processed
+                activeConnections.decrementAndGet()
                 // Request will be dropped - client will need to retry
             }
         }
@@ -352,7 +371,8 @@ class CameraService : Service(), LifecycleOwner {
             
             httpServer = CameraHttpServer(actualPort).apply {
                 // Use custom bounded thread pool to prevent resource exhaustion
-                setAsyncRunner(BoundedAsyncRunner())
+                asyncRunner = BoundedAsyncRunner()
+                setAsyncRunner(asyncRunner!!)
             }
             httpServer?.start()
             
@@ -1089,11 +1109,17 @@ class CameraService : Service(), LifecycleOwner {
                         .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
                         select { padding: 8px; border-radius: 4px; }
                         .note { font-size: 13px; color: #444; }
+                        .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
+                        .status-info strong { color: #2e7d32; }
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <h1>IP Camera Server</h1>
+                        <div class="status-info">
+                            <strong>Server Status:</strong> Running | 
+                            <strong>Active Connections:</strong> <span id="connectionCount">0/8</span>
+                        </div>
                         <h2>Live Stream</h2>
                         <img id="stream" src="/stream" alt="Camera Stream">
                         <br>
@@ -1285,7 +1311,24 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
+                        function updateConnectionCount() {
+                            fetch('/status')
+                                .then(response => response.json())
+                                .then(data => {
+                                    const connectionCount = document.getElementById('connectionCount');
+                                    if (connectionCount && data.connections) {
+                                        connectionCount.textContent = data.connections;
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('Failed to fetch connection count:', error);
+                                });
+                        }
+
                         loadFormats();
+                        updateConnectionCount();
+                        // Update connection count every 2 seconds
+                        setInterval(updateConnectionCount, 2000);
                     </script>
                 </body>
                 </html>
@@ -1398,6 +1441,8 @@ class CameraService : Service(), LifecycleOwner {
         
         private fun serveStatus(): Response {
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
             val json = """
                 {
                     "status": "running",
@@ -1407,6 +1452,9 @@ class CameraService : Service(), LifecycleOwner {
                     "cameraOrientation": "$cameraOrientation",
                     "rotation": "$rotation",
                     "showResolutionOverlay": $showResolutionOverlay,
+                    "activeConnections": $activeConns,
+                    "maxConnections": $maxConns,
+                    "connections": "$activeConns/$maxConns",
                     "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
                 }
             """.trimIndent()
