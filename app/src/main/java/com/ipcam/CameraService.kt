@@ -32,6 +32,7 @@ import android.os.PowerManager
 import android.util.Log
 import android.util.Size
 import android.view.OrientationEventListener
+import android.widget.Toast
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -88,6 +89,7 @@ class CameraService : Service(), LifecycleOwner {
     private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
+    @Volatile private var actualPort: Int = DEFAULT_PORT // Actual port being used by the server
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -97,7 +99,9 @@ class CameraService : Service(), LifecycleOwner {
          private const val TAG = "CameraService"
          private const val CHANNEL_ID = "CameraServiceChannel"
          private const val NOTIFICATION_ID = 1
-         private const val PORT = 8080
+         private const val DEFAULT_PORT = 8080
+         private const val MAX_PORT = 65535
+         private const val PORT_SEARCH_LIMIT = 100 // Maximum number of ports to try
          private const val FRAME_STALE_THRESHOLD_MS = 5_000L
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
@@ -267,6 +271,27 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
+    private fun findAvailablePort(startPort: Int = DEFAULT_PORT): Int? {
+        // Try the preferred port first
+        if (isPortAvailable(startPort)) {
+            return startPort
+        }
+        
+        // Search for next available port within limit
+        for (i in 1 until PORT_SEARCH_LIMIT) {
+            val candidatePort = startPort + i
+            if (candidatePort > MAX_PORT) {
+                break
+            }
+            if (isPortAvailable(candidatePort)) {
+                Log.d(TAG, "Found available port: $candidatePort")
+                return candidatePort
+            }
+        }
+        
+        return null // No available port found within search limit
+    }
+    
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -289,28 +314,64 @@ class CameraService : Service(), LifecycleOwner {
         try {
             // If server is already running, just return
             if (httpServer?.isAlive == true) {
-                Log.d(TAG, "Server is already running on port $PORT")
+                Log.d(TAG, "Server is already running on port $actualPort")
                 return
             }
             
             // Stop any existing server instance
             httpServer?.stop()
             
-            // Check if port is available before attempting to start
-            if (!isPortAvailable(PORT)) {
-                Log.e(TAG, "Port $PORT is not available. Cannot start server.")
+            // Find an available port, starting with the last used port (which might not be default)
+            val preferredPort = if (actualPort != DEFAULT_PORT && isPortAvailable(actualPort)) {
+                actualPort // Re-use last successful port if still available
+            } else {
+                DEFAULT_PORT // Otherwise start from default
+            }
+            
+            val availablePort = findAvailablePort(preferredPort)
+            
+            if (availablePort == null) {
+                val errorMsg = "No available port found. Please close other apps using ports $DEFAULT_PORT-${DEFAULT_PORT + PORT_SEARCH_LIMIT}"
+                Log.e(TAG, errorMsg)
+                // Show user feedback on main thread
+                serviceScope.launch(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, errorMsg, Toast.LENGTH_LONG).show()
+                }
                 return
             }
             
-            httpServer = CameraHttpServer(PORT)
-            httpServer = CameraHttpServer(PORT).apply {
+            // Update the actual port being used
+            actualPort = availablePort
+            
+            // Notify user if using a different port than default
+            if (availablePort != DEFAULT_PORT) {
+                val msg = "Port $DEFAULT_PORT unavailable. Using port $availablePort instead."
+                Log.w(TAG, msg)
+                serviceScope.launch(Dispatchers.Main) {
+                    Toast.makeText(applicationContext, msg, Toast.LENGTH_LONG).show()
+                }
+            }
+            
+            httpServer = CameraHttpServer(availablePort).apply {
                 // Use custom bounded thread pool to prevent resource exhaustion
                 setAsyncRunner(BoundedAsyncRunner())
             }
             httpServer?.start()
-            Log.d(TAG, "Server started on port $PORT with bounded thread pool")
+            Log.d(TAG, "Server started on port $availablePort with bounded thread pool")
+            
+            // Save the port to preferences for next startup
+            val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
+            prefs.edit().putInt("lastUsedPort", availablePort).apply()
+            
+            // Update notification with actual port
+            val notificationManager = getSystemService(NotificationManager::class.java)
+            notificationManager?.notify(NOTIFICATION_ID, createNotification())
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to start server", e)
+            val errorMsg = "Failed to start server: ${e.message}"
+            Log.e(TAG, errorMsg, e)
+            serviceScope.launch(Dispatchers.Main) {
+                Toast.makeText(applicationContext, errorMsg, Toast.LENGTH_LONG).show()
+            }
         }
     }
     
@@ -561,6 +622,7 @@ class CameraService : Service(), LifecycleOwner {
         cameraOrientation = prefs.getString("cameraOrientation", "landscape") ?: "landscape"
         rotation = prefs.getInt("rotation", 0)
         showResolutionOverlay = prefs.getBoolean("showResolutionOverlay", true)
+        actualPort = prefs.getInt("lastUsedPort", DEFAULT_PORT)
         
         val resWidth = prefs.getInt("resolutionWidth", -1)
         val resHeight = prefs.getInt("resolutionHeight", -1)
@@ -575,7 +637,7 @@ class CameraService : Service(), LifecycleOwner {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, port=$actualPort")
     }
     
     private fun saveSettings() {
@@ -628,7 +690,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getServerUrl(): String {
         val ipAddress = getIpAddress()
-        return "http://$ipAddress:$PORT"
+        return "http://$ipAddress:$actualPort"
     }
     
     @Suppress("DEPRECATION")
