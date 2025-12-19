@@ -88,6 +88,7 @@ class CameraService : Service(), LifecycleOwner {
     private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
+    private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -98,6 +99,8 @@ class CameraService : Service(), LifecycleOwner {
          private const val CHANNEL_ID = "CameraServiceChannel"
          private const val NOTIFICATION_ID = 1
          private const val PORT = 8080
+         private const val MAX_PORT = 65535
+         private const val MAX_PORT_ATTEMPTS = 10 // Try up to 10 ports
          private const val FRAME_STALE_THRESHOLD_MS = 5_000L
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
@@ -267,16 +270,50 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
-    private fun createNotification(): Notification {
+    /**
+     * Find an available port starting from the specified port.
+     * Will try up to MAX_PORT_ATTEMPTS consecutive ports.
+     * @param startPort The port to start searching from
+     * @return The first available port found, or null if none available
+     */
+    private fun findAvailablePort(startPort: Int): Int? {
+        var port = startPort
+        var attempts = 0
+        
+        while (attempts < MAX_PORT_ATTEMPTS && port <= MAX_PORT) {
+            if (isPortAvailable(port)) {
+                Log.d(TAG, "Found available port: $port")
+                return port
+            }
+            port++
+            attempts++
+        }
+        
+        Log.e(TAG, "Could not find available port after $attempts attempts starting from $startPort")
+        return null
+    }
+    
+    /**
+     * Check if the port is being used by this app instance.
+     * @param port The port to check
+     * @return true if this app's server is already running on the port
+     */
+    private fun isPortUsedByThisApp(port: Int): Boolean {
+        return httpServer?.isAlive == true && actualPort == port
+    }
+    
+    private fun createNotification(contentText: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
             this, 0, intent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         
+        val text = contentText ?: "Server running on ${getServerUrl()}"
+        
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("IP Camera Server")
-            .setContentText("Server running on ${getServerUrl()}")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingIntent)
             .setOngoing(true)  // Make notification persistent
@@ -289,29 +326,91 @@ class CameraService : Service(), LifecycleOwner {
         try {
             // If server is already running, just return
             if (httpServer?.isAlive == true) {
-                Log.d(TAG, "Server is already running on port $PORT")
+                Log.d(TAG, "Server is already running on port $actualPort")
                 return
             }
             
             // Stop any existing server instance
             httpServer?.stop()
             
-            // Check if port is available before attempting to start
-            if (!isPortAvailable(PORT)) {
-                Log.e(TAG, "Port $PORT is not available. Cannot start server.")
+            // Check if the preferred port is being used by another instance of this app
+            if (isPortUsedByThisApp(PORT)) {
+                Log.d(TAG, "Port $PORT is already in use by this app instance. Reusing existing server.")
+                updateNotification("Server running on port $actualPort")
                 return
             }
             
-            httpServer = CameraHttpServer(PORT)
-            httpServer = CameraHttpServer(PORT).apply {
+            // Try to find an available port, starting with the preferred port
+            val availablePort = findAvailablePort(PORT)
+            
+            if (availablePort == null) {
+                val errorMsg = "Could not find an available port. Tried $MAX_PORT_ATTEMPTS ports starting from $PORT."
+                Log.e(TAG, errorMsg)
+                updateNotification("Server failed to start - no available ports")
+                showUserNotification("Server Start Failed", errorMsg)
+                return
+            }
+            
+            // Update the actual port being used
+            actualPort = availablePort
+            
+            // Notify user if we're using a different port than the default
+            if (actualPort != PORT) {
+                val msg = "Port $PORT was unavailable. Using port $actualPort instead."
+                Log.w(TAG, msg)
+                showUserNotification("Port Changed", msg)
+            }
+            
+            httpServer = CameraHttpServer(actualPort).apply {
                 // Use custom bounded thread pool to prevent resource exhaustion
                 setAsyncRunner(BoundedAsyncRunner())
             }
             httpServer?.start()
-            Log.d(TAG, "Server started on port $PORT with bounded thread pool")
+            
+            val startMsg = if (actualPort != PORT) {
+                "Server started on port $actualPort (default port $PORT was unavailable)"
+            } else {
+                "Server started on port $actualPort with bounded thread pool"
+            }
+            Log.d(TAG, startMsg)
+            
+            // Update notification with the actual port
+            updateNotification("Server running on ${getServerUrl()}")
+            
         } catch (e: IOException) {
-            Log.e(TAG, "Failed to start server", e)
+            val errorMsg = "Failed to start server: ${e.message}"
+            Log.e(TAG, errorMsg, e)
+            updateNotification("Server failed to start")
+            showUserNotification("Server Error", errorMsg)
         }
+    }
+    
+    /**
+     * Update the foreground notification with new text
+     */
+    private fun updateNotification(contentText: String) {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        notificationManager?.notify(NOTIFICATION_ID, createNotification(contentText))
+    }
+    
+    /**
+     * Show a user notification (not the foreground service notification)
+     */
+    private fun showUserNotification(title: String, message: String) {
+        val notificationManager = getSystemService(NotificationManager::class.java)
+        
+        // Create a separate notification for user alerts
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+        
+        // Use a different notification ID for user alerts
+        notificationManager?.notify(NOTIFICATION_ID + 1, notification)
     }
     
     private fun startCamera() {
@@ -628,7 +727,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getServerUrl(): String {
         val ipAddress = getIpAddress()
-        return "http://$ipAddress:$PORT"
+        return "http://$ipAddress:$actualPort"
     }
     
     @Suppress("DEPRECATION")
