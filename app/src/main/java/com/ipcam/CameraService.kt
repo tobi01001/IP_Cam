@@ -287,14 +287,14 @@ class CameraService : Service(), LifecycleOwner {
             }
             port++
             attempts++
-            
-            // Ensure we don't exceed MAX_PORT after increment
-            if (port > MAX_PORT) {
-                break
-            }
         }
         
-        Log.e(TAG, "Could not find available port after $attempts attempts starting from $startPort")
+        val reason = if (attempts >= MAX_PORT_ATTEMPTS) {
+            "reached maximum attempts ($MAX_PORT_ATTEMPTS)"
+        } else {
+            "exceeded maximum port number ($MAX_PORT)"
+        }
+        Log.e(TAG, "Could not find available port - $reason, started from $startPort")
         return null
     }
     
