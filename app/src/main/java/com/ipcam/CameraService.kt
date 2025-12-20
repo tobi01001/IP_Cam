@@ -798,6 +798,11 @@ class CameraService : Service(), LifecycleOwner {
         onConnectionsChangedCallback = null
     }
     
+    fun getActiveConnectionsCount(): Int {
+        // Return the count of connections we can actually track
+        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+    }
+    
     fun getActiveConnectionsList(): List<ConnectionInfo> {
         synchronized(connectionsLock) {
             return activeConnections.values.filter { it.active }.toList()
@@ -1290,9 +1295,13 @@ class CameraService : Service(), LifecycleOwner {
                         </div>
                         <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                         <h2>Live Stream</h2>
-                        <img id="stream" src="/stream" alt="Camera Stream">
+                        <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
+                            <button id="startStreamBtn" onclick="startStream()" style="font-size: 16px; padding: 12px 24px;">Start Stream</button>
+                            <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        </div>
                         <br>
                         <div class="row">
+                            <button onclick="stopStream()">Stop Stream</button>
                             <button onclick="reloadStream()">Refresh</button>
                             <button onclick="switchCamera()">Switch Camera</button>
                             <select id="formatSelect"></select>
@@ -1327,6 +1336,7 @@ class CameraService : Service(), LifecycleOwner {
                         <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
                         <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                         <h2>Active Connections</h2>
+                        <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
                         <div id="connectionsContainer">
                             <p>Loading connections...</p>
                         </div>
@@ -1408,19 +1418,49 @@ class CameraService : Service(), LifecycleOwner {
                     </div>
                     <script>
                         const streamImg = document.getElementById('stream');
+                        const startStreamBtn = document.getElementById('startStreamBtn');
                         let lastFrame = Date.now();
+                        let streamActive = false;
+                        let autoReloadInterval = null;
+
+                        function startStream() {
+                            streamImg.src = '/stream?ts=' + Date.now();
+                            streamImg.style.display = 'block';
+                            startStreamBtn.style.display = 'none';
+                            streamActive = true;
+                            
+                            // Auto-reload if stream stops
+                            if (autoReloadInterval) clearInterval(autoReloadInterval);
+                            autoReloadInterval = setInterval(() => {
+                                if (streamActive && Date.now() - lastFrame > 5000) {
+                                    reloadStream();
+                                }
+                            }, 3000);
+                        }
+
+                        function stopStream() {
+                            streamImg.src = '';
+                            streamImg.style.display = 'none';
+                            startStreamBtn.style.display = 'block';
+                            streamActive = false;
+                            if (autoReloadInterval) {
+                                clearInterval(autoReloadInterval);
+                                autoReloadInterval = null;
+                            }
+                        }
 
                         function reloadStream() {
-                            streamImg.src = '/stream?ts=' + Date.now();
-                        }
-                        streamImg.onerror = () => setTimeout(reloadStream, 1000);
-                        streamImg.onload = () => { lastFrame = Date.now(); };
-
-                        setInterval(() => {
-                            if (Date.now() - lastFrame > 5000) {
-                                reloadStream();
+                            if (streamActive) {
+                                streamImg.src = '/stream?ts=' + Date.now();
                             }
-                        }, 3000);
+                        }
+                        
+                        streamImg.onerror = () => {
+                            if (streamActive) {
+                                setTimeout(reloadStream, 1000);
+                            }
+                        };
+                        streamImg.onload = () => { lastFrame = Date.now(); };
 
                         function switchCamera() {
                             fetch('/switch')
@@ -1517,12 +1557,19 @@ class CameraService : Service(), LifecycleOwner {
 
                         function refreshConnections() {
                             fetch('/connections')
-                                .then(response => response.json())
+                                .then(response => {
+                                    if (!response.ok) {
+                                        throw new Error('HTTP ' + response.status);
+                                    }
+                                    return response.json();
+                                })
                                 .then(data => {
                                     displayConnections(data.connections);
                                 })
                                 .catch(error => {
-                                    document.getElementById('connectionsContainer').innerHTML = '<p>Error loading connections: ' + error + '</p>';
+                                    console.error('Connection fetch error:', error);
+                                    document.getElementById('connectionsContainer').innerHTML = 
+                                        '<p style="color: #f44336;">Error loading connections. Please refresh the page or check server status.</p>';
                                 });
                         }
 
@@ -1606,6 +1653,7 @@ class CameraService : Service(), LifecycleOwner {
                         
                         // Set up Server-Sent Events for real-time connection count updates
                         const eventSource = new EventSource('/events');
+                        let lastConnectionCount = '';
                         
                         eventSource.onmessage = function(event) {
                             try {
@@ -1613,9 +1661,13 @@ class CameraService : Service(), LifecycleOwner {
                                 const connectionCount = document.getElementById('connectionCount');
                                 if (connectionCount && data.connections) {
                                     connectionCount.textContent = data.connections;
+                                    // Only refresh connection list if count changed
+                                    if (lastConnectionCount !== data.connections) {
+                                        lastConnectionCount = data.connections;
+                                        // Debounce refresh to avoid too many requests
+                                        setTimeout(refreshConnections, 500);
+                                    }
                                 }
-                                // Auto-refresh connections list when count changes
-                                refreshConnections();
                             } catch (e) {
                                 console.error('Failed to parse SSE data:', e);
                             }
@@ -1781,9 +1833,7 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveConnections(): Response {
-            // Since we can't easily track individual HTTP connections with NanoHTTPD,
-            // we'll show the active streaming connections and SSE clients as a proxy
-            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            // Only show connections we can actually track accurately
             val activeStreamCount = this@CameraService.activeStreams.get()
             val sseCount = synchronized(sseClientsLock) { sseClients.size }
             
@@ -1794,44 +1844,31 @@ class CameraService : Service(), LifecycleOwner {
                 jsonArray.add("""
                 {
                     "id": ${System.currentTimeMillis() + i},
-                    "remoteAddr": "Stream Client $i",
+                    "remoteAddr": "Stream Connection $i",
                     "endpoint": "/stream",
                     "startTime": ${System.currentTimeMillis()},
                     "duration": 0,
-                    "active": true
+                    "active": true,
+                    "type": "stream"
                 }
                 """.trimIndent())
             }
             
-            // Add SSE clients
+            // Add SSE clients with accurate tracking
             synchronized(sseClientsLock) {
                 sseClients.forEachIndexed { index, client ->
                     jsonArray.add("""
                     {
                         "id": ${client.id},
-                        "remoteAddr": "SSE Client ${index + 1}",
+                        "remoteAddr": "Real-time Events Connection ${index + 1}",
                         "endpoint": "/events",
                         "startTime": ${client.id},
                         "duration": ${System.currentTimeMillis() - client.id},
-                        "active": ${client.active}
+                        "active": ${client.active},
+                        "type": "sse"
                     }
                     """.trimIndent())
                 }
-            }
-            
-            // Add placeholder for other HTTP connections
-            val otherConnections = activeConns - activeStreamCount - sseCount
-            for (i in 1..otherConnections) {
-                jsonArray.add("""
-                {
-                    "id": ${System.currentTimeMillis() + 1000 + i},
-                    "remoteAddr": "HTTP Client $i",
-                    "endpoint": "Various",
-                    "startTime": ${System.currentTimeMillis()},
-                    "duration": 0,
-                    "active": true
-                }
-                """.trimIndent())
             }
             
             val json = """{"connections": [${jsonArray.joinToString(",")}]}"""

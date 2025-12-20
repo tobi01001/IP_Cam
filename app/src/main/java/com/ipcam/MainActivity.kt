@@ -483,9 +483,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
         
-        // Get active connection count (simplified version - not showing full list in app)
-        val connections = service.getActiveConnectionsList()
-        val activeCount = connections.size
+        // Get active connection count from tracked connections
+        val activeCount = service.getActiveConnectionsCount()
         val maxConns = service.getMaxConnections()
         
         activeConnectionsText.text = getString(R.string.connections_count, activeCount, maxConns)
