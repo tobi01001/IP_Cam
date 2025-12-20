@@ -312,6 +312,9 @@ class MainActivity : AppCompatActivity() {
      * Get camera formats directly using Camera2 API without requiring the service
      * This allows displaying formats even when the server hasn't been started yet
      * Note: Returns all available formats since camera orientation preference is not yet loaded
+     * 
+     * This logic is intentionally duplicated from CameraService.getSupportedResolutions()
+     * to avoid creating dependencies and keep MainActivity changes minimal and isolated.
      */
     private fun getCameraFormatsDirectly(cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA): List<Size> {
         try {
@@ -323,11 +326,17 @@ class MainActivity : AppCompatActivity() {
             }
             
             val sizes = cameraManager.cameraIdList.mapNotNull { id ->
-                val characteristics = cameraManager.getCameraCharacteristics(id)
-                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-                if (facing != targetFacing) return@mapNotNull null
-                val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
+                try {
+                    val characteristics = cameraManager.getCameraCharacteristics(id)
+                    val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                    if (facing != targetFacing) return@mapNotNull null
+                    val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                    // Use safe call and elvis operator to handle potential nulls
+                    config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList() ?: emptyList()
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Error getting formats for camera $id", e)
+                    null
+                }
             }.flatten()
             
             // Return all formats without orientation filtering since user preference isn't loaded yet
