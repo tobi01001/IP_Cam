@@ -7,6 +7,9 @@ import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.ImageFormat
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -151,6 +154,9 @@ class MainActivity : AppCompatActivity() {
         
         checkCameraPermission()
         checkBatteryOptimization()
+        
+        // Load camera formats immediately on startup (doesn't require service to be running)
+        loadResolutions()
         
         // Auto-start server if enabled
         checkAutoStart()
@@ -302,18 +308,51 @@ class MainActivity : AppCompatActivity() {
         loadCameraOrientationOptions()
     }
     
+    /**
+     * Get camera formats directly using Camera2 API without requiring the service
+     * This allows displaying formats even when the server hasn't been started yet
+     */
+    private fun getCameraFormatsDirectly(cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA): List<Size> {
+        try {
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val targetFacing = if (cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            
+            val sizes = cameraManager.cameraIdList.mapNotNull { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                if (facing != targetFacing) return@mapNotNull null
+                val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
+            }.flatten()
+            
+            // For now, return all landscape-oriented resolutions (default camera orientation)
+            val filtered = sizes.filter { size ->
+                size.width >= size.height // Landscape or square
+            }
+            
+            return filtered.distinctBy { Pair(it.width, it.height) }
+                .sortedByDescending { it.width * it.height }
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error getting camera formats directly", e)
+            return emptyList()
+        }
+    }
+    
     private fun loadResolutions() {
-        val service = cameraService ?: return
-        if (!service.isServerRunning()) {
-            // Set default when server is not running
-            val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, 
-                listOf(getString(R.string.resolution_auto)))
-            adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
-            resolutionSpinner.adapter = adapter
-            return
+        // Try to get resolutions from service if available, otherwise query directly
+        val resolutions = if (cameraService != null) {
+            // Camera formats can be retrieved regardless of server state
+            // since getSupportedResolutions() uses Camera2 API which doesn't require camera to be open
+            cameraService!!.getSupportedResolutions()
+        } else {
+            // Service not yet bound - get formats directly using Camera2 API
+            getCameraFormatsDirectly()
         }
         
-        val resolutions = service.getSupportedResolutions()
         val items = mutableListOf(getString(R.string.resolution_auto))
         items.addAll(resolutions.map { "${it.width}x${it.height}" })
         
@@ -321,8 +360,8 @@ class MainActivity : AppCompatActivity() {
         adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         resolutionSpinner.adapter = adapter
         
-        // Set current selection
-        val currentResolution = service.getSelectedResolution()
+        // Set current selection if service is available
+        val currentResolution = cameraService?.getSelectedResolution()
         if (currentResolution != null) {
             val index = items.indexOf("${currentResolution.width}x${currentResolution.height}")
             if (index >= 0) {
