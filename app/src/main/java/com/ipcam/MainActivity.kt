@@ -311,6 +311,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * Get camera formats directly using Camera2 API without requiring the service
      * This allows displaying formats even when the server hasn't been started yet
+     * Note: Returns all available formats since camera orientation preference is not yet loaded
      */
     private fun getCameraFormatsDirectly(cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA): List<Size> {
         try {
@@ -329,12 +330,9 @@ class MainActivity : AppCompatActivity() {
                 config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
             }.flatten()
             
-            // For now, return all landscape-oriented resolutions (default camera orientation)
-            val filtered = sizes.filter { size ->
-                size.width >= size.height // Landscape or square
-            }
-            
-            return filtered.distinctBy { Pair(it.width, it.height) }
+            // Return all formats without orientation filtering since user preference isn't loaded yet
+            // Formats will be updated with proper filtering once service connects
+            return sizes.distinctBy { Pair(it.width, it.height) }
                 .sortedByDescending { it.width * it.height }
         } catch (e: Exception) {
             Log.e("MainActivity", "Error getting camera formats directly", e)
@@ -344,14 +342,7 @@ class MainActivity : AppCompatActivity() {
     
     private fun loadResolutions() {
         // Try to get resolutions from service if available, otherwise query directly
-        val resolutions = if (cameraService != null) {
-            // Camera formats can be retrieved regardless of server state
-            // since getSupportedResolutions() uses Camera2 API which doesn't require camera to be open
-            cameraService!!.getSupportedResolutions()
-        } else {
-            // Service not yet bound - get formats directly using Camera2 API
-            getCameraFormatsDirectly()
-        }
+        val resolutions = cameraService?.getSupportedResolutions() ?: getCameraFormatsDirectly()
         
         val items = mutableListOf(getString(R.string.resolution_auto))
         items.addAll(resolutions.map { "${it.width}x${it.height}" })
