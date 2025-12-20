@@ -90,6 +90,9 @@ class CameraService : Service(), LifecycleOwner {
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
+    // Server-Sent Events (SSE) clients for real-time updates
+    private val sseClients = mutableListOf<SSEClient>()
+    private val sseClientsLock = Any()
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -122,6 +125,15 @@ class CameraService : Service(), LifecycleOwner {
          // Battery cache update interval
          private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
      }
+     
+     /**
+      * Represents a Server-Sent Events client connection
+      */
+     private data class SSEClient(
+         val id: Long,
+         val outputStream: java.io.OutputStream,
+         @Volatile var active: Boolean = true
+     )
      
      /**
       * Custom AsyncRunner for NanoHTTPD with bounded thread pool.
@@ -167,7 +179,10 @@ class CameraService : Service(), LifecycleOwner {
         
         override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
             // Decrement active connection counter when a client handler finishes
-            activeConnections.decrementAndGet()
+            val newCount = activeConnections.decrementAndGet()
+            Log.d(TAG, "Connection closed. Active connections: $newCount")
+            // Broadcast update to SSE clients
+            broadcastConnectionCount()
         }
         
         override fun exec(code: NanoHTTPD.ClientHandler?) {
@@ -176,14 +191,20 @@ class CameraService : Service(), LifecycleOwner {
             // Increment counter when accepting a connection. This provides an accurate
             // view of server load, even if the connection is immediately rejected.
             // The brief moment where counter is higher before rejection is intentional.
-            activeConnections.incrementAndGet()
+            val newCount = activeConnections.incrementAndGet()
+            Log.d(TAG, "Connection accepted. Active connections: $newCount")
+            // Broadcast update to SSE clients
+            broadcastConnectionCount()
             
             try {
                 threadPoolExecutor.execute(code)
             } catch (e: RejectedExecutionException) {
                 Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
                 // Decrement counter since the connection was rejected and won't be processed
-                activeConnections.decrementAndGet()
+                val rejectedCount = activeConnections.decrementAndGet()
+                Log.d(TAG, "Connection rejected. Active connections: $rejectedCount")
+                // Broadcast update to SSE clients
+                broadcastConnectionCount()
                 // Request will be dropped - client will need to retry
             }
         }
@@ -970,6 +991,32 @@ class CameraService : Service(), LifecycleOwner {
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
     
+    /**
+     * Broadcast connection count update to all SSE clients
+     */
+    private fun broadcastConnectionCount() {
+        val activeConns = asyncRunner?.getActiveConnections() ?: 0
+        val maxConns = asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+        val message = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
+        
+        synchronized(sseClientsLock) {
+            val iterator = sseClients.iterator()
+            while (iterator.hasNext()) {
+                val client = iterator.next()
+                try {
+                    if (client.active) {
+                        client.outputStream.write(message.toByteArray())
+                        client.outputStream.flush()
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "SSE client ${client.id} disconnected")
+                    client.active = false
+                    iterator.remove()
+                }
+            }
+        }
+    }
+    
     private fun updateBatteryCache() {
         cachedBatteryInfo = getBatteryInfo()
         lastBatteryUpdate = System.currentTimeMillis()
@@ -1050,7 +1097,8 @@ class CameraService : Service(), LifecycleOwner {
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
             val method = session.method
-            Log.d(TAG, "Request: $method $uri")
+            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            Log.d(TAG, "Request: $method $uri (Active connections: $activeConns)")
             
             // Handle CORS preflight requests
             if (method == Method.OPTIONS) {
@@ -1068,6 +1116,7 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/stream" -> serveStream()
                 uri == "/switch" -> serveSwitch()
                 uri == "/status" -> serveStatus()
+                uri == "/events" -> serveSSE()
                 uri == "/formats" -> serveFormats()
                 uri == "/setFormat" -> serveSetFormat(session)
                 uri == "/setCameraOrientation" -> serveSetCameraOrientation(session)
@@ -1092,6 +1141,13 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveIndexPage(): Response {
+            // Calculate active connections at the time of serving the page
+            // Exclude the current page request from the count to show actual active streaming connections
+            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
+            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val connectionDisplay = "$activeConns/$maxConns"
+            
             val html = """
                 <!DOCTYPE html>
                 <html>
@@ -1121,8 +1177,9 @@ class CameraService : Service(), LifecycleOwner {
                         <h1>IP Camera Server</h1>
                         <div class="status-info">
                             <strong>Server Status:</strong> Running | 
-                            <strong>Active Connections:</strong> <span id="connectionCount">0/8</span>
+                            <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                         </div>
+                        <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                         <h2>Live Stream</h2>
                         <img id="stream" src="/stream" alt="Camera Stream">
                         <br>
@@ -1176,6 +1233,10 @@ class CameraService : Service(), LifecycleOwner {
                         <div class="endpoint">
                             <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
                             Returns server status as JSON
+                        </div>
+                        <div class="endpoint">
+                            <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
+                            Server-Sent Events stream for real-time connection count updates
                         </div>
                         <div class="endpoint">
                             <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
@@ -1314,24 +1375,32 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
-                        function updateConnectionCount() {
-                            fetch('/status')
-                                .then(response => response.json())
-                                .then(data => {
-                                    const connectionCount = document.getElementById('connectionCount');
-                                    if (connectionCount && data.connections) {
-                                        connectionCount.textContent = data.connections;
-                                    }
-                                })
-                                .catch(error => {
-                                    console.error('Failed to fetch connection count:', error);
-                                });
-                        }
-
                         loadFormats();
-                        updateConnectionCount();
-                        // Update connection count every 2 seconds
-                        setInterval(updateConnectionCount, 2000);
+                        
+                        // Set up Server-Sent Events for real-time connection count updates
+                        const eventSource = new EventSource('/events');
+                        
+                        eventSource.onmessage = function(event) {
+                            try {
+                                const data = JSON.parse(event.data);
+                                const connectionCount = document.getElementById('connectionCount');
+                                if (connectionCount && data.connections) {
+                                    connectionCount.textContent = data.connections;
+                                }
+                            } catch (e) {
+                                console.error('Failed to parse SSE data:', e);
+                            }
+                        };
+                        
+                        eventSource.onerror = function(error) {
+                            console.error('SSE connection error:', error);
+                            // EventSource will automatically try to reconnect
+                        };
+                        
+                        // Clean up on page unload
+                        window.addEventListener('beforeunload', function() {
+                            eventSource.close();
+                        });
                     </script>
                 </body>
                 </html>
@@ -1444,7 +1513,9 @@ class CameraService : Service(), LifecycleOwner {
         
         private fun serveStatus(): Response {
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            // Get active connections, excluding this status request itself
+            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
             val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
             val json = """
                 {
@@ -1458,11 +1529,91 @@ class CameraService : Service(), LifecycleOwner {
                     "activeConnections": $activeConns,
                     "maxConnections": $maxConns,
                     "connections": "$activeConns/$maxConns",
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
                 }
             """.trimIndent()
             
             return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+        }
+        
+        /**
+         * Server-Sent Events (SSE) endpoint for real-time updates
+         * Clients can connect to /events to receive live connection count updates
+         */
+        private fun serveSSE(): Response {
+            val clientId = System.currentTimeMillis()
+            Log.d(TAG, "SSE client $clientId connected")
+            
+            // Create a blocking queue for this client's messages
+            val messageQueue = java.util.concurrent.LinkedBlockingQueue<String>()
+            
+            val client = SSEClient(clientId, object : java.io.OutputStream() {
+                override fun write(b: Int) {
+                    // Not used - we use the queue instead
+                }
+                
+                override fun write(b: ByteArray) {
+                    messageQueue.offer(String(b))
+                }
+            })
+            
+            // Register the SSE client
+            synchronized(sseClientsLock) {
+                sseClients.add(client)
+            }
+            
+            // Send initial connection count
+            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val initialMessage = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
+            messageQueue.offer(initialMessage)
+            
+            // Create input stream that reads from the queue
+            val inputStream = object : java.io.InputStream() {
+                private var buffer = ByteArray(0)
+                private var position = 0
+                
+                override fun read(): Int {
+                    while (position >= buffer.size && client.active) {
+                        // Try to get a message from the queue (with timeout)
+                        val message = messageQueue.poll(30, TimeUnit.SECONDS)
+                        
+                        if (message != null) {
+                            buffer = message.toByteArray()
+                            position = 0
+                        } else if (client.active) {
+                            // Send keepalive comment every 30 seconds
+                            buffer = ": keepalive\n\n".toByteArray()
+                            position = 0
+                        }
+                    }
+                    
+                    return if (position < buffer.size && client.active) {
+                        buffer[position++].toInt() and 0xFF
+                    } else {
+                        // Cleanup when connection closes
+                        synchronized(sseClientsLock) {
+                            sseClients.remove(client)
+                        }
+                        Log.d(TAG, "SSE client $clientId disconnected")
+                        -1
+                    }
+                }
+                
+                override fun close() {
+                    client.active = false
+                    synchronized(sseClientsLock) {
+                        sseClients.remove(client)
+                    }
+                    super.close()
+                }
+            }
+            
+            val response = newChunkedResponse(Response.Status.OK, "text/event-stream", inputStream)
+            response.addHeader("Cache-Control", "no-cache")
+            response.addHeader("Connection", "keep-alive")
+            response.addHeader("X-Accel-Buffering", "no") // Disable nginx buffering
+            return response
         }
         
         private fun serveFormats(): Response {
