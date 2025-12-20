@@ -93,6 +93,14 @@ class CameraService : Service(), LifecycleOwner {
     // Server-Sent Events (SSE) clients for real-time updates
     private val sseClients = mutableListOf<SSEClient>()
     private val sseClientsLock = Any()
+    // Dedicated executor for streaming connections (doesn't block HTTP request threads)
+    private val streamingExecutor = Executors.newCachedThreadPool { r -> 
+        Thread(r, "StreamingThread-${System.currentTimeMillis()}").apply {
+            isDaemon = true
+        }
+    }
+    // Track active streaming connections
+    private val activeStreams = AtomicInteger(0)
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -110,10 +118,11 @@ class CameraService : Service(), LifecycleOwner {
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
          // Thread pool settings for NanoHTTPD
-         // Maximum parallel connections: HTTP_MAX_POOL_SIZE (8 concurrent connections)
+         // Maximum parallel connections: HTTP_MAX_POOL_SIZE (32 concurrent connections)
+         // Separate pools for request handlers and long-lived streaming connections
          // Requests beyond max are queued up to HTTP_QUEUE_CAPACITY (50), then rejected
-         private const val HTTP_CORE_POOL_SIZE = 2
-         private const val HTTP_MAX_POOL_SIZE = 8
+         private const val HTTP_CORE_POOL_SIZE = 4
+         private const val HTTP_MAX_POOL_SIZE = 32  // Increased from 8 to support multiple streams
          private const val HTTP_KEEP_ALIVE_TIME = 60L
          private const val HTTP_QUEUE_CAPACITY = 50 // Max queued requests before rejecting
          // JPEG compression quality settings
@@ -788,6 +797,7 @@ class CameraService : Service(), LifecycleOwner {
         httpServer?.stop()
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
+        streamingExecutor.shutdownNow() // Forcefully terminate streaming threads
         synchronized(bitmapLock) {
             lastFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
             lastFrameBitmap = null
@@ -1423,74 +1433,85 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveStream(): Response {
-            // Create a custom InputStream for MJPEG streaming
-            val inputStream = object : java.io.InputStream() {
-                private var buffer = ByteArray(0)
-                private var position = 0
-                private var streamActive = true
-                
-                override fun read(): Int {
-                    while (position >= buffer.size && streamActive) {
-                        // Get pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
+            // Track this streaming connection
+            activeStreams.incrementAndGet()
+            Log.d(TAG, "Stream connection opened. Active streams: ${activeStreams.get()}")
+            
+            // Use PipedInputStream/PipedOutputStream to avoid blocking HTTP handler thread
+            val pipedOutputStream = java.io.PipedOutputStream()
+            val pipedInputStream = java.io.PipedInputStream(pipedOutputStream, 1024 * 1024) // 1MB buffer
+            
+            // Submit streaming work to dedicated executor (doesn't block HTTP thread)
+            streamingExecutor.submit {
+                try {
+                    var streamActive = true
+                    while (streamActive && !Thread.currentThread().isInterrupted) {
+                        // Get pre-compressed JPEG bytes to avoid Bitmap operations
                         val jpegBytes = synchronized(jpegLock) { 
                             lastFrameJpegBytes
                         }
                         
                         if (jpegBytes != null) {
                             try {
-                                // Just package the pre-compressed JPEG bytes
-                                val frameStream = ByteArrayOutputStream()
-                                frameStream.write("--jpgboundary\r\n".toByteArray())
-                                frameStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                                frameStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
-                                frameStream.write(jpegBytes)
-                                frameStream.write("\r\n".toByteArray())
-                                
-                                buffer = frameStream.toByteArray()
-                                position = 0
+                                // Write MJPEG frame boundary and headers
+                                pipedOutputStream.write("--jpgboundary\r\n".toByteArray())
+                                pipedOutputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
+                                pipedOutputStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
+                                pipedOutputStream.write(jpegBytes)
+                                pipedOutputStream.write("\r\n".toByteArray())
+                                pipedOutputStream.flush()
+                            } catch (e: IOException) {
+                                // Client disconnected or pipe broken
+                                streamActive = false
+                                Log.d(TAG, "Stream client disconnected")
                             } catch (e: Exception) {
-                                Log.e(TAG, "Error packaging frame for stream", e)
-                                // Continue to retry on next iteration
+                                Log.e(TAG, "Error writing frame to stream", e)
+                                streamActive = false
                             }
                             
-                            // Small delay for ~10 fps
-                            try {
-                                Thread.sleep(STREAM_FRAME_DELAY_MS)
-                            } catch (e: InterruptedException) {
-                                streamActive = false
-                                return -1
+                            // Delay for ~10 fps
+                            if (streamActive) {
+                                try {
+                                    Thread.sleep(STREAM_FRAME_DELAY_MS)
+                                } catch (e: InterruptedException) {
+                                    streamActive = false
+                                }
                             }
-                            break
                         } else {
                             // No frame available, wait a bit and retry
                             try {
                                 Thread.sleep(STREAM_FRAME_DELAY_MS)
                             } catch (e: InterruptedException) {
                                 streamActive = false
-                                return -1
                             }
-                            // Continue loop to retry
                         }
                     }
-                    
-                    return if (position < buffer.size && streamActive) {
-                        buffer[position++].toInt() and 0xFF
-                    } else {
-                        -1
+                } catch (e: Exception) {
+                    Log.e(TAG, "Streaming error", e)
+                } finally {
+                    try {
+                        pipedOutputStream.close()
+                    } catch (e: IOException) {
+                        // Ignore
                     }
-                }
-                
-                override fun available(): Int {
-                    return if (streamActive) buffer.size - position else 0
-                }
-                
-                override fun close() {
-                    streamActive = false
-                    super.close()
+                    activeStreams.decrementAndGet()
+                    Log.d(TAG, "Stream connection closed. Active streams: ${activeStreams.get()}")
                 }
             }
             
-            return newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", inputStream)
+            // Wrap the piped input stream to track when it's closed
+            val wrappedInputStream = object : java.io.InputStream() {
+                override fun read(): Int = pipedInputStream.read()
+                override fun read(b: ByteArray): Int = pipedInputStream.read(b)
+                override fun read(b: ByteArray, off: Int, len: Int): Int = pipedInputStream.read(b, off, len)
+                override fun available(): Int = pipedInputStream.available()
+                
+                override fun close() {
+                    pipedInputStream.close()
+                }
+            }
+            
+            return newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", wrappedInputStream)
         }
         
         private fun serveSwitch(): Response {
@@ -1517,6 +1538,8 @@ class CameraService : Service(), LifecycleOwner {
             val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
             val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
             val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val activeStreamCount = this@CameraService.activeStreams.get()
+            val sseCount = synchronized(sseClientsLock) { sseClients.size }
             val json = """
                 {
                     "status": "running",
@@ -1529,6 +1552,8 @@ class CameraService : Service(), LifecycleOwner {
                     "activeConnections": $activeConns,
                     "maxConnections": $maxConns,
                     "connections": "$activeConns/$maxConns",
+                    "activeStreams": $activeStreamCount,
+                    "activeSSEClients": $sseCount,
                     "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
                 }
             """.trimIndent()
@@ -1543,6 +1568,10 @@ class CameraService : Service(), LifecycleOwner {
         private fun serveSSE(): Response {
             val clientId = System.currentTimeMillis()
             Log.d(TAG, "SSE client $clientId connected")
+            
+            // Use PipedInputStream/PipedOutputStream to avoid blocking HTTP handler thread
+            val pipedOutputStream = java.io.PipedOutputStream()
+            val pipedInputStream = java.io.PipedInputStream(pipedOutputStream, 64 * 1024) // 64KB buffer
             
             // Create a blocking queue for this client's messages
             val messageQueue = java.util.concurrent.LinkedBlockingQueue<String>()
@@ -1568,48 +1597,65 @@ class CameraService : Service(), LifecycleOwner {
             val initialMessage = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
             messageQueue.offer(initialMessage)
             
-            // Create input stream that reads from the queue
-            val inputStream = object : java.io.InputStream() {
-                private var buffer = ByteArray(0)
-                private var position = 0
-                
-                override fun read(): Int {
-                    while (position >= buffer.size && client.active) {
+            // Submit SSE work to dedicated executor (doesn't block HTTP thread)
+            streamingExecutor.submit {
+                try {
+                    while (client.active && !Thread.currentThread().isInterrupted) {
                         // Try to get a message from the queue (with timeout)
                         val message = messageQueue.poll(30, TimeUnit.SECONDS)
                         
                         if (message != null) {
-                            buffer = message.toByteArray()
-                            position = 0
+                            try {
+                                pipedOutputStream.write(message.toByteArray())
+                                pipedOutputStream.flush()
+                            } catch (e: IOException) {
+                                // Client disconnected
+                                client.active = false
+                                Log.d(TAG, "SSE client $clientId disconnected (write error)")
+                            }
                         } else if (client.active) {
                             // Send keepalive comment every 30 seconds
-                            buffer = ": keepalive\n\n".toByteArray()
-                            position = 0
+                            try {
+                                pipedOutputStream.write(": keepalive\n\n".toByteArray())
+                                pipedOutputStream.flush()
+                            } catch (e: IOException) {
+                                // Client disconnected
+                                client.active = false
+                                Log.d(TAG, "SSE client $clientId disconnected (keepalive error)")
+                            }
                         }
                     }
-                    
-                    return if (position < buffer.size && client.active) {
-                        buffer[position++].toInt() and 0xFF
-                    } else {
-                        // Cleanup when connection closes
-                        synchronized(sseClientsLock) {
-                            sseClients.remove(client)
-                        }
-                        Log.d(TAG, "SSE client $clientId disconnected")
-                        -1
+                } catch (e: InterruptedException) {
+                    Log.d(TAG, "SSE client $clientId interrupted")
+                } catch (e: Exception) {
+                    Log.e(TAG, "SSE error for client $clientId", e)
+                } finally {
+                    try {
+                        pipedOutputStream.close()
+                    } catch (e: IOException) {
+                        // Ignore
                     }
-                }
-                
-                override fun close() {
-                    client.active = false
                     synchronized(sseClientsLock) {
                         sseClients.remove(client)
                     }
-                    super.close()
+                    Log.d(TAG, "SSE client $clientId closed. Remaining SSE clients: ${sseClients.size}")
                 }
             }
             
-            val response = newChunkedResponse(Response.Status.OK, "text/event-stream", inputStream)
+            // Wrap the piped input stream to track when it's closed
+            val wrappedInputStream = object : java.io.InputStream() {
+                override fun read(): Int = pipedInputStream.read()
+                override fun read(b: ByteArray): Int = pipedInputStream.read(b)
+                override fun read(b: ByteArray, off: Int, len: Int): Int = pipedInputStream.read(b, off, len)
+                override fun available(): Int = pipedInputStream.available()
+                
+                override fun close() {
+                    client.active = false
+                    pipedInputStream.close()
+                }
+            }
+            
+            val response = newChunkedResponse(Response.Status.OK, "text/event-stream", wrappedInputStream)
             response.addHeader("Cache-Control", "no-cache")
             response.addHeader("Connection", "keep-alive")
             response.addHeader("X-Accel-Buffering", "no") // Disable nginx buffering
