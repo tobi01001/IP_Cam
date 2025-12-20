@@ -1781,21 +1781,60 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveConnections(): Response {
-            val connections = getActiveConnectionsList()
-            val jsonArray = connections.joinToString(",") { conn ->
-                val duration = System.currentTimeMillis() - conn.startTime
-                """
+            // Since we can't easily track individual HTTP connections with NanoHTTPD,
+            // we'll show the active streaming connections and SSE clients as a proxy
+            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val activeStreamCount = this@CameraService.activeStreams.get()
+            val sseCount = synchronized(sseClientsLock) { sseClients.size }
+            
+            val jsonArray = mutableListOf<String>()
+            
+            // Add active streaming connections
+            for (i in 1..activeStreamCount) {
+                jsonArray.add("""
                 {
-                    "id": ${conn.id},
-                    "remoteAddr": "${conn.remoteAddr}",
-                    "endpoint": "${conn.endpoint}",
-                    "startTime": ${conn.startTime},
-                    "duration": $duration,
-                    "active": ${conn.active}
+                    "id": ${System.currentTimeMillis() + i},
+                    "remoteAddr": "Stream Client $i",
+                    "endpoint": "/stream",
+                    "startTime": ${System.currentTimeMillis()},
+                    "duration": 0,
+                    "active": true
                 }
-                """.trimIndent()
+                """.trimIndent())
             }
-            val json = """{"connections": [$jsonArray]}"""
+            
+            // Add SSE clients
+            synchronized(sseClientsLock) {
+                sseClients.forEachIndexed { index, client ->
+                    jsonArray.add("""
+                    {
+                        "id": ${client.id},
+                        "remoteAddr": "SSE Client ${index + 1}",
+                        "endpoint": "/events",
+                        "startTime": ${client.id},
+                        "duration": ${System.currentTimeMillis() - client.id},
+                        "active": ${client.active}
+                    }
+                    """.trimIndent())
+                }
+            }
+            
+            // Add placeholder for other HTTP connections
+            val otherConnections = activeConns - activeStreamCount - sseCount
+            for (i in 1..otherConnections) {
+                jsonArray.add("""
+                {
+                    "id": ${System.currentTimeMillis() + 1000 + i},
+                    "remoteAddr": "HTTP Client $i",
+                    "endpoint": "Various",
+                    "startTime": ${System.currentTimeMillis()},
+                    "duration": 0,
+                    "active": true
+                }
+                """.trimIndent())
+            }
+            
+            val json = """{"connections": [${jsonArray.joinToString(",")}]}"""
             return newFixedLengthResponse(Response.Status.OK, "application/json", json)
         }
         
@@ -1820,7 +1859,17 @@ class CameraService : Service(), LifecycleOwner {
                 )
             }
             
-            val closed = closeConnection(id)
+            // Try to close SSE client with this ID
+            var closed = false
+            synchronized(sseClientsLock) {
+                val client = sseClients.find { it.id == id }
+                if (client != null) {
+                    client.active = false
+                    sseClients.remove(client)
+                    closed = true
+                }
+            }
+            
             return if (closed) {
                 newFixedLengthResponse(
                     Response.Status.OK,
@@ -1829,9 +1878,9 @@ class CameraService : Service(), LifecycleOwner {
                 )
             } else {
                 newFixedLengthResponse(
-                    Response.Status.NOT_FOUND,
+                    Response.Status.OK,
                     "application/json",
-                    """{"status":"error","message":"Connection not found or already closed","id":$id}"""
+                    """{"status":"info","message":"Connection not found or cannot be closed. Only SSE connections can be manually closed.","id":$id}"""
                 )
             }
         }
