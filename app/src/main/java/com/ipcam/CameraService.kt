@@ -1097,7 +1097,7 @@ class CameraService : Service(), LifecycleOwner {
         
         private fun serveIndexPage(): Response {
             // Calculate active connections at the time of serving the page
-            // This page load itself is one connection, so actual other connections = current - 1
+            // Exclude the current page request from the count to show actual active streaming connections
             val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
             val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
             val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
@@ -1134,7 +1134,7 @@ class CameraService : Service(), LifecycleOwner {
                             <strong>Server Status:</strong> Running | 
                             <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                         </div>
-                        <p class="note"><em>Connection count shows active connections when this page loaded. For real-time count, check the <a href="/status" target="_blank">status endpoint</a> or refresh this page.</em></p>
+                        <p class="note"><em>Connection count shows active connections when this page was loaded. For real-time count, check the <a href="/status" target="_blank">status endpoint</a> or refresh this page.</em></p>
                         <h2>Live Stream</h2>
                         <img id="stream" src="/stream" alt="Camera Stream">
                         <br>
