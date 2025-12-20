@@ -101,10 +101,16 @@ class CameraService : Service(), LifecycleOwner {
     }
     // Track active streaming connections
     private val activeStreams = AtomicInteger(0)
+    // Track active connections with details
+    private val activeConnections = mutableMapOf<Long, ConnectionInfo>()
+    private val connectionsLock = Any()
+    // User-configurable max connections setting
+    @Volatile private var maxConnections: Int = HTTP_DEFAULT_MAX_POOL_SIZE
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
     private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
+    private var onConnectionsChangedCallback: (() -> Unit)? = null
     
     companion object {
          private const val TAG = "CameraService"
@@ -122,7 +128,9 @@ class CameraService : Service(), LifecycleOwner {
          // Separate pools for request handlers and long-lived streaming connections
          // Requests beyond max are queued up to HTTP_QUEUE_CAPACITY (50), then rejected
          private const val HTTP_CORE_POOL_SIZE = 4
-         private const val HTTP_MAX_POOL_SIZE = 32  // Increased from 8 to support multiple streams
+         private const val HTTP_DEFAULT_MAX_POOL_SIZE = 32  // Default max connections
+         private const val HTTP_MIN_MAX_POOL_SIZE = 4  // Minimum allowed max connections
+         private const val HTTP_ABSOLUTE_MAX_POOL_SIZE = 100  // Absolute maximum connections
          private const val HTTP_KEEP_ALIVE_TIME = 60L
          private const val HTTP_QUEUE_CAPACITY = 50 // Max queued requests before rejecting
          // JPEG compression quality settings
@@ -133,7 +141,20 @@ class CameraService : Service(), LifecycleOwner {
          private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
          // Battery cache update interval
          private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
+         // Settings keys
+         private const val PREF_MAX_CONNECTIONS = "maxConnections"
      }
+     
+     /**
+      * Represents details about an active HTTP connection
+      */
+     data class ConnectionInfo(
+         val id: Long,
+         val remoteAddr: String,
+         val endpoint: String,
+         val startTime: Long,
+         @Volatile var active: Boolean = true
+     )
      
      /**
       * Represents a Server-Sent Events client connection
@@ -147,13 +168,15 @@ class CameraService : Service(), LifecycleOwner {
      /**
       * Custom AsyncRunner for NanoHTTPD with bounded thread pool.
       * Prevents resource exhaustion from unbounded thread creation.
+      * Note: Thread pool max size is fixed at creation time. To change max connections,
+      * the server must be restarted.
       */
-    private inner class BoundedAsyncRunner : NanoHTTPD.AsyncRunner {
+    private inner class BoundedAsyncRunner(private val maxPoolSize: Int) : NanoHTTPD.AsyncRunner {
         private val threadCounter = AtomicInteger(0)
-        private val activeConnections = AtomicInteger(0)
+        private val activeConnectionsCount = AtomicInteger(0)
         private val threadPoolExecutor = ThreadPoolExecutor(
             HTTP_CORE_POOL_SIZE,
-            HTTP_MAX_POOL_SIZE,
+            maxPoolSize,
             HTTP_KEEP_ALIVE_TIME,
             TimeUnit.SECONDS,
             LinkedBlockingQueue(HTTP_QUEUE_CAPACITY),
@@ -167,12 +190,12 @@ class CameraService : Service(), LifecycleOwner {
         /**
          * Get the current number of active connections being processed
          */
-        fun getActiveConnections(): Int = activeConnections.get()
+        fun getActiveConnections(): Int = activeConnectionsCount.get()
         
         /**
          * Get the maximum number of connections that can be processed simultaneously
          */
-        fun getMaxConnections(): Int = HTTP_MAX_POOL_SIZE
+        fun getMaxConnections(): Int = maxPoolSize
         
         override fun closeAll() {
             threadPoolExecutor.shutdown()
@@ -188,9 +211,9 @@ class CameraService : Service(), LifecycleOwner {
         
         override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
             // Decrement active connection counter when a client handler finishes
-            val newCount = activeConnections.decrementAndGet()
+            val newCount = activeConnectionsCount.decrementAndGet()
             Log.d(TAG, "Connection closed. Active connections: $newCount")
-            // Broadcast update to SSE clients
+            // Broadcast update to SSE clients and MainActivity
             broadcastConnectionCount()
         }
         
@@ -200,9 +223,9 @@ class CameraService : Service(), LifecycleOwner {
             // Increment counter when accepting a connection. This provides an accurate
             // view of server load, even if the connection is immediately rejected.
             // The brief moment where counter is higher before rejection is intentional.
-            val newCount = activeConnections.incrementAndGet()
+            val newCount = activeConnectionsCount.incrementAndGet()
             Log.d(TAG, "Connection accepted. Active connections: $newCount")
-            // Broadcast update to SSE clients
+            // Broadcast update to SSE clients and MainActivity
             broadcastConnectionCount()
             
             try {
@@ -210,9 +233,9 @@ class CameraService : Service(), LifecycleOwner {
             } catch (e: RejectedExecutionException) {
                 Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
                 // Decrement counter since the connection was rejected and won't be processed
-                val rejectedCount = activeConnections.decrementAndGet()
+                val rejectedCount = activeConnectionsCount.decrementAndGet()
                 Log.d(TAG, "Connection rejected. Active connections: $rejectedCount")
-                // Broadcast update to SSE clients
+                // Broadcast update to SSE clients and MainActivity
                 broadcastConnectionCount()
                 // Request will be dropped - client will need to retry
             }
@@ -406,15 +429,15 @@ class CameraService : Service(), LifecycleOwner {
             
             httpServer = CameraHttpServer(actualPort).apply {
                 // Use custom bounded thread pool to prevent resource exhaustion
-                asyncRunner = BoundedAsyncRunner()
+                asyncRunner = BoundedAsyncRunner(maxConnections)
                 setAsyncRunner(asyncRunner!!)
             }
             httpServer?.start()
             
             val startMsg = if (actualPort != PORT) {
-                "Server started on port $actualPort (default port $PORT was unavailable)"
+                "Server started on port $actualPort with max $maxConnections connections (default port $PORT was unavailable)"
             } else {
-                "Server started on port $actualPort with bounded thread pool"
+                "Server started on port $actualPort with max $maxConnections connections"
             }
             Log.d(TAG, startMsg)
             
@@ -704,6 +727,8 @@ class CameraService : Service(), LifecycleOwner {
         cameraOrientation = prefs.getString("cameraOrientation", "landscape") ?: "landscape"
         rotation = prefs.getInt("rotation", 0)
         showResolutionOverlay = prefs.getBoolean("showResolutionOverlay", true)
+        maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
+            .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         
         val resWidth = prefs.getInt("resolutionWidth", -1)
         val resHeight = prefs.getInt("resolutionHeight", -1)
@@ -718,7 +743,7 @@ class CameraService : Service(), LifecycleOwner {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections")
     }
     
     private fun saveSettings() {
@@ -727,6 +752,7 @@ class CameraService : Service(), LifecycleOwner {
             putString("cameraOrientation", cameraOrientation)
             putInt("rotation", rotation)
             putBoolean("showResolutionOverlay", showResolutionOverlay)
+            putInt(PREF_MAX_CONNECTIONS, maxConnections)
             
             selectedResolution?.let {
                 putInt("resolutionWidth", it.width)
@@ -762,9 +788,74 @@ class CameraService : Service(), LifecycleOwner {
         onFrameAvailableCallback = callback
     }
     
+    fun setOnConnectionsChangedCallback(callback: () -> Unit) {
+        onConnectionsChangedCallback = callback
+    }
+    
     fun clearCallbacks() {
         onCameraStateChangedCallback = null
         onFrameAvailableCallback = null
+        onConnectionsChangedCallback = null
+    }
+    
+    fun getActiveConnectionsCount(): Int {
+        // Return the count of connections we can actually track
+        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+    }
+    
+    fun getActiveConnectionsList(): List<ConnectionInfo> {
+        synchronized(connectionsLock) {
+            return activeConnections.values.filter { it.active }.toList()
+        }
+    }
+    
+    fun getMaxConnections(): Int = maxConnections
+    
+    fun setMaxConnections(max: Int): Boolean {
+        val newMax = max.coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
+        if (newMax != maxConnections) {
+            maxConnections = newMax
+            saveSettings()
+            // Note: Server needs to be restarted for the change to take effect
+            return true
+        }
+        return false
+    }
+    
+    fun closeConnection(connectionId: Long): Boolean {
+        synchronized(connectionsLock) {
+            val conn = activeConnections[connectionId]
+            if (conn != null && conn.active) {
+                conn.active = false
+                activeConnections.remove(connectionId)
+                Log.d(TAG, "Manually closed connection $connectionId")
+                notifyConnectionsChanged()
+                return true
+            }
+        }
+        return false
+    }
+    
+    private fun registerConnection(id: Long, remoteAddr: String, endpoint: String) {
+        synchronized(connectionsLock) {
+            activeConnections[id] = ConnectionInfo(id, remoteAddr, endpoint, System.currentTimeMillis())
+        }
+        notifyConnectionsChanged()
+    }
+    
+    private fun unregisterConnection(id: Long) {
+        synchronized(connectionsLock) {
+            val conn = activeConnections[id]
+            if (conn != null) {
+                conn.active = false
+                activeConnections.remove(id)
+            }
+        }
+        notifyConnectionsChanged()
+    }
+    
+    private fun notifyConnectionsChanged() {
+        onConnectionsChangedCallback?.invoke()
     }
     
     fun isServerRunning(): Boolean = httpServer?.isAlive == true
@@ -1002,11 +1093,11 @@ class CameraService : Service(), LifecycleOwner {
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
     
     /**
-     * Broadcast connection count update to all SSE clients
+     * Broadcast connection count update to all SSE clients and MainActivity
      */
     private fun broadcastConnectionCount() {
         val activeConns = asyncRunner?.getActiveConnections() ?: 0
-        val maxConns = asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+        val maxConns = asyncRunner?.getMaxConnections() ?: maxConnections
         val message = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
         
         synchronized(sseClientsLock) {
@@ -1025,6 +1116,9 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
         }
+        
+        // Notify MainActivity of connection count change
+        notifyConnectionsChanged()
     }
     
     private fun updateBatteryCache() {
@@ -1127,11 +1221,14 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/switch" -> serveSwitch()
                 uri == "/status" -> serveStatus()
                 uri == "/events" -> serveSSE()
+                uri == "/connections" -> serveConnections()
+                uri == "/closeConnection" -> serveCloseConnection(session)
                 uri == "/formats" -> serveFormats()
                 uri == "/setFormat" -> serveSetFormat(session)
                 uri == "/setCameraOrientation" -> serveSetCameraOrientation(session)
                 uri == "/setRotation" -> serveSetRotation(session)
                 uri == "/setResolutionOverlay" -> serveSetResolutionOverlay(session)
+                uri == "/setMaxConnections" -> serveSetMaxConnections(session)
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -1155,7 +1252,7 @@ class CameraService : Service(), LifecycleOwner {
             // Exclude the current page request from the count to show actual active streaming connections
             val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
             val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
-            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val maxConns = this@CameraService.maxConnections
             val connectionDisplay = "$activeConns/$maxConns"
             
             val html = """
@@ -1180,6 +1277,13 @@ class CameraService : Service(), LifecycleOwner {
                         .note { font-size: 13px; color: #444; }
                         .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
                         .status-info strong { color: #2e7d32; }
+                        #connectionsContainer { margin: 10px 0; overflow-x: auto; }
+                        #connectionsContainer table { width: 100%; border-collapse: collapse; }
+                        #connectionsContainer th { padding: 8px; text-align: left; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: bold; }
+                        #connectionsContainer td { padding: 8px; border: 1px solid #ddd; }
+                        #connectionsContainer tr:hover { background-color: #f5f5f5; }
+                        #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
+                        #connectionsContainer button:hover { background-color: #d32f2f; }
                     </style>
                 </head>
                 <body>
@@ -1191,9 +1295,13 @@ class CameraService : Service(), LifecycleOwner {
                         </div>
                         <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                         <h2>Live Stream</h2>
-                        <img id="stream" src="/stream" alt="Camera Stream">
+                        <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
+                            <button id="startStreamBtn" onclick="startStream()" style="font-size: 16px; padding: 12px 24px;">Start Stream</button>
+                            <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        </div>
                         <br>
                         <div class="row">
+                            <button onclick="stopStream()">Stop Stream</button>
                             <button onclick="reloadStream()">Refresh</button>
                             <button onclick="switchCamera()">Switch Camera</button>
                             <select id="formatSelect"></select>
@@ -1227,6 +1335,26 @@ class CameraService : Service(), LifecycleOwner {
                         <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
                         <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
                         <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
+                        <h2>Active Connections</h2>
+                        <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
+                        <div id="connectionsContainer">
+                            <p>Loading connections...</p>
+                        </div>
+                        <button onclick="refreshConnections()">Refresh Connections</button>
+                        <h2>Max Connections</h2>
+                        <div class="row">
+                            <label for="maxConnectionsSelect">Max Connections:</label>
+                            <select id="maxConnectionsSelect">
+                                <option value="4">4</option>
+                                <option value="8">8</option>
+                                <option value="16">16</option>
+                                <option value="32" selected>32</option>
+                                <option value="64">64</option>
+                                <option value="100">100</option>
+                            </select>
+                            <button onclick="applyMaxConnections()">Apply</button>
+                        </div>
+                        <p class="note"><em>Note: Server restart required for max connections change to take effect.</em></p>
                         <h2>API Endpoints</h2>
                         <div class="endpoint">
                             <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
@@ -1268,6 +1396,18 @@ class CameraService : Service(), LifecycleOwner {
                             <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
                             Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
                         </div>
+                        <div class="endpoint">
+                            <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
+                            Returns list of active connections as JSON
+                        </div>
+                        <div class="endpoint">
+                            <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
+                            Close a specific connection by ID. Requires <code>id</code> parameter.
+                        </div>
+                        <div class="endpoint">
+                            <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
+                            Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
+                        </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
                             <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
@@ -1278,19 +1418,49 @@ class CameraService : Service(), LifecycleOwner {
                     </div>
                     <script>
                         const streamImg = document.getElementById('stream');
+                        const startStreamBtn = document.getElementById('startStreamBtn');
                         let lastFrame = Date.now();
+                        let streamActive = false;
+                        let autoReloadInterval = null;
+
+                        function startStream() {
+                            streamImg.src = '/stream?ts=' + Date.now();
+                            streamImg.style.display = 'block';
+                            startStreamBtn.style.display = 'none';
+                            streamActive = true;
+                            
+                            // Auto-reload if stream stops
+                            if (autoReloadInterval) clearInterval(autoReloadInterval);
+                            autoReloadInterval = setInterval(() => {
+                                if (streamActive && Date.now() - lastFrame > 5000) {
+                                    reloadStream();
+                                }
+                            }, 3000);
+                        }
+
+                        function stopStream() {
+                            streamImg.src = '';
+                            streamImg.style.display = 'none';
+                            startStreamBtn.style.display = 'block';
+                            streamActive = false;
+                            if (autoReloadInterval) {
+                                clearInterval(autoReloadInterval);
+                                autoReloadInterval = null;
+                            }
+                        }
 
                         function reloadStream() {
-                            streamImg.src = '/stream?ts=' + Date.now();
-                        }
-                        streamImg.onerror = () => setTimeout(reloadStream, 1000);
-                        streamImg.onload = () => { lastFrame = Date.now(); };
-
-                        setInterval(() => {
-                            if (Date.now() - lastFrame > 5000) {
-                                reloadStream();
+                            if (streamActive) {
+                                streamImg.src = '/stream?ts=' + Date.now();
                             }
-                        }, 3000);
+                        }
+                        
+                        streamImg.onerror = () => {
+                            if (streamActive) {
+                                setTimeout(reloadStream, 1000);
+                            }
+                        };
+                        streamImg.onload = () => { lastFrame = Date.now(); };
 
                         function switchCamera() {
                             fetch('/switch')
@@ -1385,10 +1555,105 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
+                        function refreshConnections() {
+                            fetch('/connections')
+                                .then(response => {
+                                    if (!response.ok) {
+                                        throw new Error('HTTP ' + response.status);
+                                    }
+                                    return response.json();
+                                })
+                                .then(data => {
+                                    displayConnections(data.connections);
+                                })
+                                .catch(error => {
+                                    console.error('Connection fetch error:', error);
+                                    document.getElementById('connectionsContainer').innerHTML = 
+                                        '<p style="color: #f44336;">Error loading connections. Please refresh the page or check server status.</p>';
+                                });
+                        }
+
+                        function displayConnections(connections) {
+                            const container = document.getElementById('connectionsContainer');
+                            
+                            if (!connections || connections.length === 0) {
+                                container.innerHTML = '<p>No active connections</p>';
+                                return;
+                            }
+                            
+                            let html = '<table style="width: 100%; border-collapse: collapse;">';
+                            html += '<tr style="background-color: #f0f0f0;">';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">ID</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Remote Address</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Endpoint</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Duration (s)</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Action</th>';
+                            html += '</tr>';
+                            
+                            connections.forEach(conn => {
+                                html += '<tr>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.id + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.remoteAddr + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.endpoint + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + Math.floor(conn.duration / 1000) + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">';
+                                html += '<button onclick="closeConnection(' + conn.id + ')" style="padding: 4px 8px; font-size: 12px;">Close</button>';
+                                html += '</td>';
+                                html += '</tr>';
+                            });
+                            
+                            html += '</table>';
+                            container.innerHTML = html;
+                        }
+
+                        function closeConnection(id) {
+                            if (!confirm('Close connection ' + id + '?')) {
+                                return;
+                            }
+                            
+                            fetch('/closeConnection?id=' + id)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    refreshConnections();
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error closing connection: ' + error;
+                                });
+                        }
+
+                        function applyMaxConnections() {
+                            const value = document.getElementById('maxConnectionsSelect').value;
+                            fetch('/setMaxConnections?value=' + value)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error setting max connections: ' + error;
+                                });
+                        }
+
                         loadFormats();
+                        refreshConnections();
+                        
+                        // Load max connections from server status
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                const select = document.getElementById('maxConnectionsSelect');
+                                const options = select.options;
+                                for (let i = 0; i < options.length; i++) {
+                                    if (parseInt(options[i].value) === data.maxConnections) {
+                                        select.selectedIndex = i;
+                                        break;
+                                    }
+                                }
+                            });
                         
                         // Set up Server-Sent Events for real-time connection count updates
                         const eventSource = new EventSource('/events');
+                        let lastConnectionCount = '';
                         
                         eventSource.onmessage = function(event) {
                             try {
@@ -1396,6 +1661,12 @@ class CameraService : Service(), LifecycleOwner {
                                 const connectionCount = document.getElementById('connectionCount');
                                 if (connectionCount && data.connections) {
                                     connectionCount.textContent = data.connections;
+                                    // Only refresh connection list if count changed
+                                    if (lastConnectionCount !== data.connections) {
+                                        lastConnectionCount = data.connections;
+                                        // Debounce refresh to avoid too many requests
+                                        setTimeout(refreshConnections, 500);
+                                    }
                                 }
                             } catch (e) {
                                 console.error('Failed to parse SSE data:', e);
@@ -1537,7 +1808,7 @@ class CameraService : Service(), LifecycleOwner {
             // Get active connections, excluding this status request itself
             val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
             val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
-            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val maxConns = this@CameraService.maxConnections
             val activeStreamCount = this@CameraService.activeStreams.get()
             val sseCount = synchronized(sseClientsLock) { sseClients.size }
             val json = """
@@ -1554,11 +1825,146 @@ class CameraService : Service(), LifecycleOwner {
                     "connections": "$activeConns/$maxConns",
                     "activeStreams": $activeStreamCount,
                     "activeSSEClients": $sseCount,
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay"]
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections"]
                 }
             """.trimIndent()
             
             return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+        }
+        
+        private fun serveConnections(): Response {
+            // Only show connections we can actually track accurately
+            val activeStreamCount = this@CameraService.activeStreams.get()
+            val sseCount = synchronized(sseClientsLock) { sseClients.size }
+            
+            val jsonArray = mutableListOf<String>()
+            
+            // Add active streaming connections
+            for (i in 1..activeStreamCount) {
+                jsonArray.add("""
+                {
+                    "id": ${System.currentTimeMillis() + i},
+                    "remoteAddr": "Stream Connection $i",
+                    "endpoint": "/stream",
+                    "startTime": ${System.currentTimeMillis()},
+                    "duration": 0,
+                    "active": true,
+                    "type": "stream"
+                }
+                """.trimIndent())
+            }
+            
+            // Add SSE clients with accurate tracking
+            synchronized(sseClientsLock) {
+                sseClients.forEachIndexed { index, client ->
+                    jsonArray.add("""
+                    {
+                        "id": ${client.id},
+                        "remoteAddr": "Real-time Events Connection ${index + 1}",
+                        "endpoint": "/events",
+                        "startTime": ${client.id},
+                        "duration": ${System.currentTimeMillis() - client.id},
+                        "active": ${client.active},
+                        "type": "sse"
+                    }
+                    """.trimIndent())
+                }
+            }
+            
+            val json = """{"connections": [${jsonArray.joinToString(",")}]}"""
+            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+        }
+        
+        private fun serveCloseConnection(session: IHTTPSession): Response {
+            val params = session.parameters
+            val idStr = params["id"]?.firstOrNull()
+            
+            if (idStr == null) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Missing id parameter"}"""
+                )
+            }
+            
+            val id = idStr.toLongOrNull()
+            if (id == null) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Invalid id parameter"}"""
+                )
+            }
+            
+            // Try to close SSE client with this ID
+            var closed = false
+            synchronized(sseClientsLock) {
+                val client = sseClients.find { it.id == id }
+                if (client != null) {
+                    client.active = false
+                    sseClients.remove(client)
+                    closed = true
+                }
+            }
+            
+            return if (closed) {
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/json",
+                    """{"status":"ok","message":"Connection closed","id":$id}"""
+                )
+            } else {
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/json",
+                    """{"status":"info","message":"Connection not found or cannot be closed. Only SSE connections can be manually closed.","id":$id}"""
+                )
+            }
+        }
+        
+        private fun serveSetMaxConnections(session: IHTTPSession): Response {
+            val params = session.parameters
+            val valueStr = params["value"]?.firstOrNull()
+            
+            if (valueStr == null) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Missing value parameter"}"""
+                )
+            }
+            
+            val newMax = valueStr.toIntOrNull()
+            if (newMax == null) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Invalid value parameter"}"""
+                )
+            }
+            
+            if (newMax < HTTP_MIN_MAX_POOL_SIZE || newMax > HTTP_ABSOLUTE_MAX_POOL_SIZE) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Max connections must be between $HTTP_MIN_MAX_POOL_SIZE and $HTTP_ABSOLUTE_MAX_POOL_SIZE"}"""
+                )
+            }
+            
+            val changed = setMaxConnections(newMax)
+            return if (changed) {
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/json",
+                    """{"status":"ok","message":"Max connections set to $newMax. Server restart required for changes to take effect.","maxConnections":$newMax,"requiresRestart":true}"""
+                )
+            } else {
+                newFixedLengthResponse(
+                    Response.Status.OK,
+                    "application/json",
+                    """{"status":"ok","message":"Max connections already set to $newMax","maxConnections":$newMax,"requiresRestart":false}"""
+                )
+            }
         }
         
         /**
@@ -1593,7 +1999,7 @@ class CameraService : Service(), LifecycleOwner {
             
             // Send initial connection count
             val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
-            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val maxConns = this@CameraService.maxConnections
             val initialMessage = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
             messageQueue.offer(initialMessage)
             
