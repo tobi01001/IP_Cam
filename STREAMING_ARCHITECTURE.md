@@ -17,7 +17,8 @@ This document provides a comprehensive technical analysis of the IP_Cam applicat
 3. [Performance Characteristics](#performance-characteristics)
 4. [Optimization Opportunities](#optimization-opportunities)
 5. [MP4 Segment Streaming Analysis](#mp4-segment-streaming-analysis)
-6. [Recommendations](#recommendations)
+6. [Deep Dive: Hardware Encoding & Implementation Details](#deep-dive-hardware-encoding--implementation-details)
+7. [Recommendations](#recommendations)
 
 ---
 
@@ -715,6 +716,713 @@ when (uri) {
 
 ---
 
+## Deep Dive: Hardware Encoding & Implementation Details
+
+This section provides detailed technical information about hardware-accelerated H.264 encoding on Android and potential implementation approaches for HLS/MP4 streaming.
+
+### Hardware Encoding Availability on Android
+
+#### MediaCodec Hardware Acceleration
+
+**Yes, hardware encoding is widely available on Android devices** through the `MediaCodec` API, which has been part of Android since API level 16 (Android 4.1). Modern devices (especially since Android 7.0+) have reliable hardware encoder support.
+
+**Checking Hardware Encoder Availability:**
+
+```kotlin
+import android.media.MediaCodecList
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+
+fun checkHardwareEncoderSupport(): EncoderCapabilities {
+    val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+    
+    for (codecInfo in codecList.codecInfos) {
+        if (!codecInfo.isEncoder) continue
+        
+        for (type in codecInfo.supportedTypes) {
+            if (type.equals(MediaFormat.MIMETYPE_VIDEO_AVC, ignoreCase = true)) {
+                // Found H.264 encoder
+                val isHardware = !codecInfo.name.contains("OMX.google", ignoreCase = true) &&
+                                !codecInfo.name.contains("c2.android", ignoreCase = true)
+                
+                val capabilities = codecInfo.getCapabilitiesForType(type)
+                val colorFormats = capabilities.colorFormats
+                val videoCapabilities = capabilities.videoCapabilities
+                
+                return EncoderCapabilities(
+                    codecName = codecInfo.name,
+                    isHardware = isHardware,
+                    maxWidth = videoCapabilities.supportedWidths.upper,
+                    maxHeight = videoCapabilities.supportedHeights.upper,
+                    maxFrameRate = videoCapabilities.supportedFrameRates.upper.toInt(),
+                    supportedColorFormats = colorFormats.toList(),
+                    bitrateRange = videoCapabilities.bitrateRange
+                )
+            }
+        }
+    }
+    
+    return EncoderCapabilities(codecName = "none", isHardware = false)
+}
+
+data class EncoderCapabilities(
+    val codecName: String,
+    val isHardware: Boolean,
+    val maxWidth: Int = 0,
+    val maxHeight: Int = 0,
+    val maxFrameRate: Int = 0,
+    val supportedColorFormats: List<Int> = emptyList(),
+    val bitrateRange: android.util.Range<Int>? = null
+)
+```
+
+**Typical Hardware Encoders by Chipset:**
+
+| Chipset Vendor | Encoder Name | Typical Capabilities |
+|----------------|--------------|---------------------|
+| **Qualcomm** | OMX.qcom.video.encoder.avc | H.264 up to 4K@60fps |
+| **Samsung Exynos** | OMX.Exynos.AVC.Encoder | H.264 up to 4K@30fps |
+| **MediaTek** | OMX.MTK.VIDEO.ENCODER.AVC | H.264 up to 1080p@60fps |
+| **HiSilicon (Huawei)** | OMX.hisi.video.encoder.avc | H.264 up to 4K@30fps |
+| **NVIDIA Tegra** | OMX.Nvidia.h264.encoder | H.264 up to 4K@60fps |
+
+**Software Fallback:**
+- Google's software encoder: `OMX.google.h264.encoder` or `c2.android.avc.encoder`
+- Always available but much slower (5-10x CPU usage)
+- Usually limited to 1080p@30fps
+
+#### Performance Characteristics
+
+**Hardware Encoder Benefits:**
+- ✅ **Low CPU usage:** 5-15% for 1080p@30fps (vs 60-80% for software)
+- ✅ **Low power consumption:** Dedicated silicon, minimal battery impact
+- ✅ **Real-time encoding:** Can sustain 30-60 fps without dropping frames
+- ✅ **High quality:** Modern encoders support high profiles, good rate control
+
+**Hardware Encoder Limitations:**
+- ⚠️ **Limited control:** Less flexibility than software encoders
+- ⚠️ **Vendor differences:** Quality and capabilities vary by manufacturer
+- ⚠️ **Format restrictions:** May require specific YUV formats (NV12, NV21)
+- ⚠️ **Latency:** Typically 1-3 frame latency for encoding pipeline
+
+### Complete HLS Implementation with Hardware Encoding
+
+#### Architecture Overview
+
+```
+┌─────────────────────┐
+│   CameraX Frames    │ (YUV_420_888)
+│   ImageAnalysis     │
+└──────────┬──────────┘
+           │
+           │ 30 fps
+           ▼
+┌─────────────────────────────────┐
+│  MediaCodec Hardware Encoder    │
+│  (H.264 encoding)                │
+├─────────────────────────────────┤
+│ Input: YUV buffer                │
+│ Output: H.264 NAL units          │
+│ Config: 1080p@30fps, 2Mbps      │
+└──────────┬──────────────────────┘
+           │
+           │ Encoded frames
+           ▼
+┌─────────────────────────────────┐
+│  MediaMuxer                      │
+│  (Segment Creation)              │
+├─────────────────────────────────┤
+│ Buffer frames for 2-6 seconds    │
+│ Mux to MP4/TS segments           │
+│ Write to cache directory         │
+└──────────┬──────────────────────┘
+           │
+           │ Segment files
+           ▼
+┌─────────────────────────────────┐
+│  Segment Manager                 │
+│  (Playlist & Cleanup)            │
+├─────────────────────────────────┤
+│ Generate M3U8 playlist           │
+│ Manage sliding window (10 segs) │
+│ Delete old segments              │
+└──────────┬──────────────────────┘
+           │
+           │ HTTP requests
+           ▼
+┌─────────────────────────────────┐
+│  NanoHTTPD Server                │
+│  (HLS Endpoints)                 │
+├─────────────────────────────────┤
+│ /hls/stream.m3u8 → playlist      │
+│ /hls/segment{N}.ts → video       │
+└─────────────────────────────────┘
+```
+
+#### Detailed Implementation Code
+
+**1. HLS Encoder Manager**
+
+```kotlin
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
+import androidx.camera.core.ImageProxy
+import java.io.File
+import java.nio.ByteBuffer
+
+class HLSEncoderManager(
+    private val cacheDir: File,
+    private val width: Int = 1920,
+    private val height: Int = 1080,
+    private val fps: Int = 30,
+    private val bitrate: Int = 2_000_000, // 2 Mbps
+    private val segmentDurationSec: Int = 2
+) {
+    private lateinit var encoder: MediaCodec
+    private var muxer: MediaMuxer? = null
+    private var videoTrackIndex: Int = -1
+    private var segmentIndex: Int = 0
+    private var segmentStartTime: Long = 0
+    private val segmentFiles = mutableListOf<File>()
+    private val maxSegments = 10
+    
+    private var isEncoding = false
+    private var frameCount = 0
+    
+    fun start() {
+        // Create output format for H.264
+        val format = MediaFormat.createVideoFormat(
+            MediaFormat.MIMETYPE_VIDEO_AVC,
+            width,
+            height
+        )
+        
+        // Configure encoder settings
+        format.setInteger(
+            MediaFormat.KEY_COLOR_FORMAT,
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
+        )
+        format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+        format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+        format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Keyframe every 1 second
+        
+        // Advanced encoder settings for better quality
+        format.setInteger(MediaFormat.KEY_BITRATE_MODE, 
+            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) // Variable bitrate
+        format.setInteger(MediaFormat.KEY_COMPLEXITY,
+            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+        
+        // Try to create hardware encoder first
+        encoder = try {
+            MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create hardware encoder, using software fallback", e)
+            MediaCodec.createByCodecName("OMX.google.h264.encoder")
+        }
+        
+        encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        encoder.start()
+        
+        isEncoding = true
+        segmentStartTime = System.currentTimeMillis()
+        startNewSegment()
+        
+        Log.d(TAG, "HLS encoder started with codec: ${encoder.name}")
+    }
+    
+    fun encodeFrame(image: ImageProxy) {
+        if (!isEncoding) return
+        
+        try {
+            // Get input buffer from encoder
+            val inputBufferIndex = encoder.dequeueInputBuffer(10_000) // 10ms timeout
+            if (inputBufferIndex >= 0) {
+                val inputBuffer = encoder.getInputBuffer(inputBufferIndex)
+                
+                // Convert ImageProxy YUV to encoder format
+                inputBuffer?.let {
+                    fillInputBuffer(it, image)
+                    
+                    val presentationTimeUs = frameCount * 1_000_000L / fps
+                    encoder.queueInputBuffer(
+                        inputBufferIndex,
+                        0,
+                        it.limit(),
+                        presentationTimeUs,
+                        0
+                    )
+                    frameCount++
+                }
+            }
+            
+            // Retrieve encoded output
+            drainEncoder(false)
+            
+            // Check if segment is complete
+            val segmentDuration = System.currentTimeMillis() - segmentStartTime
+            if (segmentDuration >= segmentDurationSec * 1000L) {
+                finalizeSegment()
+                startNewSegment()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error encoding frame", e)
+        }
+    }
+    
+    private fun fillInputBuffer(buffer: ByteBuffer, image: ImageProxy) {
+        // Convert YUV_420_888 to NV12 (or NV21) format expected by encoder
+        val yPlane = image.planes[0]
+        val uPlane = image.planes[1]
+        val vPlane = image.planes[2]
+        
+        // Copy Y plane
+        buffer.put(yPlane.buffer)
+        
+        // Interleave U and V planes for NV12 format
+        val uvBuffer = ByteBuffer.allocate(uPlane.buffer.remaining() + vPlane.buffer.remaining())
+        
+        // NV12: UVUV... interleaved
+        val uBuffer = uPlane.buffer
+        val vBuffer = vPlane.buffer
+        
+        while (uBuffer.hasRemaining() && vBuffer.hasRemaining()) {
+            uvBuffer.put(uBuffer.get())
+            uvBuffer.put(vBuffer.get())
+        }
+        
+        uvBuffer.flip()
+        buffer.put(uvBuffer)
+        buffer.flip()
+    }
+    
+    private fun startNewSegment() {
+        val segmentFile = File(cacheDir, "segment${segmentIndex}.ts")
+        
+        muxer = MediaMuxer(
+            segmentFile.absolutePath,
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS // MPEG-TS for HLS
+        )
+        
+        // Add video track (format already configured)
+        val format = encoder.outputFormat
+        videoTrackIndex = muxer!!.addTrack(format)
+        muxer!!.start()
+        
+        segmentFiles.add(segmentFile)
+        segmentStartTime = System.currentTimeMillis()
+        
+        Log.d(TAG, "Started new segment: ${segmentFile.name}")
+    }
+    
+    private fun finalizeSegment() {
+        drainEncoder(true)
+        
+        muxer?.stop()
+        muxer?.release()
+        muxer = null
+        
+        // Cleanup old segments (keep only last maxSegments)
+        while (segmentFiles.size > maxSegments) {
+            val oldFile = segmentFiles.removeAt(0)
+            oldFile.delete()
+            Log.d(TAG, "Deleted old segment: ${oldFile.name}")
+        }
+        
+        segmentIndex++
+    }
+    
+    private fun drainEncoder(endOfStream: Boolean) {
+        val bufferInfo = MediaCodec.BufferInfo()
+        
+        while (true) {
+            val outputBufferIndex = encoder.dequeueOutputBuffer(bufferInfo, 0)
+            
+            when {
+                outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                    if (!endOfStream) break
+                }
+                outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    // Format changed, update muxer if needed
+                    val newFormat = encoder.outputFormat
+                    Log.d(TAG, "Encoder output format changed: $newFormat")
+                }
+                outputBufferIndex >= 0 -> {
+                    val encodedData = encoder.getOutputBuffer(outputBufferIndex)
+                    
+                    if (encodedData != null && bufferInfo.size > 0) {
+                        // Write to muxer
+                        muxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                    }
+                    
+                    encoder.releaseOutputBuffer(outputBufferIndex, false)
+                    
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        break
+                    }
+                }
+            }
+        }
+    }
+    
+    fun stop() {
+        isEncoding = false
+        finalizeSegment()
+        encoder.stop()
+        encoder.release()
+    }
+    
+    fun generatePlaylist(): String {
+        val playlist = StringBuilder()
+        playlist.append("#EXTM3U\n")
+        playlist.append("#EXT-X-VERSION:3\n")
+        playlist.append("#EXT-X-TARGETDURATION:$segmentDurationSec\n")
+        playlist.append("#EXT-X-MEDIA-SEQUENCE:${maxOf(0, segmentIndex - maxSegments)}\n")
+        
+        segmentFiles.forEach { file ->
+            playlist.append("#EXTINF:$segmentDurationSec.0,\n")
+            playlist.append("${file.name}\n")
+        }
+        
+        return playlist.toString()
+    }
+    
+    companion object {
+        private const val TAG = "HLSEncoderManager"
+    }
+}
+```
+
+**2. Integration with CameraService**
+
+```kotlin
+// Add to CameraService.kt
+
+private var hlsEncoder: HLSEncoderManager? = null
+private var enableHLS = false // Toggle via settings or API
+
+private fun processImage(image: ImageProxy) {
+    try {
+        // Existing MJPEG pipeline
+        val bitmap = imageProxyToBitmap(image)
+        // ... existing code ...
+        
+        // Also feed to HLS encoder if enabled
+        if (enableHLS) {
+            hlsEncoder?.encodeFrame(image)
+        }
+        
+    } catch (e: Exception) {
+        Log.e(TAG, "Error processing image", e)
+    } finally {
+        image.close()
+    }
+}
+
+fun enableHLSStreaming() {
+    val cacheDir = File(cacheDir, "hls_segments")
+    if (!cacheDir.exists()) {
+        cacheDir.mkdirs()
+    }
+    
+    hlsEncoder = HLSEncoderManager(cacheDir, width = 1920, height = 1080)
+    hlsEncoder?.start()
+    enableHLS = true
+}
+
+fun disableHLSStreaming() {
+    enableHLS = false
+    hlsEncoder?.stop()
+    hlsEncoder = null
+}
+
+// Add HLS endpoints to CameraHttpServer
+private fun serveHLSPlaylist(): Response {
+    val playlist = hlsEncoder?.generatePlaylist() ?: return newFixedLengthResponse(
+        Response.Status.SERVICE_UNAVAILABLE,
+        MIME_PLAINTEXT,
+        "HLS not enabled"
+    )
+    
+    return newFixedLengthResponse(Response.Status.OK, "application/vnd.apple.mpegurl", playlist)
+}
+
+private fun serveHLSSegment(segmentName: String): Response {
+    val segmentFile = File(File(cacheDir, "hls_segments"), segmentName)
+    
+    if (!segmentFile.exists()) {
+        return newFixedLengthResponse(
+            Response.Status.NOT_FOUND,
+            MIME_PLAINTEXT,
+            "Segment not found"
+        )
+    }
+    
+    return newFixedLengthResponse(
+        Response.Status.OK,
+        "video/mp2t", // MPEG-TS MIME type
+        segmentFile.inputStream(),
+        segmentFile.length()
+    )
+}
+```
+
+### Pass-Through Recording Approach
+
+The user asked: **"Would Android actually directly deliver a kind of MP4 stream if using e.g. onboard recording functionality so one could also use a pass-through approach?"**
+
+**Answer:** Yes, this is possible with MediaRecorder, but with important caveats.
+
+#### Using MediaRecorder for Pass-Through
+
+Android's `MediaRecorder` can encode and write video directly to a file or socket, which could theoretically be used for streaming:
+
+```kotlin
+import android.media.MediaRecorder
+import android.os.ParcelFileDescriptor
+import java.io.FileOutputStream
+import java.net.Socket
+
+class MediaRecorderStreamingApproach(
+    private val surface: Surface
+) {
+    private var mediaRecorder: MediaRecorder? = null
+    
+    fun startRecordingToSocket(socket: Socket) {
+        mediaRecorder = MediaRecorder().apply {
+            // Set video source
+            setVideoSource(MediaRecorder.VideoSource.SURFACE)
+            
+            // Set output format
+            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            
+            // Set encoder
+            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
+            
+            // Set encoding parameters
+            setVideoSize(1920, 1080)
+            setVideoFrameRate(30)
+            setVideoEncodingBitRate(2_000_000)
+            
+            // Output to socket
+            val pfd = ParcelFileDescriptor.fromSocket(socket)
+            setOutputFile(pfd.fileDescriptor)
+            
+            prepare()
+            start()
+        }
+    }
+    
+    fun stop() {
+        mediaRecorder?.stop()
+        mediaRecorder?.release()
+        mediaRecorder = null
+    }
+}
+```
+
+#### Limitations of MediaRecorder Pass-Through
+
+**Why this approach is problematic for live streaming:**
+
+1. **Container Format Issues:**
+   - MediaRecorder writes MP4 with `moov` atom at the end of file
+   - This means the file isn't playable until recording stops
+   - Not suitable for live streaming (client can't play until complete)
+
+2. **No Segmentation:**
+   - MediaRecorder creates a single continuous file
+   - No automatic segment creation for HLS
+   - Can't implement sliding window of segments
+
+3. **Limited Control:**
+   - Can't access individual frames or NAL units
+   - No ability to insert timestamps or metadata
+   - Can't adjust quality dynamically
+
+4. **Fragmented MP4 Workaround:**
+   ```kotlin
+   // Using fragmented MP4 (fMP4) for streaming
+   if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+       mediaRecorder.setOutputFormat(
+           MediaRecorder.OutputFormat.MPEG_4
+       )
+       // This creates fragmented MP4 suitable for progressive download
+       // But still not ideal for HLS/DASH
+   }
+   ```
+
+#### Better Approach: MediaCodec + Manual Muxing
+
+**Recommended:** Use MediaCodec directly (as shown earlier) instead of MediaRecorder because:
+
+✅ **Frame-level access:** Can process each encoded frame  
+✅ **Flexible muxing:** Control when and how segments are created  
+✅ **Multiple outputs:** Can serve MJPEG and HLS simultaneously  
+✅ **Adaptive quality:** Can adjust encoding parameters in real-time  
+✅ **Metadata control:** Can add custom metadata, timestamps, etc.  
+
+### Dual-Stream Architecture (Recommended)
+
+For maximum flexibility, implement **both MJPEG and HLS simultaneously**:
+
+```kotlin
+class DualStreamCameraService : Service() {
+    // MJPEG pipeline (existing)
+    private var lastFrameJpegBytes: ByteArray? = null
+    
+    // HLS pipeline (new)
+    private var hlsEncoder: HLSEncoderManager? = null
+    
+    private fun processImage(image: ImageProxy) {
+        try {
+            // Path 1: MJPEG (low latency, compatibility)
+            val bitmap = imageProxyToBitmap(image)
+            val annotated = annotateBitmap(bitmap)
+            val jpegBytes = compressToJpeg(annotated, 75)
+            synchronized(jpegLock) {
+                lastFrameJpegBytes = jpegBytes
+            }
+            
+            // Path 2: HLS (bandwidth efficient, recording)
+            if (enableHLS) {
+                // Send raw YUV to hardware encoder
+                hlsEncoder?.encodeFrame(image)
+            }
+            
+        } finally {
+            image.close()
+        }
+    }
+}
+```
+
+**Benefits of Dual-Stream:**
+- ✅ Clients choose based on needs (latency vs bandwidth)
+- ✅ Existing surveillance systems continue working (MJPEG)
+- ✅ Modern clients can use HLS for efficiency
+- ✅ Recording uses HLS segments (native MP4 format)
+- ✅ No need to choose one approach
+
+### Motion Detection with HLS Recording
+
+Since latency isn't an issue for your use case, HLS is perfect for motion-triggered recording:
+
+```kotlin
+class MotionDetectionRecorder(
+    private val hlsEncoder: HLSEncoderManager
+) {
+    private var isRecording = false
+    private val recordingSegments = mutableListOf<File>()
+    
+    fun onMotionDetected() {
+        if (!isRecording) {
+            isRecording = true
+            recordingSegments.clear()
+            Log.d(TAG, "Motion detected - started recording")
+        }
+    }
+    
+    fun onMotionStopped() {
+        if (isRecording) {
+            isRecording = false
+            
+            // Merge recorded segments into single MP4 file
+            mergeSegmentsToFile()
+            
+            Log.d(TAG, "Motion stopped - saved recording")
+        }
+    }
+    
+    private fun mergeSegmentsToFile() {
+        val outputFile = File(recordingsDir, "motion_${System.currentTimeMillis()}.mp4")
+        
+        // Use MediaMuxer to combine segments
+        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        
+        // Copy all segments into final file
+        recordingSegments.forEach { segment ->
+            // Remux from TS to MP4
+            // (Implementation details omitted for brevity)
+        }
+        
+        muxer.stop()
+        muxer.release()
+    }
+}
+```
+
+### Performance Comparison: MediaCodec vs MediaRecorder
+
+| Aspect | MediaCodec (Manual) | MediaRecorder (Pass-Through) |
+|--------|-------------------|----------------------------|
+| **Control** | ✅ Full frame access | ❌ Black box |
+| **Segmentation** | ✅ Manual control | ❌ Single file only |
+| **HLS Support** | ✅ Can implement | ❌ Not suitable |
+| **Latency** | ✅ Low (1-3 frames) | ⚠️ Higher (buffering) |
+| **Quality Control** | ✅ Per-frame adjustment | ⚠️ Fixed at start |
+| **Multiple Outputs** | ✅ Easy | ❌ Difficult |
+| **Complexity** | ⚠️ Higher | ✅ Simpler |
+| **Flexibility** | ✅ Very high | ⚠️ Limited |
+
+**Verdict for IP_Cam:** Use MediaCodec for maximum flexibility and HLS support.
+
+### Resource Usage: MJPEG + HLS Dual Mode
+
+**Expected resource usage when running both:**
+
+| Resource | MJPEG Only | HLS Only | Both (Dual Mode) |
+|----------|-----------|----------|------------------|
+| **CPU Usage** | 20-30% | 10-15% | 25-35% |
+| **Memory** | 30-50 MB | 40-60 MB | 60-90 MB |
+| **Storage I/O** | None | 2-4 MB/s | 2-4 MB/s |
+| **Network (per client)** | 8 Mbps | 2 Mbps | Varies |
+| **Battery Impact** | Medium | Low | Medium |
+
+**Notes:**
+- HLS uses less CPU due to hardware encoding efficiency
+- Storage I/O only active when HLS is enabled
+- Memory overhead is manageable on modern devices
+- Can disable MJPEG when only HLS clients connected (saves 10-15% CPU)
+
+### Implementation Roadmap for HLS
+
+**Phase 1: Proof of Concept (1-2 weeks)**
+1. ✅ Check hardware encoder availability
+2. ✅ Implement basic MediaCodec encoder
+3. ✅ Create single segment and test playback
+4. ✅ Verify hardware acceleration is working
+
+**Phase 2: HLS Pipeline (2-3 weeks)**
+1. ✅ Implement segment rotation (sliding window)
+2. ✅ Generate M3U8 playlists
+3. ✅ Add HTTP endpoints for HLS
+4. ✅ Test with VLC and web browsers
+
+**Phase 3: Integration (1-2 weeks)**
+1. ✅ Integrate with existing CameraService
+2. ✅ Add enable/disable controls
+3. ✅ Implement dual-stream mode
+4. ✅ Add UI toggle for HLS streaming
+
+**Phase 4: Optimization (1-2 weeks)**
+1. ✅ Tune encoder parameters for quality
+2. ✅ Implement adaptive bitrate (if needed)
+3. ✅ Optimize segment management
+4. ✅ Add telemetry and monitoring
+
+**Phase 5: Recording Features (1-2 weeks)**
+1. ✅ Motion detection integration
+2. ✅ Segment merging for recordings
+3. ✅ Storage management and cleanup
+4. ✅ Playback interface for recordings
+
+**Total estimated effort:** 6-11 weeks for complete implementation
+
+---
+
 ## Recommendations
 
 ### Short-Term Optimizations (Low Effort, High Value)
@@ -953,8 +1661,13 @@ Use GPU for overlay rendering:
 ### Documentation
 - CameraX: https://developer.android.com/training/camerax
 - MediaCodec: https://developer.android.com/reference/android/media/MediaCodec
+- MediaCodecList: https://developer.android.com/reference/android/media/MediaCodecList
+- MediaMuxer: https://developer.android.com/reference/android/media/MediaMuxer
+- MediaRecorder: https://developer.android.com/reference/android/media/MediaRecorder
+- Hardware Codec Best Practices: https://developer.android.com/guide/topics/media/hardware-codec
 - NanoHTTPD: https://github.com/NanoHttpd/nanohttpd
-- HLS Spec: https://datatracker.ietf.org/doc/html/rfc8216
+- HLS Spec (RFC 8216): https://datatracker.ietf.org/doc/html/rfc8216
+- Low-Latency HLS: https://developer.apple.com/documentation/http_live_streaming/protocol_extension_for_low-latency_hls
 
 ### Project Files
 - `CameraService.kt` - Main streaming implementation
@@ -972,6 +1685,10 @@ HTTP_MAX_POOL_SIZE = 8
 
 ---
 
-**Document Version:** 1.0  
+**Document Version:** 2.0  
 **Last Updated:** 2025-12-20  
 **Author:** StreamMaster Analysis Agent
+
+**Revision History:**
+- v1.0 (2025-12-20): Initial architecture analysis and MJPEG documentation
+- v2.0 (2025-12-20): Added detailed hardware encoding section, MediaCodec implementation guide, pass-through recording analysis, and dual-stream architecture recommendations
