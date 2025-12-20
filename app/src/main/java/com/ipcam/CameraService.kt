@@ -1096,6 +1096,13 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveIndexPage(): Response {
+            // Calculate active connections at the time of serving the page
+            // This page load itself is one connection, so actual other connections = current - 1
+            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
+            val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
+            val connectionDisplay = "$activeConns/$maxConns"
+            
             val html = """
                 <!DOCTYPE html>
                 <html>
@@ -1125,8 +1132,9 @@ class CameraService : Service(), LifecycleOwner {
                         <h1>IP Camera Server</h1>
                         <div class="status-info">
                             <strong>Server Status:</strong> Running | 
-                            <strong>Active Connections:</strong> <span id="connectionCount">0/8</span>
+                            <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                         </div>
+                        <p class="note"><em>Connection count shows active connections when this page loaded. For real-time count, check the <a href="/status" target="_blank">status endpoint</a> or refresh this page.</em></p>
                         <h2>Live Stream</h2>
                         <img id="stream" src="/stream" alt="Camera Stream">
                         <br>
@@ -1318,25 +1326,9 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
-                        function updateConnectionCount() {
-                            fetch('/status')
-                                .then(response => response.json())
-                                .then(data => {
-                                    const connectionCount = document.getElementById('connectionCount');
-                                    if (connectionCount && data.connections) {
-                                        connectionCount.textContent = data.connections;
-                                    }
-                                })
-                                .catch(error => {
-                                    console.error('Failed to fetch connection count:', error);
-                                });
-                        }
-
                         loadFormats();
-                        // Wait a bit for the stream image to start loading before checking connection count
-                        setTimeout(updateConnectionCount, 500);
-                        // Update connection count every 2 seconds
-                        setInterval(updateConnectionCount, 2000);
+                        // Connection count is embedded in the page at load time
+                        // No need to poll the server - just refresh the page to update
                     </script>
                 </body>
                 </html>
