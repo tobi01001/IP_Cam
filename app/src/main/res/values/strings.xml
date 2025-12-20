@@ -38,4 +38,10 @@
     <string name="endpoint_camera_orientation">GET /setCameraOrientation?value=landscape|portrait - Set camera orientation</string>
     <string name="endpoint_rotation">GET /setRotation?value=0|90|180|270 - Set rotation</string>
     <string name="auto_start_server">Auto-start server on app launch and device boot</string>
+    <string name="active_connections_label">Active Connections:</string>
+    <string name="max_connections_label">Max Connections:</string>
+    <string name="connections_count" formatted="false">%d / %d</string>
+    <string name="no_active_connections">No active connections</string>
+    <string name="connection_close">Close</string>
+    <string name="restart_required">Note: Server restart required for max connections change to take effect</string>
 </resources>

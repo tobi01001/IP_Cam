@@ -41,6 +41,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var switchCameraButton: Button
     private lateinit var startStopButton: Button
     private lateinit var autoStartCheckBox: android.widget.CheckBox
+    private lateinit var activeConnectionsText: TextView
+    private lateinit var maxConnectionsSpinner: Spinner
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
@@ -93,10 +95,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
+            cameraService?.setOnConnectionsChangedCallback {
+                runOnUiThread {
+                    updateConnectionsUI()
+                }
+            }
+            
             updateUI()
             loadResolutions()
             loadCameraOrientationOptions()
             loadRotationOptions()
+            loadMaxConnectionsOptions()
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -122,12 +131,15 @@ class MainActivity : AppCompatActivity() {
         switchCameraButton = findViewById(R.id.switchCameraButton)
         startStopButton = findViewById(R.id.startStopButton)
         autoStartCheckBox = findViewById(R.id.autoStartCheckBox)
+        activeConnectionsText = findViewById(R.id.activeConnectionsText)
+        maxConnectionsSpinner = findViewById(R.id.maxConnectionsSpinner)
         
         setupEndpointsText()
         setupResolutionSpinner()
         setupCameraOrientationSpinner()
         setupRotationSpinner()
         setupAutoStartCheckBox()
+        setupMaxConnectionsSpinner()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -415,6 +427,70 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    private fun setupMaxConnectionsSpinner() {
+        maxConnectionsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selectedItem = parent?.getItemAtPosition(position) as? String
+                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                    applyMaxConnections(selectedItem)
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+    }
+    
+    private fun loadMaxConnectionsOptions() {
+        val service = cameraService ?: return
+        
+        // Create options: 4, 8, 16, 32, 64, 100
+        val options = listOf(4, 8, 16, 32, 64, 100)
+        val items = options.map { it.toString() }
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        maxConnectionsSpinner.adapter = adapter
+        
+        // Set current selection
+        val currentMax = service.getMaxConnections()
+        val index = options.indexOf(currentMax)
+        if (index >= 0) {
+            maxConnectionsSpinner.setSelection(index)
+        } else {
+            // Find closest match
+            val closest = options.minByOrNull { kotlin.math.abs(it - currentMax) }
+            val closestIndex = closest?.let { options.indexOf(it) } ?: 3 // Default to 32
+            maxConnectionsSpinner.setSelection(closestIndex)
+        }
+    }
+    
+    private fun applyMaxConnections(selection: String) {
+        val service = cameraService ?: return
+        val newMax = selection.toIntOrNull() ?: return
+        
+        if (service.setMaxConnections(newMax)) {
+            Toast.makeText(this, "Max connections set to $newMax. Please restart server for changes to take effect.", Toast.LENGTH_LONG).show()
+        }
+    }
+    
+    private fun updateConnectionsUI() {
+        val service = cameraService ?: return
+        
+        if (!service.isServerRunning()) {
+            activeConnectionsText.text = getString(R.string.connections_count, 0, service.getMaxConnections())
+            return
+        }
+        
+        // Get active connection count (simplified version - not showing full list in app)
+        val connections = service.getActiveConnectionsList()
+        val activeCount = connections.size
+        val maxConns = service.getMaxConnections()
+        
+        activeConnectionsText.text = getString(R.string.connections_count, activeCount, maxConns)
+    }
+    
     private fun checkAutoStart() {
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
@@ -518,6 +594,10 @@ class MainActivity : AppCompatActivity() {
         resolutionSpinner.isEnabled = isRunning
         cameraOrientationSpinner.isEnabled = isRunning
         rotationSpinner.isEnabled = isRunning
+        maxConnectionsSpinner.isEnabled = isRunning
+        
+        // Update connections UI
+        updateConnectionsUI()
     }
     
     override fun onResume() {
