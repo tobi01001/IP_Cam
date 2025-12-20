@@ -1272,6 +1272,13 @@ class CameraService : Service(), LifecycleOwner {
                         .note { font-size: 13px; color: #444; }
                         .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
                         .status-info strong { color: #2e7d32; }
+                        #connectionsContainer { margin: 10px 0; overflow-x: auto; }
+                        #connectionsContainer table { width: 100%; border-collapse: collapse; }
+                        #connectionsContainer th { padding: 8px; text-align: left; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: bold; }
+                        #connectionsContainer td { padding: 8px; border: 1px solid #ddd; }
+                        #connectionsContainer tr:hover { background-color: #f5f5f5; }
+                        #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
+                        #connectionsContainer button:hover { background-color: #d32f2f; }
                     </style>
                 </head>
                 <body>
@@ -1319,6 +1326,25 @@ class CameraService : Service(), LifecycleOwner {
                         <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
                         <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
                         <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
+                        <h2>Active Connections</h2>
+                        <div id="connectionsContainer">
+                            <p>Loading connections...</p>
+                        </div>
+                        <button onclick="refreshConnections()">Refresh Connections</button>
+                        <h2>Max Connections</h2>
+                        <div class="row">
+                            <label for="maxConnectionsSelect">Max Connections:</label>
+                            <select id="maxConnectionsSelect">
+                                <option value="4">4</option>
+                                <option value="8">8</option>
+                                <option value="16">16</option>
+                                <option value="32" selected>32</option>
+                                <option value="64">64</option>
+                                <option value="100">100</option>
+                            </select>
+                            <button onclick="applyMaxConnections()">Apply</button>
+                        </div>
+                        <p class="note"><em>Note: Server restart required for max connections change to take effect.</em></p>
                         <h2>API Endpoints</h2>
                         <div class="endpoint">
                             <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
@@ -1359,6 +1385,18 @@ class CameraService : Service(), LifecycleOwner {
                         <div class="endpoint">
                             <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
                             Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
+                        </div>
+                        <div class="endpoint">
+                            <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
+                            Returns list of active connections as JSON
+                        </div>
+                        <div class="endpoint">
+                            <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
+                            Close a specific connection by ID. Requires <code>id</code> parameter.
+                        </div>
+                        <div class="endpoint">
+                            <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
+                            Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
                         </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
@@ -1477,7 +1515,94 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
+                        function refreshConnections() {
+                            fetch('/connections')
+                                .then(response => response.json())
+                                .then(data => {
+                                    displayConnections(data.connections);
+                                })
+                                .catch(error => {
+                                    document.getElementById('connectionsContainer').innerHTML = '<p>Error loading connections: ' + error + '</p>';
+                                });
+                        }
+
+                        function displayConnections(connections) {
+                            const container = document.getElementById('connectionsContainer');
+                            
+                            if (!connections || connections.length === 0) {
+                                container.innerHTML = '<p>No active connections</p>';
+                                return;
+                            }
+                            
+                            let html = '<table style="width: 100%; border-collapse: collapse;">';
+                            html += '<tr style="background-color: #f0f0f0;">';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">ID</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Remote Address</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Endpoint</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Duration (s)</th>';
+                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Action</th>';
+                            html += '</tr>';
+                            
+                            connections.forEach(conn => {
+                                html += '<tr>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.id + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.remoteAddr + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.endpoint + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + Math.floor(conn.duration / 1000) + '</td>';
+                                html += '<td style="padding: 8px; border: 1px solid #ddd;">';
+                                html += '<button onclick="closeConnection(' + conn.id + ')" style="padding: 4px 8px; font-size: 12px;">Close</button>';
+                                html += '</td>';
+                                html += '</tr>';
+                            });
+                            
+                            html += '</table>';
+                            container.innerHTML = html;
+                        }
+
+                        function closeConnection(id) {
+                            if (!confirm('Close connection ' + id + '?')) {
+                                return;
+                            }
+                            
+                            fetch('/closeConnection?id=' + id)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    refreshConnections();
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error closing connection: ' + error;
+                                });
+                        }
+
+                        function applyMaxConnections() {
+                            const value = document.getElementById('maxConnectionsSelect').value;
+                            fetch('/setMaxConnections?value=' + value)
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error setting max connections: ' + error;
+                                });
+                        }
+
                         loadFormats();
+                        refreshConnections();
+                        
+                        // Load max connections from server status
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                const select = document.getElementById('maxConnectionsSelect');
+                                const options = select.options;
+                                for (let i = 0; i < options.length; i++) {
+                                    if (parseInt(options[i].value) === data.maxConnections) {
+                                        select.selectedIndex = i;
+                                        break;
+                                    }
+                                }
+                            });
                         
                         // Set up Server-Sent Events for real-time connection count updates
                         const eventSource = new EventSource('/events');
@@ -1489,6 +1614,8 @@ class CameraService : Service(), LifecycleOwner {
                                 if (connectionCount && data.connections) {
                                     connectionCount.textContent = data.connections;
                                 }
+                                // Auto-refresh connections list when count changes
+                                refreshConnections();
                             } catch (e) {
                                 console.error('Failed to parse SSE data:', e);
                             }
