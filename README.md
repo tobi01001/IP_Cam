@@ -8,6 +8,8 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **Live Camera Preview**: View what the camera sees directly in the app
 - **HTTP Web Server**: Access the camera through any web browser
 - **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
+- **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
+- **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Camera Selection**: Switch between front and back cameras
 - **Configurable Formats**: Choose supported resolutions from the web UI
 - **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
@@ -401,12 +403,14 @@ The app requires the following permissions:
 - **FOREGROUND_SERVICE**: To run the camera service in the background
 
 ## Technical Details
-- **HTTP Server**: NanoHTTPD
+- **HTTP Server**: NanoHTTPD with bounded thread pool
 - **Camera API**: AndroidX CameraX
 - **Streaming Format**: MJPEG (Motion JPEG)
 - **Image Format**: JPEG
 - **Default Port**: 8080
 - **Frame Rate**: ~10 fps
+- **Max Concurrent Connections**: 32+ simultaneous clients
+- **Connection Types**: Separate tracking for HTTP requests, MJPEG streams, and SSE clients
 - **Orientation Detection**: OrientationEventListener for auto-rotation
 - **Rotation Support**: Auto-detection or manual override (0°, 90°, 180°, 270°)
 
@@ -420,6 +424,7 @@ IP_Cam uses a service-based architecture to ensure reliable camera streaming:
 - Provides MJPEG stream to web clients via HTTP server
 - Delivers live frames to MainActivity via callbacks
 - Continues running in background (with foreground notification) even when app is minimized
+- Uses dedicated thread pool for streaming to prevent connection blocking
 
 **MainActivity (UI)**
 - Displays live camera preview from CameraService
@@ -428,12 +433,20 @@ IP_Cam uses a service-based architecture to ensure reliable camera streaming:
 - Receives frame updates via callback mechanism
 - Does NOT manage camera directly (preventing conflicts)
 
+**Concurrent Connection Handling**
+- **HTTP Thread Pool**: 32 threads handle incoming HTTP requests
+- **Streaming Executor**: Separate unbounded thread pool for long-lived connections
+- **Non-Blocking Design**: HTTP handlers return immediately; streaming work offloaded to dedicated threads
+- **Connection Tracking**: Separate counters for active connections, streams, and SSE clients
+- See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation
+
 **Key Benefits:**
 - **Unified Camera Control**: Single camera instance prevents resource conflicts
 - **Synchronized Switching**: Camera switches from web or app update both interfaces immediately
 - **Background Operation**: Server and streaming work reliably even when app is in background or closed
 - **Single Stream Source**: Web stream and app preview use the same camera frames
 - **Flexible Orientation**: Auto-detection or manual override for any mounting scenario
+- **Scalable Connections**: Support for 32+ simultaneous clients without blocking
 
 **How Camera Switching Works:**
 1. User triggers switch (via app button or `/switch` web endpoint)
@@ -456,6 +469,37 @@ MIT License - see LICENSE file for details
 ## Contributing
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+## Testing Concurrent Connections
+
+To verify that multiple simultaneous connections work properly, use the provided test script:
+
+```bash
+./test_concurrent_connections.sh <DEVICE_IP>
+```
+
+Example:
+```bash
+./test_concurrent_connections.sh 192.168.1.100
+```
+
+The test will:
+1. Check basic endpoints (status, snapshot)
+2. Open 3 concurrent MJPEG streams
+3. Verify additional endpoints remain accessible during streaming
+4. Check connection counters via the `/status` endpoint
+
+You can also test manually:
+```bash
+# Terminal 1: Start first stream
+curl http://DEVICE_IP:8080/stream > stream1.mjpeg &
+
+# Terminal 2: Start second stream
+curl http://DEVICE_IP:8080/stream > stream2.mjpeg &
+
+# Terminal 3: Check status (should show activeStreams: 2)
+curl http://DEVICE_IP:8080/status
+```
+
 ## Troubleshooting
 
 ### Server not accessible
@@ -472,6 +516,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Grant camera permissions in Android settings
 - Restart the app
 - Check if another app is using the camera
+
+### Connection issues
+- The server supports 32+ concurrent connections
+- Check `/status` endpoint for `activeConnections`, `activeStreams`, and `activeSSEClients`
+- If connections fail, check device logs for thread pool saturation warnings
 
 ## Frequently Asked Questions (FAQ)
 
