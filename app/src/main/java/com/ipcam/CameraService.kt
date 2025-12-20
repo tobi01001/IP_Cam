@@ -167,7 +167,8 @@ class CameraService : Service(), LifecycleOwner {
         
         override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
             // Decrement active connection counter when a client handler finishes
-            activeConnections.decrementAndGet()
+            val newCount = activeConnections.decrementAndGet()
+            Log.d(TAG, "Connection closed. Active connections: $newCount")
         }
         
         override fun exec(code: NanoHTTPD.ClientHandler?) {
@@ -176,14 +177,16 @@ class CameraService : Service(), LifecycleOwner {
             // Increment counter when accepting a connection. This provides an accurate
             // view of server load, even if the connection is immediately rejected.
             // The brief moment where counter is higher before rejection is intentional.
-            activeConnections.incrementAndGet()
+            val newCount = activeConnections.incrementAndGet()
+            Log.d(TAG, "Connection accepted. Active connections: $newCount")
             
             try {
                 threadPoolExecutor.execute(code)
             } catch (e: RejectedExecutionException) {
                 Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
                 // Decrement counter since the connection was rejected and won't be processed
-                activeConnections.decrementAndGet()
+                val rejectedCount = activeConnections.decrementAndGet()
+                Log.d(TAG, "Connection rejected. Active connections: $rejectedCount")
                 // Request will be dropped - client will need to retry
             }
         }
@@ -1050,7 +1053,8 @@ class CameraService : Service(), LifecycleOwner {
         override fun serve(session: IHTTPSession): Response {
             val uri = session.uri
             val method = session.method
-            Log.d(TAG, "Request: $method $uri")
+            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            Log.d(TAG, "Request: $method $uri (Active connections: $activeConns)")
             
             // Handle CORS preflight requests
             if (method == Method.OPTIONS) {
@@ -1329,7 +1333,8 @@ class CameraService : Service(), LifecycleOwner {
                         }
 
                         loadFormats();
-                        updateConnectionCount();
+                        // Wait a bit for the stream image to start loading before checking connection count
+                        setTimeout(updateConnectionCount, 500);
                         // Update connection count every 2 seconds
                         setInterval(updateConnectionCount, 2000);
                     </script>
@@ -1444,7 +1449,9 @@ class CameraService : Service(), LifecycleOwner {
         
         private fun serveStatus(): Response {
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            // Get active connections, excluding this status request itself
+            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
+            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
             val maxConns = this@CameraService.asyncRunner?.getMaxConnections() ?: HTTP_MAX_POOL_SIZE
             val json = """
                 {
