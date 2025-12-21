@@ -281,7 +281,7 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification("Camera preview active"))
+        startForeground(NOTIFICATION_ID, createNotification())
         acquireLocks()
         registerNetworkReceiver()
         setupOrientationListener()

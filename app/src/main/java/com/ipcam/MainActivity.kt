@@ -734,6 +734,7 @@ class MainActivity : AppCompatActivity() {
         if (isServiceBound) {
             cameraService?.clearCallbacks()
             unbindService(serviceConnection)
+            isServiceBound = false
         }
     }
 }
