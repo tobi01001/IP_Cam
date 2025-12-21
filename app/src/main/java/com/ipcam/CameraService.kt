@@ -584,16 +584,63 @@ class CameraService : Service(), LifecycleOwner {
             checkFlashAvailability()
             
             // Restore flashlight state if enabled for back camera
+            // Use post-delayed to ensure camera is fully initialized
             if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
-                enableTorch(true)
+                // Small delay to ensure camera control is ready
+                ContextCompat.getMainExecutor(this).execute {
+                    try {
+                        Thread.sleep(200)
+                        enableTorch(true)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                    }
+                }
             }
+            
+            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera")
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed", e)
         }
     }
     
+    /**
+     * Properly stop camera activities before applying new settings.
+     * This ensures clean state transition and prevents resource conflicts.
+     */
+    private fun stopCamera() {
+        try {
+            // Clear old analyzer to stop frame processing
+            imageAnalysis?.clearAnalyzer()
+            
+            // Unbind all use cases from lifecycle
+            cameraProvider?.unbindAll()
+            
+            // Clear camera reference
+            camera = null
+            
+            Log.d(TAG, "Camera stopped successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping camera", e)
+        }
+    }
+    
+    /**
+     * Stop camera, apply settings, and restart camera.
+     * This ensures settings are properly applied without conflicts.
+     */
     private fun requestBindCamera() {
         ContextCompat.getMainExecutor(this).execute {
+            // Stop camera first to ensure clean state
+            stopCamera()
+            
+            // Small delay to ensure camera resources are fully released
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            
+            // Rebind camera with new settings
             bindCamera()
         }
     }
