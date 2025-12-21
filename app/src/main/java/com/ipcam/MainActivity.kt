@@ -341,7 +341,8 @@ class MainActivity : AppCompatActivity() {
         resolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow resolution changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyResolution(selectedItem)
                 }
             }
@@ -356,7 +357,8 @@ class MainActivity : AppCompatActivity() {
         rotationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow rotation changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyRotation(selectedItem)
                 }
             }
@@ -374,7 +376,8 @@ class MainActivity : AppCompatActivity() {
         cameraOrientationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow orientation changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyCameraOrientation(selectedItem)
                 }
             }

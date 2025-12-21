@@ -553,6 +553,12 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun bindCamera() {
+        // Ensure lifecycle is in correct state
+        if (lifecycleRegistry.currentState != Lifecycle.State.STARTED) {
+            Log.w(TAG, "Cannot bind camera - lifecycle not in STARTED state: ${lifecycleRegistry.currentState}")
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        }
+        
         val builder = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         
@@ -604,8 +610,16 @@ class CameraService : Service(), LifecycleOwner {
             }
         
         try {
+            Log.d(TAG, "Unbinding all use cases before rebinding...")
             cameraProvider?.unbindAll()
+            
+            Log.d(TAG, "Binding camera to lifecycle...")
             camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            
+            if (camera == null) {
+                Log.e(TAG, "Camera binding returned null!")
+                return
+            }
             
             // Check if flash is available for back camera
             checkFlashAvailability()
@@ -613,20 +627,17 @@ class CameraService : Service(), LifecycleOwner {
             // Restore flashlight state if enabled for back camera
             // Use post-delayed to ensure camera is fully initialized
             if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
-                // Small delay to ensure camera control is ready
-                ContextCompat.getMainExecutor(this).execute {
-                    try {
-                        Thread.sleep(200)
-                        enableTorch(true)
-                    } catch (e: InterruptedException) {
-                        Thread.currentThread().interrupt()
-                    }
-                }
+                // Delay torch enable to ensure camera control is ready
+                // Using Handler instead of Thread.sleep to avoid blocking
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    enableTorch(true)
+                }, 200)
             }
             
-            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera")
+            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
         } catch (e: Exception) {
-            Log.e(TAG, "Camera binding failed", e)
+            Log.e(TAG, "Camera binding failed with exception", e)
+            e.printStackTrace()
         }
     }
     
@@ -654,21 +665,21 @@ class CameraService : Service(), LifecycleOwner {
     /**
      * Stop camera, apply settings, and restart camera.
      * This ensures settings are properly applied without conflicts.
+     * Uses proper async handling to avoid blocking the main thread.
      */
     private fun requestBindCamera() {
+        Log.d(TAG, "requestBindCamera() called - scheduling camera restart")
         ContextCompat.getMainExecutor(this).execute {
             // Stop camera first to ensure clean state
+            Log.d(TAG, "Stopping camera before rebinding...")
             stopCamera()
             
-            // Small delay to ensure camera resources are fully released
-            try {
-                Thread.sleep(100)
-            } catch (e: InterruptedException) {
-                Thread.currentThread().interrupt()
-            }
-            
-            // Rebind camera with new settings
-            bindCamera()
+            // Schedule rebinding after a short delay to ensure resources are released
+            // Using Handler instead of Thread.sleep to avoid blocking main thread
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                Log.d(TAG, "Delay complete, rebinding camera now...")
+                bindCamera()
+            }, 100)
         }
     }
     
