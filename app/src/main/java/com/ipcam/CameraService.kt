@@ -745,6 +745,8 @@ class CameraService : Service(), LifecycleOwner {
     
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
+        // Reset resolution to auto when switching cameras (different cameras have different supported resolutions)
+        selectedResolution = null
         saveSettings()
         
         // Turn off flashlight when switching cameras
