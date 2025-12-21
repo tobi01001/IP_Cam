@@ -83,7 +83,7 @@ class MainActivity : AppCompatActivity() {
     ) { isGranted: Boolean ->
         if (isGranted) {
             hasNotificationPermission = true
-            Toast.makeText(this, "Notification permission granted", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.notification_permission_granted, Toast.LENGTH_SHORT).show()
         } else {
             hasNotificationPermission = false
             // Notification permission is optional, just inform the user

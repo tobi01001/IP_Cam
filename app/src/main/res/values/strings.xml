@@ -51,4 +51,5 @@
     <string name="notification_permission_rationale_title">Notification Permission</string>
     <string name="notification_permission_rationale_message">This app needs notification permission to show service status updates and alerts. The service will work without it, but you won\'t see status notifications.</string>
     <string name="notification_permission_optional">The service will work without notification permission, but status updates won\'t be visible.</string>
+    <string name="notification_permission_granted">Notification permission granted</string>
 </resources>

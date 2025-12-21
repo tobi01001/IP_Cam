@@ -279,6 +279,8 @@ class CameraService : Service(), LifecycleOwner {
         createNotificationChannel()
         
         // Check for POST_NOTIFICATIONS permission on Android 13+
+        // Note: startForeground() will still succeed even without permission on Android 13+,
+        // but the notification won't be visible to the user. The service continues to run normally.
         if (!hasNotificationPermission()) {
             Log.w(TAG, "POST_NOTIFICATIONS permission not granted. Foreground service notification may not be visible on Android 13+")
         }
