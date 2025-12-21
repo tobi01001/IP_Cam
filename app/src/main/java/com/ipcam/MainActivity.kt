@@ -6,10 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.ImageFormat
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -177,9 +173,6 @@ class MainActivity : AppCompatActivity() {
         checkCameraPermission()
         checkBatteryOptimization()
         checkNotificationPermission()
-        
-        // Load camera formats immediately on startup (doesn't require service to be running)
-        loadResolutions()
         
         // Start the camera service for preview (server may or may not start)
         if (hasCameraPermission) {
@@ -395,50 +388,11 @@ class MainActivity : AppCompatActivity() {
         loadCameraOrientationOptions()
     }
     
-    /**
-     * Get camera formats directly using Camera2 API without requiring the service
-     * This allows displaying formats even when the server hasn't been started yet
-     * Note: Returns all available formats since camera orientation preference is not yet loaded
-     * 
-     * This logic is intentionally duplicated from CameraService.getSupportedResolutions()
-     * to avoid creating dependencies and keep MainActivity changes minimal and isolated.
-     */
-    private fun getCameraFormatsDirectly(cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA): List<Size> {
-        try {
-            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val targetFacing = if (cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) {
-                CameraCharacteristics.LENS_FACING_FRONT
-            } else {
-                CameraCharacteristics.LENS_FACING_BACK
-            }
-            
-            val sizes = cameraManager.cameraIdList.mapNotNull { id ->
-                try {
-                    val characteristics = cameraManager.getCameraCharacteristics(id)
-                    val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-                    if (facing != targetFacing) return@mapNotNull null
-                    val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                    // Use safe call and elvis operator to handle potential nulls
-                    config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList() ?: emptyList()
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Error getting formats for camera $id", e)
-                    null
-                }
-            }.flatten()
-            
-            // Return all formats without orientation filtering since user preference isn't loaded yet
-            // Formats will be updated with proper filtering once service connects
-            return sizes.distinctBy { Pair(it.width, it.height) }
-                .sortedByDescending { it.width * it.height }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error getting camera formats directly", e)
-            return emptyList()
-        }
-    }
+
     
     private fun loadResolutions() {
-        // Try to get resolutions from service if available, otherwise query directly
-        val resolutions = cameraService?.getSupportedResolutions() ?: getCameraFormatsDirectly()
+        // Get resolutions from service ONLY - single source of truth
+        val resolutions = cameraService?.getSupportedResolutions() ?: emptyList()
         
         val items = mutableListOf(getString(R.string.resolution_auto))
         items.addAll(resolutions.map { "${it.width}x${it.height}" })

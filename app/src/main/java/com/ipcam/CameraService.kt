@@ -822,6 +822,8 @@ class CameraService : Service(), LifecycleOwner {
         isFlashlightOn = !isFlashlightOn
         enableTorch(isFlashlightOn)
         saveSettings()
+        // Notify MainActivity of flashlight state change
+        onCameraStateChangedCallback?.invoke(currentCamera)
         return isFlashlightOn
     }
     
@@ -849,6 +851,8 @@ class CameraService : Service(), LifecycleOwner {
         selectedResolution = resolution
         saveSettings()
         requestBindCamera()
+        // Notify MainActivity of resolution change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun setCameraOrientation(orientation: String) {
@@ -856,6 +860,8 @@ class CameraService : Service(), LifecycleOwner {
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
         saveSettings()
+        // Notify MainActivity of orientation change so it can reload resolutions
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getCameraOrientation(): String = cameraOrientation
@@ -863,6 +869,8 @@ class CameraService : Service(), LifecycleOwner {
     fun setRotation(rot: Int) {
         rotation = rot
         saveSettings()
+        // Notify MainActivity of rotation change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getRotation(): Int = rotation
@@ -870,6 +878,8 @@ class CameraService : Service(), LifecycleOwner {
     fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
         saveSettings()
+        // Notify MainActivity of overlay setting change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
@@ -970,6 +980,8 @@ class CameraService : Service(), LifecycleOwner {
         if (newMax != maxConnections) {
             maxConnections = newMax
             saveSettings()
+            // Notify MainActivity of max connections change
+            onCameraStateChangedCallback?.invoke(currentCamera)
             // Note: Server needs to be restarted for the change to take effect
             return true
         }
@@ -1997,16 +2009,14 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveSwitch(): Response {
-            currentCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            val newCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
                 CameraSelector.DEFAULT_FRONT_CAMERA
             } else {
                 CameraSelector.DEFAULT_BACK_CAMERA
             }
             
-            selectedResolution = null
-            requestBindCamera()
-            // Notify MainActivity of the camera change
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            // Use the service method to ensure callbacks are triggered
+            switchCamera(newCamera)
             
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
             val json = """{"status": "ok", "camera": "$cameraName"}"""
@@ -2301,8 +2311,8 @@ class CameraService : Service(), LifecycleOwner {
             val params = session.parameters
             val value = params["value"]?.firstOrNull()
             if (value.isNullOrBlank()) {
-                selectedResolution = null
-                requestBindCamera()
+                // Use service method to ensure callbacks are triggered
+                setResolution(null)
                 val message = """{"status":"ok","message":"Resolution reset to auto"}"""
                 return newFixedLengthResponse(Response.Status.OK, "application/json", message)
             }
@@ -2326,8 +2336,8 @@ class CameraService : Service(), LifecycleOwner {
             val desired = Size(width, height)
             val supported = getSupportedResolutions(currentCamera)
             return if (supported.any { it.width == desired.width && it.height == desired.height }) {
-                selectedResolution = desired
-                requestBindCamera()
+                // Use service method to ensure callbacks are triggered
+                setResolution(desired)
                 newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
@@ -2360,7 +2370,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            rotation = newRotation
+            // Use service method to ensure callbacks are triggered
+            setRotation(newRotation)
             val message = "Rotation set to ${newRotation}°"
             
             return newFixedLengthResponse(
@@ -2386,7 +2397,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            cameraOrientation = newOrientation
+            // Use service method to ensure callbacks are triggered
+            setCameraOrientation(newOrientation)
             val message = "Camera orientation set to $newOrientation"
             
             return newFixedLengthResponse(
@@ -2412,7 +2424,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            showResolutionOverlay = showOverlay
+            // Use service method to ensure callbacks are triggered
+            setShowResolutionOverlay(showOverlay)
             val message = "Resolution overlay ${if (showOverlay) "enabled" else "disabled"}"
             
             return newFixedLengthResponse(
