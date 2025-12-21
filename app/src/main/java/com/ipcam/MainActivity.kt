@@ -669,6 +669,7 @@ class MainActivity : AppCompatActivity() {
     
     private fun updateUI() {
         val isRunning = cameraService?.isServerRunning() == true
+        val isCameraAvailable = cameraService != null
         
         serverStatusText.text = getString(
             R.string.server_status,
@@ -694,12 +695,16 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.start_server)
         }
         
-        // Disable start button if permission not granted
+        // Server controls: require permission and either running or can start
         startStopButton.isEnabled = isRunning || hasCameraPermission
-        switchCameraButton.isEnabled = isRunning
-        resolutionSpinner.isEnabled = isRunning
-        cameraOrientationSpinner.isEnabled = isRunning
-        rotationSpinner.isEnabled = isRunning
+        
+        // Camera controls: enabled when camera service is available (bound)
+        switchCameraButton.isEnabled = isCameraAvailable
+        resolutionSpinner.isEnabled = isCameraAvailable
+        cameraOrientationSpinner.isEnabled = isCameraAvailable
+        rotationSpinner.isEnabled = isCameraAvailable
+        
+        // Max connections: only enabled when server is running
         maxConnectionsSpinner.isEnabled = isRunning
         
         // Update flashlight button
@@ -715,9 +720,10 @@ class MainActivity : AppCompatActivity() {
         if (!isServiceBound && cameraService == null) {
             val intent = Intent(this, CameraService::class.java)
             try {
-                bindService(intent, serviceConnection, 0)
+                bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             } catch (e: Exception) {
                 // Service not running, which is fine
+                Log.d("MainActivity", "Service not available in onResume: ${e.message}")
             }
         }
         updateUI()

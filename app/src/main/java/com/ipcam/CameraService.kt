@@ -387,6 +387,14 @@ class CameraService : Service(), LifecycleOwner {
         return null
     }
     
+    private fun getNotificationText(): String {
+        return if (httpServer?.isAlive == true) {
+            "Server running on ${getServerUrl()}"
+        } else {
+            "Camera preview active"
+        }
+    }
+    
     private fun createNotification(contentText: String? = null): Notification {
         val intent = Intent(this, MainActivity::class.java)
         val pendingIntent = PendingIntent.getActivity(
@@ -394,11 +402,7 @@ class CameraService : Service(), LifecycleOwner {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         
-        val text = contentText ?: if (httpServer?.isAlive == true) {
-            "Server running on ${getServerUrl()}"
-        } else {
-            "Camera preview active"
-        }
+        val text = contentText ?: getNotificationText()
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("IP Camera Server")
