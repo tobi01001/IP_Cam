@@ -180,9 +180,13 @@ class MainActivity : AppCompatActivity() {
         // The service will run in foreground mode and provide camera frames to the preview
         if (!isServiceBound) {
             val intent = Intent(this, CameraService::class.java)
-            ContextCompat.startForegroundService(this, intent)
-            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            startAndBindService(intent)
         }
+    }
+    
+    private fun startAndBindService(intent: Intent) {
+        ContextCompat.startForegroundService(this, intent)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
     
     private fun setupEndpointsText() {
@@ -639,13 +643,13 @@ class MainActivity : AppCompatActivity() {
         
         val intent = Intent(this, CameraService::class.java)
         intent.putExtra(CameraService.EXTRA_START_SERVER, true)
-        ContextCompat.startForegroundService(this, intent)
         
         // Bind if not already bound
         if (!isServiceBound) {
-            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+            startAndBindService(intent)
         } else {
-            // Service already bound, just update UI
+            // Service already bound, just send command to start server
+            ContextCompat.startForegroundService(this, intent)
             updateUI()
         }
     }
