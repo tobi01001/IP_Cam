@@ -44,4 +44,8 @@
     <string name="no_active_connections">No active connections</string>
     <string name="connection_close">Close</string>
     <string name="restart_required">Note: Server restart required for max connections change to take effect</string>
+    <string name="flashlight_toggle">Flashlight</string>
+    <string name="flashlight_on">Flashlight: ON</string>
+    <string name="flashlight_off">Flashlight: OFF</string>
+    <string name="flashlight_not_available">Flashlight not available</string>
 </resources>

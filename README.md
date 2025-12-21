@@ -11,6 +11,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
 - **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Camera Selection**: Switch between front and back cameras
+- **Flashlight/Torch Control**: Toggle flashlight for back camera (in-app and via HTTP API)
 - **Configurable Formats**: Choose supported resolutions from the web UI
 - **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
 - **Resolution Debugging**: Optional overlay showing actual bitmap dimensions
@@ -83,6 +84,7 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /setCameraOrientation?value=landscape|portrait`** - Set camera recording mode
 - **`GET /setRotation?value=0|90|180|270`** - Set camera rotation
 - **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
+- **`GET /toggleFlashlight`** - Toggle flashlight on/off for back camera (returns JSON with state)
 
 #### Example Usage
 
@@ -114,6 +116,11 @@ curl http://192.168.1.100:8080/setRotation?value=90
 **Set camera rotation to auto (follow device orientation):**
 ```bash
 curl http://192.168.1.100:8080/setRotation?value=auto
+```
+
+**Toggle flashlight (back camera only):**
+```bash
+curl http://192.168.1.100:8080/toggleFlashlight
 ```
 
 ### Camera Orientation Control
@@ -155,6 +162,54 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 - **Fixed Rotation**: Ideal for permanently mounted cameras where you want consistent orientation
 - **Landscape Streaming**: Force 90° or 270° for wide-angle monitoring regardless of how the phone is mounted
 
+### Flashlight/Torch Control
+
+IP_Cam provides flashlight control for the back camera, useful in low-light conditions:
+
+#### Features
+- **In-App Toggle**: Dedicated button in MainActivity to turn flashlight on/off
+- **HTTP API**: Remote control via `/toggleFlashlight` endpoint
+- **Web UI Control**: Toggle flashlight from the web interface with visual feedback
+- **Hardware Detection**: Automatically detects if device has a flash unit
+- **Smart Availability**: Only available when back camera is active
+- **State Persistence**: Remembers flashlight state across app restarts
+
+#### Usage
+
+**In the App:**
+1. Start the server with back camera selected
+2. Press the "Flashlight" button to toggle on/off
+3. Button shows current state: "Flashlight: ON", "Flashlight: OFF", or "Flashlight N/A"
+
+**Via Web Interface:**
+1. Open the camera's web interface
+2. Click the "Toggle Flashlight" button
+3. Button changes color: Orange (ON) / Green (OFF) / Gray (Not Available)
+
+**Via API:**
+```bash
+# Toggle flashlight
+curl http://192.168.1.100:8080/toggleFlashlight
+
+# Check flashlight status
+curl http://192.168.1.100:8080/status | grep flashlight
+```
+
+**Response Example:**
+```json
+{
+  "status": "ok",
+  "message": "Flashlight enabled",
+  "flashlight": true
+}
+```
+
+#### Important Notes
+- Flashlight only works with **back camera** (front cameras typically don't have flash units)
+- Automatically turns off when switching to front camera
+- Requires device to have a flash unit (most modern phones do)
+- State is saved and restored when app restarts
+
 ### Service Persistence and Reliability
 
 IP_Cam is designed to run reliably as a long-term camera service with multiple persistence mechanisms:
@@ -191,6 +246,8 @@ All camera settings are automatically saved and restored:
 - Rotation setting (0°/90°/180°/270°)
 - Selected resolution
 - Resolution overlay preference
+- Flashlight state (for back camera)
+- Max connections setting
 
 Settings persist across:
 - App restarts
