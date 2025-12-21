@@ -49,6 +49,9 @@ class MainActivity : AppCompatActivity() {
     private var hasCameraPermission = false
     private var hasNotificationPermission = false
     
+    // Flag to prevent spinner listeners from triggering during programmatic updates
+    private var isUpdatingSpinners = false
+    
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
@@ -98,10 +101,17 @@ class MainActivity : AppCompatActivity() {
             // Set up callbacks to receive updates from the service
             cameraService?.setOnCameraStateChangedCallback { _ ->
                 runOnUiThread {
-                    updateUI()
-                    loadResolutions()
-                    loadCameraOrientationOptions()
-                    loadRotationOptions()
+                    // Set flag to prevent spinner listeners from triggering during programmatic updates
+                    isUpdatingSpinners = true
+                    try {
+                        updateUI()
+                        loadResolutions()
+                        loadCameraOrientationOptions()
+                        loadRotationOptions()
+                    } finally {
+                        // Always reset flag even if an exception occurs
+                        isUpdatingSpinners = false
+                    }
                 }
             }
             
@@ -117,11 +127,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            updateUI()
-            loadResolutions()
-            loadCameraOrientationOptions()
-            loadRotationOptions()
-            loadMaxConnectionsOptions()
+            // Initial UI load - set flag to prevent spinner listeners from triggering
+            isUpdatingSpinners = true
+            try {
+                updateUI()
+                loadResolutions()
+                loadCameraOrientationOptions()
+                loadRotationOptions()
+                loadMaxConnectionsOptions()
+            } finally {
+                isUpdatingSpinners = false
+            }
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -340,6 +356,9 @@ class MainActivity : AppCompatActivity() {
     private fun setupResolutionSpinner() {
         resolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
                 // Allow resolution changes when camera service is bound (server doesn't need to be running)
                 if (selectedItem != null && cameraService != null) {
@@ -356,6 +375,9 @@ class MainActivity : AppCompatActivity() {
     private fun setupRotationSpinner() {
         rotationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
                 // Allow rotation changes when camera service is bound (server doesn't need to be running)
                 if (selectedItem != null && cameraService != null) {
@@ -375,6 +397,9 @@ class MainActivity : AppCompatActivity() {
     private fun setupCameraOrientationSpinner() {
         cameraOrientationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
                 // Allow orientation changes when camera service is bound (server doesn't need to be running)
                 if (selectedItem != null && cameraService != null) {

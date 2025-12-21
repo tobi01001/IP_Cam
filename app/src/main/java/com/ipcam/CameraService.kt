@@ -77,6 +77,9 @@ class CameraService : Service(), LifecycleOwner {
     @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var isFlashlightOn: Boolean = false
     @Volatile private var hasFlashUnit: Boolean = false
+    // Camera binding state management
+    @Volatile private var isBindingInProgress: Boolean = false
+    private val bindingLock = Any() // Lock for binding synchronization
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -666,8 +669,18 @@ class CameraService : Service(), LifecycleOwner {
      * Stop camera, apply settings, and restart camera.
      * This ensures settings are properly applied without conflicts.
      * Uses proper async handling to avoid blocking the main thread.
+     * Prevents overlapping bind operations.
      */
     private fun requestBindCamera() {
+        // Check if a binding operation is already in progress
+        synchronized(bindingLock) {
+            if (isBindingInProgress) {
+                Log.d(TAG, "requestBindCamera() ignored - binding already in progress")
+                return
+            }
+            isBindingInProgress = true
+        }
+        
         Log.d(TAG, "requestBindCamera() called - scheduling camera restart")
         ContextCompat.getMainExecutor(this).execute {
             // Stop camera first to ensure clean state
@@ -679,6 +692,10 @@ class CameraService : Service(), LifecycleOwner {
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                 Log.d(TAG, "Delay complete, rebinding camera now...")
                 bindCamera()
+                // Clear the flag after binding completes
+                synchronized(bindingLock) {
+                    isBindingInProgress = false
+                }
             }, 100)
         }
     }
