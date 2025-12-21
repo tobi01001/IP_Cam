@@ -178,9 +178,11 @@ class MainActivity : AppCompatActivity() {
     private fun startCameraServiceForPreview() {
         // Start the service to enable camera preview, but don't necessarily start the HTTP server
         // The service will run in foreground mode and provide camera frames to the preview
-        val intent = Intent(this, CameraService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        if (!isServiceBound) {
+            val intent = Intent(this, CameraService::class.java)
+            ContextCompat.startForegroundService(this, intent)
+            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        }
     }
     
     private fun setupEndpointsText() {

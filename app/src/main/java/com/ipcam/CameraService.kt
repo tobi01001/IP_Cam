@@ -394,7 +394,11 @@ class CameraService : Service(), LifecycleOwner {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         
-        val text = contentText ?: "Server running on ${getServerUrl()}"
+        val text = contentText ?: if (httpServer?.isAlive == true) {
+            "Server running on ${getServerUrl()}"
+        } else {
+            "Camera preview active"
+        }
         
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("IP Camera Server")
