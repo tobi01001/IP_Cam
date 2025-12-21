@@ -745,7 +745,12 @@ class CameraService : Service(), LifecycleOwner {
     
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
-        // Reset resolution to auto when switching cameras (different cameras have different supported resolutions)
+        // Always reset resolution to auto when switching cameras, even if the resolution
+        // might be supported by both cameras. This is safer because:
+        // 1. Different cameras may have different aspect ratios (back: 16:9, front: 4:3)
+        // 2. Even with matching dimensions, sensor characteristics differ
+        // 3. Provides consistent, predictable behavior for users
+        // 4. Avoids potential issues with unsupported resolution edge cases
         selectedResolution = null
         saveSettings()
         
