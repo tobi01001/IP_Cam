@@ -683,31 +683,51 @@ class CameraService : Service(), LifecycleOwner {
         
         Log.d(TAG, "requestBindCamera() called - scheduling camera restart")
         ContextCompat.getMainExecutor(this).execute {
-            // Stop camera first to ensure clean state
-            Log.d(TAG, "Stopping camera before rebinding...")
-            stopCamera()
-            
-            // Schedule rebinding after a short delay to ensure resources are released
-            // Using Handler instead of Thread.sleep to avoid blocking main thread
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                Log.d(TAG, "Delay complete, rebinding camera now...")
-                bindCamera()
-                // Clear the flag after binding completes
+            try {
+                // Stop camera first to ensure clean state
+                Log.d(TAG, "Stopping camera before rebinding...")
+                stopCamera()
+                
+                // Schedule rebinding after a short delay to ensure resources are released
+                // Using Handler instead of Thread.sleep to avoid blocking main thread
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        Log.d(TAG, "Delay complete, rebinding camera now...")
+                        bindCamera()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in bindCamera() from postDelayed", e)
+                    } finally {
+                        // Clear the flag after binding completes or fails
+                        synchronized(bindingLock) {
+                            isBindingInProgress = false
+                            Log.d(TAG, "isBindingInProgress flag cleared")
+                        }
+                    }
+                }, 100)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in requestBindCamera()", e)
+                // Clear flag if we fail before even scheduling the delayed binding
                 synchronized(bindingLock) {
                     isBindingInProgress = false
                 }
-            }, 100)
+            }
         }
     }
     
     private fun processImage(image: ImageProxy) {
         try {
             val bitmap = imageProxyToBitmap(image)
-            Log.d(TAG, "ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+            // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
+            val frameCount = lastFrameTimestamp.toInt() % 30
+            if (frameCount == 0) {
+                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+            }
             
             // Apply camera orientation and rotation without creating squared bitmaps
             val finalBitmap = applyRotationCorrectly(bitmap)
-            Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+            if (frameCount == 0) {
+                Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+            }
             
             // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
             val annotatedBitmap = annotateBitmap(finalBitmap)
