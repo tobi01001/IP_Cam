@@ -558,12 +558,39 @@ class CameraService : Service(), LifecycleOwner {
         
         // Use ResolutionSelector instead of deprecated setTargetResolution
         selectedResolution?.let { resolution ->
+            Log.d(TAG, "Attempting to bind camera with resolution: ${resolution.width}x${resolution.height}")
             val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionFilter { supportedSizes, _ ->
-                    // Filter to find exact match or closest
-                    supportedSizes.filter { size ->
+                    // Try to find exact match first
+                    val exactMatch = supportedSizes.filter { size ->
                         size.width == resolution.width && size.height == resolution.height
-                    }.ifEmpty { supportedSizes }
+                    }
+                    
+                    if (exactMatch.isNotEmpty()) {
+                        Log.d(TAG, "Found exact resolution match: ${resolution.width}x${resolution.height}")
+                        exactMatch
+                    } else {
+                        // No exact match - find closest by total pixels
+                        val targetPixels = resolution.width * resolution.height
+                        val targetAspectRatio = resolution.width.toFloat() / resolution.height.toFloat()
+                        
+                        val closest = supportedSizes.minByOrNull { size ->
+                            val pixels = size.width * size.height
+                            val aspectRatio = size.width.toFloat() / size.height.toFloat()
+                            val pixelDiff = Math.abs(pixels - targetPixels)
+                            val aspectDiff = Math.abs(aspectRatio - targetAspectRatio) * 1000000 // Weight aspect ratio heavily
+                            pixelDiff + aspectDiff.toInt()
+                        }
+                        
+                        if (closest != null) {
+                            Log.w(TAG, "Exact resolution ${resolution.width}x${resolution.height} not available. Using closest: ${closest.width}x${closest.height}")
+                        } else {
+                            Log.e(TAG, "Could not find any suitable resolution. Using default.")
+                        }
+                        
+                        // Return closest match or all supported if none found
+                        closest?.let { listOf(it) } ?: supportedSizes
+                    }
                 }
                 .build()
             builder.setResolutionSelector(resolutionSelector)
@@ -2384,24 +2411,44 @@ class CameraService : Service(), LifecycleOwner {
                 return newFixedLengthResponse(
                     Response.Status.BAD_REQUEST,
                     "application/json",
-                    """{"status":"error","message":"Invalid format"}"""
+                    """{"status":"error","message":"Invalid format. Use format: WIDTHxHEIGHT (e.g., 1920x1080)"}"""
                 )
             }
             val desired = Size(width, height)
             val supported = getSupportedResolutions(currentCamera)
-            return if (supported.any { it.width == desired.width && it.height == desired.height }) {
+            
+            // Check if exact resolution is supported
+            val exactMatch = supported.any { it.width == desired.width && it.height == desired.height }
+            
+            return if (exactMatch) {
                 // Use service method to ensure callbacks are triggered
                 setResolution(desired)
+                Log.d(TAG, "Resolution set via HTTP to ${sizeLabel(desired)}")
                 newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
                     """{"status":"ok","message":"Resolution set to ${sizeLabel(desired)}"}"""
                 )
             } else {
+                // Find closest resolution and suggest it
+                val targetPixels = width * height
+                val closest = supported.minByOrNull { size ->
+                    Math.abs((size.width * size.height) - targetPixels)
+                }
+                
+                val suggestion = if (closest != null) {
+                    " Closest available: ${sizeLabel(closest)}"
+                } else {
+                    ""
+                }
+                
+                val availableFormats = supported.take(5).joinToString(", ") { sizeLabel(it) }
+                val moreText = if (supported.size > 5) " and ${supported.size - 5} more" else ""
+                
                 newFixedLengthResponse(
                     Response.Status.BAD_REQUEST,
                     "application/json",
-                    """{"status":"error","message":"Resolution not supported"}"""
+                    """{"status":"error","message":"Resolution ${sizeLabel(desired)} not supported for current camera.$suggestion Available: $availableFormats$moreText"}"""
                 )
             }
         }
