@@ -662,7 +662,7 @@ class MainActivity : AppCompatActivity() {
             service.stopServer()
         } else {
             Log.w("MainActivity", "Cannot stop server: service not bound")
-            Toast.makeText(this, "Server not running", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Cannot stop server: service not connected", Toast.LENGTH_SHORT).show()
         }
         updateUI()
     }
