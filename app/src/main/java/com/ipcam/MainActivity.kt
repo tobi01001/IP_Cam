@@ -42,6 +42,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cameraOrientationSpinner: Spinner
     private lateinit var rotationSpinner: Spinner
     private lateinit var switchCameraButton: Button
+    private lateinit var flashlightButton: Button
     private lateinit var startStopButton: Button
     private lateinit var autoStartCheckBox: android.widget.CheckBox
     private lateinit var activeConnectionsText: TextView
@@ -132,6 +133,7 @@ class MainActivity : AppCompatActivity() {
         cameraOrientationSpinner = findViewById(R.id.cameraOrientationSpinner)
         rotationSpinner = findViewById(R.id.rotationSpinner)
         switchCameraButton = findViewById(R.id.switchCameraButton)
+        flashlightButton = findViewById(R.id.flashlightButton)
         startStopButton = findViewById(R.id.startStopButton)
         autoStartCheckBox = findViewById(R.id.autoStartCheckBox)
         activeConnectionsText = findViewById(R.id.activeConnectionsText)
@@ -146,6 +148,10 @@ class MainActivity : AppCompatActivity() {
         
         switchCameraButton.setOnClickListener {
             switchCamera()
+        }
+        
+        flashlightButton.setOnClickListener {
+            toggleFlashlight()
         }
         
         startStopButton.setOnClickListener {
@@ -565,6 +571,39 @@ class MainActivity : AppCompatActivity() {
         loadRotationOptions()
     }
     
+    private fun toggleFlashlight() {
+        val service = cameraService ?: return
+        
+        if (!service.isFlashlightAvailable()) {
+            Toast.makeText(this, R.string.flashlight_not_available, Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        val newState = service.toggleFlashlight()
+        updateFlashlightButton()
+        
+        val message = if (newState) {
+            getString(R.string.flashlight_on)
+        } else {
+            getString(R.string.flashlight_off)
+        }
+        Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+    
+    private fun updateFlashlightButton() {
+        val service = cameraService ?: return
+        
+        val isAvailable = service.isFlashlightAvailable()
+        val isEnabled = service.isFlashlightEnabled()
+        
+        flashlightButton.isEnabled = isAvailable
+        flashlightButton.text = when {
+            !isAvailable -> getString(R.string.flashlight_not_available)
+            isEnabled -> getString(R.string.flashlight_on)
+            else -> getString(R.string.flashlight_off)
+        }
+    }
+    
     private fun toggleServer() {
         if (cameraService?.isServerRunning() == true) {
             stopServer()
@@ -633,6 +672,9 @@ class MainActivity : AppCompatActivity() {
         cameraOrientationSpinner.isEnabled = isRunning
         rotationSpinner.isEnabled = isRunning
         maxConnectionsSpinner.isEnabled = isRunning
+        
+        // Update flashlight button
+        updateFlashlightButton()
         
         // Update connections UI
         updateConnectionsUI()

@@ -73,6 +73,10 @@ class CameraService : Service(), LifecycleOwner {
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
+    // Flashlight control
+    private var camera: androidx.camera.core.Camera? = null
+    @Volatile private var isFlashlightOn: Boolean = false
+    @Volatile private var hasFlashUnit: Boolean = false
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -520,7 +524,15 @@ class CameraService : Service(), LifecycleOwner {
         
         try {
             cameraProvider?.unbindAll()
-            cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            
+            // Check if flash is available for back camera
+            checkFlashAvailability()
+            
+            // Restore flashlight state if enabled for back camera
+            if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
+                enableTorch(true)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed", e)
         }
@@ -680,9 +692,95 @@ class CameraService : Service(), LifecycleOwner {
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
         saveSettings()
+        
+        // Turn off flashlight when switching cameras
+        if (isFlashlightOn) {
+            isFlashlightOn = false
+            saveSettings()
+        }
+        
         requestBindCamera()
         // Notify MainActivity of the camera change
         onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    /**
+     * Check if the current camera has a flash unit using Camera2 API
+     */
+    private fun checkFlashAvailability() {
+        hasFlashUnit = false
+        
+        try {
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            val targetFacing = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            
+            cameraManager.cameraIdList.forEach { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                if (facing == targetFacing) {
+                    val available = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE)
+                    hasFlashUnit = available == true
+                    Log.d(TAG, "Flash available for camera $id (facing=$targetFacing): $hasFlashUnit")
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking flash availability", e)
+        }
+    }
+    
+    /**
+     * Enable or disable the camera torch/flashlight
+     */
+    private fun enableTorch(enable: Boolean) {
+        try {
+            if (!hasFlashUnit) {
+                Log.w(TAG, "Cannot enable torch: no flash unit available")
+                return
+            }
+            
+            camera?.cameraControl?.enableTorch(enable)
+            Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error controlling torch", e)
+        }
+    }
+    
+    /**
+     * Toggle flashlight on/off
+     * Only works for back camera with flash unit
+     */
+    fun toggleFlashlight(): Boolean {
+        if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
+            Log.w(TAG, "Flashlight only available for back camera")
+            return false
+        }
+        
+        if (!hasFlashUnit) {
+            Log.w(TAG, "No flash unit available")
+            return false
+        }
+        
+        isFlashlightOn = !isFlashlightOn
+        enableTorch(isFlashlightOn)
+        saveSettings()
+        return isFlashlightOn
+    }
+    
+    /**
+     * Get current flashlight state
+     */
+    fun isFlashlightEnabled(): Boolean = isFlashlightOn
+    
+    /**
+     * Check if flashlight is available (back camera with flash unit)
+     */
+    fun isFlashlightAvailable(): Boolean {
+        return currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit
     }
     
     fun getCurrentCamera(): CameraSelector = currentCamera
@@ -729,6 +827,7 @@ class CameraService : Service(), LifecycleOwner {
         showResolutionOverlay = prefs.getBoolean("showResolutionOverlay", true)
         maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
+        isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
         val resWidth = prefs.getInt("resolutionWidth", -1)
         val resHeight = prefs.getInt("resolutionHeight", -1)
@@ -743,7 +842,7 @@ class CameraService : Service(), LifecycleOwner {
             CameraSelector.DEFAULT_BACK_CAMERA
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
     }
     
     private fun saveSettings() {
@@ -753,6 +852,7 @@ class CameraService : Service(), LifecycleOwner {
             putInt("rotation", rotation)
             putBoolean("showResolutionOverlay", showResolutionOverlay)
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
+            putBoolean("flashlightOn", isFlashlightOn)
             
             selectedResolution?.let {
                 putInt("resolutionWidth", it.width)
@@ -1229,6 +1329,7 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/setRotation" -> serveSetRotation(session)
                 uri == "/setResolutionOverlay" -> serveSetResolutionOverlay(session)
                 uri == "/setMaxConnections" -> serveSetMaxConnections(session)
+                uri == "/toggleFlashlight" -> serveToggleFlashlight()
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -1304,6 +1405,7 @@ class CameraService : Service(), LifecycleOwner {
                             <button onclick="stopStream()">Stop Stream</button>
                             <button onclick="reloadStream()">Refresh</button>
                             <button onclick="switchCamera()">Switch Camera</button>
+                            <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
                             <select id="formatSelect"></select>
                             <button onclick="applyFormat()">Apply Format</button>
                         </div>
@@ -1408,6 +1510,10 @@ class CameraService : Service(), LifecycleOwner {
                             <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
                             Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
                         </div>
+                        <div class="endpoint">
+                            <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
+                            Toggle flashlight on/off for back camera. Only works if back camera is active and device has flash unit.
+                        </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
                             <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
@@ -1471,6 +1577,42 @@ class CameraService : Service(), LifecycleOwner {
                                 })
                                 .catch(error => {
                                     alert('Error switching camera: ' + error);
+                                });
+                        }
+
+                        function toggleFlashlight() {
+                            fetch('/toggleFlashlight')
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.status === 'ok') {
+                                        document.getElementById('formatStatus').textContent = data.message;
+                                        updateFlashlightButton();
+                                    } else {
+                                        document.getElementById('formatStatus').textContent = data.message;
+                                    }
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error toggling flashlight: ' + error;
+                                });
+                        }
+
+                        function updateFlashlightButton() {
+                            fetch('/status')
+                                .then(response => response.json())
+                                .then(data => {
+                                    const button = document.getElementById('flashlightButton');
+                                    if (data.flashlightAvailable) {
+                                        button.disabled = false;
+                                        button.textContent = data.flashlightOn ? 'Flashlight: ON' : 'Flashlight: OFF';
+                                        button.style.backgroundColor = data.flashlightOn ? '#FFA500' : '#4CAF50';
+                                    } else {
+                                        button.disabled = true;
+                                        button.textContent = 'Flashlight N/A';
+                                        button.style.backgroundColor = '#9E9E9E';
+                                    }
+                                })
+                                .catch(error => {
+                                    console.error('Error updating flashlight button:', error);
                                 });
                         }
 
@@ -1636,6 +1778,7 @@ class CameraService : Service(), LifecycleOwner {
 
                         loadFormats();
                         refreshConnections();
+                        updateFlashlightButton();
                         
                         // Load max connections from server status
                         fetch('/status')
@@ -1820,12 +1963,14 @@ class CameraService : Service(), LifecycleOwner {
                     "cameraOrientation": "$cameraOrientation",
                     "rotation": "$rotation",
                     "showResolutionOverlay": $showResolutionOverlay,
+                    "flashlightAvailable": ${isFlashlightAvailable()},
+                    "flashlightOn": ${isFlashlightEnabled()},
                     "activeConnections": $activeConns,
                     "maxConnections": $maxConns,
                     "connections": "$activeConns/$maxConns",
                     "activeStreams": $activeStreamCount,
                     "activeSSEClients": $sseCount,
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections"]
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight"]
                 }
             """.trimIndent()
             
@@ -2206,6 +2351,25 @@ class CameraService : Service(), LifecycleOwner {
                 Response.Status.OK,
                 "application/json",
                 """{"status":"ok","message":"$message","showResolutionOverlay":$showOverlay}"""
+            )
+        }
+        
+        private fun serveToggleFlashlight(): Response {
+            if (!isFlashlightAvailable()) {
+                return newFixedLengthResponse(
+                    Response.Status.BAD_REQUEST,
+                    "application/json",
+                    """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}"""
+                )
+            }
+            
+            val newState = toggleFlashlight()
+            val message = "Flashlight ${if (newState) "enabled" else "disabled"}"
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"$message","flashlight":$newState}"""
             )
         }
     }
