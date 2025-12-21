@@ -976,10 +976,17 @@ class CameraService : Service(), LifecycleOwner {
     fun isServerRunning(): Boolean = httpServer?.isAlive == true
     
     fun stopServer() {
-        serverIntentionallyStopped = true
-        httpServer?.stop()
-        httpServer = null
-        updateNotification("Camera preview active. Server stopped.")
+        try {
+            serverIntentionallyStopped = true
+            httpServer?.stop()
+            httpServer = null
+            updateNotification("Camera preview active. Server stopped.")
+            Log.d(TAG, "Server stopped successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping server", e)
+            // Still update notification even if stop failed
+            updateNotification("Camera preview active")
+        }
     }
     
     fun getServerUrl(): String {

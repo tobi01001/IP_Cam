@@ -657,7 +657,13 @@ class MainActivity : AppCompatActivity() {
     private fun stopServer() {
         // Stop only the HTTP server, not the entire service
         // This keeps the camera running so the preview continues to work
-        cameraService?.stopServer()
+        val service = cameraService
+        if (service != null) {
+            service.stopServer()
+        } else {
+            Log.w("MainActivity", "Cannot stop server: service not bound")
+            Toast.makeText(this, "Server not running", Toast.LENGTH_SHORT).show()
+        }
         updateUI()
     }
     
