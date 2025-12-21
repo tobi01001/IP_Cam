@@ -277,6 +277,12 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         createNotificationChannel()
+        
+        // Check for POST_NOTIFICATIONS permission on Android 13+
+        if (!hasNotificationPermission()) {
+            Log.w(TAG, "POST_NOTIFICATIONS permission not granted. Foreground service notification may not be visible on Android 13+")
+        }
+        
         startForeground(NOTIFICATION_ID, createNotification())
         acquireLocks()
         registerNetworkReceiver()
@@ -317,6 +323,21 @@ class CameraService : Service(), LifecycleOwner {
             android.os.SystemClock.elapsedRealtime() + 1000,
             pendingIntent
         )
+    }
+    
+    /**
+     * Check if POST_NOTIFICATIONS permission is granted (required on Android 13+)
+     */
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            // Permission not required on Android 12 and below
+            true
+        }
     }
     
     private fun createNotificationChannel() {
@@ -460,6 +481,12 @@ class CameraService : Service(), LifecycleOwner {
      * Update the foreground notification with new text
      */
     private fun updateNotification(contentText: String) {
+        // On Android 13+, check if POST_NOTIFICATIONS permission is granted
+        if (!hasNotificationPermission()) {
+            Log.w(TAG, "Cannot update notification: POST_NOTIFICATIONS permission not granted")
+            return
+        }
+        
         val notificationManager = getSystemService(NotificationManager::class.java)
         notificationManager?.notify(NOTIFICATION_ID, createNotification(contentText))
     }
@@ -468,6 +495,12 @@ class CameraService : Service(), LifecycleOwner {
      * Show a user notification (not the foreground service notification)
      */
     private fun showUserNotification(title: String, message: String) {
+        // On Android 13+, check if POST_NOTIFICATIONS permission is granted
+        if (!hasNotificationPermission()) {
+            Log.w(TAG, "Cannot show user notification: POST_NOTIFICATIONS permission not granted. Title: $title, Message: $message")
+            return
+        }
+        
         val notificationManager = getSystemService(NotificationManager::class.java)
         
         // Create a separate notification for user alerts

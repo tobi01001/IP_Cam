@@ -51,6 +51,7 @@ class MainActivity : AppCompatActivity() {
     private var cameraService: CameraService? = null
     private var isServiceBound = false
     private var hasCameraPermission = false
+    private var hasNotificationPermission = false
     
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
@@ -74,6 +75,19 @@ class MainActivity : AppCompatActivity() {
                 showPermissionDeniedDialog()
             }
             updateUI()
+        }
+    }
+    
+    private val requestNotificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted: Boolean ->
+        if (isGranted) {
+            hasNotificationPermission = true
+            Toast.makeText(this, "Notification permission granted", Toast.LENGTH_SHORT).show()
+        } else {
+            hasNotificationPermission = false
+            // Notification permission is optional, just inform the user
+            Toast.makeText(this, R.string.notification_permission_optional, Toast.LENGTH_LONG).show()
         }
     }
     
@@ -160,6 +174,7 @@ class MainActivity : AppCompatActivity() {
         
         checkCameraPermission()
         checkBatteryOptimization()
+        checkNotificationPermission()
         
         // Load camera formats immediately on startup (doesn't require service to be running)
         loadResolutions()
@@ -261,6 +276,48 @@ class MainActivity : AppCompatActivity() {
                     .show()
             }
         }
+    }
+    
+    private fun checkNotificationPermission() {
+        // POST_NOTIFICATIONS permission is only required on Android 13+ (API 33)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            when {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED -> {
+                    hasNotificationPermission = true
+                }
+                shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS) -> {
+                    // Show rationale before requesting permission
+                    showNotificationPermissionRationale()
+                }
+                else -> {
+                    // Request permission directly
+                    requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        } else {
+            // Not required on Android 12 and below
+            hasNotificationPermission = true
+        }
+    }
+    
+    private fun showNotificationPermissionRationale() {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.notification_permission_rationale_title)
+            .setMessage(R.string.notification_permission_rationale_message)
+            .setPositiveButton("OK") { _, _ ->
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+            .setNegativeButton("Skip") { dialog, _ ->
+                dialog.dismiss()
+                Toast.makeText(this, R.string.notification_permission_optional, Toast.LENGTH_LONG).show()
+            }
+            .create()
+            .show()
     }
     
     private fun setupResolutionSpinner() {
