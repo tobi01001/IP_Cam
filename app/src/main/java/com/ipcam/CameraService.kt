@@ -110,6 +110,8 @@ class CameraService : Service(), LifecycleOwner {
     private val connectionsLock = Any()
     // User-configurable max connections setting
     @Volatile private var maxConnections: Int = HTTP_DEFAULT_MAX_POOL_SIZE
+    // Track if server was intentionally stopped (don't auto-restart in watchdog)
+    @Volatile private var serverIntentionallyStopped: Boolean = false
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -127,6 +129,8 @@ class CameraService : Service(), LifecycleOwner {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         // Intent extras
+         const val EXTRA_START_SERVER = "start_server"
          // Thread pool settings for NanoHTTPD
          // Maximum parallel connections: HTTP_MAX_POOL_SIZE (32 concurrent connections)
          // Separate pools for request handlers and long-lived streaming connections
@@ -277,21 +281,25 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification())
+        startForeground(NOTIFICATION_ID, createNotification("Camera preview active"))
         acquireLocks()
         registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
-        startServer()
+        // Don't start server automatically in onCreate - wait for explicit start request
         startCamera()
         startWatchdog()
     }
     
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
-        if (httpServer?.isAlive != true) {
+        
+        // Check if we should start the server based on intent extra
+        val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
+        if (shouldStartServer && httpServer?.isAlive != true) {
             startServer()
         }
+        
         if (cameraProvider == null) {
             startCamera()
         }
@@ -401,6 +409,9 @@ class CameraService : Service(), LifecycleOwner {
     
     private fun startServer() {
         try {
+            // Clear the intentionally stopped flag since we're starting the server
+            serverIntentionallyStopped = false
+            
             // If server is already running, just return
             if (httpServer?.isAlive == true) {
                 Log.d(TAG, "Server is already running on port $actualPort")
@@ -960,6 +971,13 @@ class CameraService : Service(), LifecycleOwner {
     
     fun isServerRunning(): Boolean = httpServer?.isAlive == true
     
+    fun stopServer() {
+        serverIntentionallyStopped = true
+        httpServer?.stop()
+        httpServer = null
+        updateNotification("Camera preview active. Server stopped.")
+    }
+    
     fun getServerUrl(): String {
         val ipAddress = getIpAddress()
         return "http://$ipAddress:$actualPort"
@@ -1029,8 +1047,8 @@ class CameraService : Service(), LifecycleOwner {
                 
                 var needsRecovery = false
                 
-                // Check server health
-                if (httpServer?.isAlive != true) {
+                // Check server health - only restart if it wasn't intentionally stopped
+                if (!serverIntentionallyStopped && httpServer?.isAlive != true) {
                     Log.w(TAG, "Watchdog: Server not alive, restarting...")
                     startServer()
                     needsRecovery = true

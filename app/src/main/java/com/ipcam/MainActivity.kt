@@ -63,6 +63,8 @@ class MainActivity : AppCompatActivity() {
         if (isGranted) {
             hasCameraPermission = true
             Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
+            // Start camera service for preview now that we have permission
+            startCameraServiceForPreview()
             updateUI()
         } else {
             hasCameraPermission = false
@@ -164,8 +166,21 @@ class MainActivity : AppCompatActivity() {
         // Load camera formats immediately on startup (doesn't require service to be running)
         loadResolutions()
         
+        // Start the camera service for preview (server may or may not start)
+        if (hasCameraPermission) {
+            startCameraServiceForPreview()
+        }
+        
         // Auto-start server if enabled
         checkAutoStart()
+    }
+    
+    private fun startCameraServiceForPreview() {
+        // Start the service to enable camera preview, but don't necessarily start the HTTP server
+        // The service will run in foreground mode and provide camera frames to the preview
+        val intent = Intent(this, CameraService::class.java)
+        ContextCompat.startForegroundService(this, intent)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
     
     private fun setupEndpointsText() {
@@ -621,20 +636,22 @@ class MainActivity : AppCompatActivity() {
         }
         
         val intent = Intent(this, CameraService::class.java)
+        intent.putExtra(CameraService.EXTRA_START_SERVER, true)
         ContextCompat.startForegroundService(this, intent)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        
+        // Bind if not already bound
+        if (!isServiceBound) {
+            bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        } else {
+            // Service already bound, just update UI
+            updateUI()
+        }
     }
     
     private fun stopServer() {
-        if (isServiceBound) {
-            cameraService?.clearCallbacks()
-            unbindService(serviceConnection)
-            isServiceBound = false
-        }
-        val intent = Intent(this, CameraService::class.java)
-        stopService(intent)
-        cameraService = null
-        previewImageView.setImageBitmap(null)
+        // Stop only the HTTP server, not the entire service
+        // This keeps the camera running so the preview continues to work
+        cameraService?.stopServer()
         updateUI()
     }
     

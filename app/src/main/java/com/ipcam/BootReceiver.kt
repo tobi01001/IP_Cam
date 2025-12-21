@@ -24,10 +24,11 @@ class BootReceiver : BroadcastReceiver() {
             val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
             
             if (autoStart) {
-                Log.d(TAG, "Autostart enabled, starting CameraService")
+                Log.d(TAG, "Autostart enabled, starting CameraService with server")
                 // Note: Service will check for camera permission on startup and handle accordingly
                 // The service is designed to handle missing permissions gracefully
                 val serviceIntent = Intent(context, CameraService::class.java)
+                serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
                 try {
                     ContextCompat.startForegroundService(context, serviceIntent)
                 } catch (e: Exception) {
