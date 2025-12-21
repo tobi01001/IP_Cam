@@ -64,6 +64,8 @@ class MainActivity : AppCompatActivity() {
         if (isGranted) {
             hasCameraPermission = true
             Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
+            // Start camera service for preview now that we have permission
+            startCameraServiceForPreview()
             updateUI()
         } else {
             hasCameraPermission = false
@@ -179,8 +181,30 @@ class MainActivity : AppCompatActivity() {
         // Load camera formats immediately on startup (doesn't require service to be running)
         loadResolutions()
         
+        // Start the camera service for preview (server may or may not start)
+        if (hasCameraPermission) {
+            startCameraServiceForPreview()
+        }
+        
         // Auto-start server if enabled
         checkAutoStart()
+    }
+    
+    private fun startCameraServiceForPreview() {
+        // Start the service to enable camera preview, but don't necessarily start the HTTP server
+        // The service will run in foreground mode and provide camera frames to the preview
+        if (!isServiceBound) {
+            Log.d("MainActivity", "Starting camera service for preview only")
+            val intent = Intent(this, CameraService::class.java)
+            startAndBindService(intent)
+        } else {
+            Log.d("MainActivity", "Camera service already bound, skipping start")
+        }
+    }
+    
+    private fun startAndBindService(intent: Intent) {
+        ContextCompat.startForegroundService(this, intent)
+        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
     }
     
     private fun setupEndpointsText() {
@@ -678,25 +702,31 @@ class MainActivity : AppCompatActivity() {
         }
         
         val intent = Intent(this, CameraService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        intent.putExtra(CameraService.EXTRA_START_SERVER, true)
+        
+        // Bind if not already bound
+        if (!isServiceBound) {
+            startAndBindService(intent)
+        } else {
+            // Service already bound, just send command to start server
+            ContextCompat.startForegroundService(this, intent)
+            updateUI()
+        }
     }
     
     private fun stopServer() {
-        if (isServiceBound) {
-            cameraService?.clearCallbacks()
-            unbindService(serviceConnection)
-            isServiceBound = false
+        // Stop only the HTTP server, not the entire service
+        // This keeps the camera running so the preview continues to work
+        cameraService?.stopServer() ?: run {
+            Log.w("MainActivity", "Cannot stop server: service not bound")
+            Toast.makeText(this, "Cannot stop server: service not connected", Toast.LENGTH_SHORT).show()
         }
-        val intent = Intent(this, CameraService::class.java)
-        stopService(intent)
-        cameraService = null
-        previewImageView.setImageBitmap(null)
         updateUI()
     }
     
     private fun updateUI() {
         val isRunning = cameraService?.isServerRunning() == true
+        val isCameraAvailable = cameraService != null
         
         serverStatusText.text = getString(
             R.string.server_status,
@@ -722,12 +752,16 @@ class MainActivity : AppCompatActivity() {
             getString(R.string.start_server)
         }
         
-        // Disable start button if permission not granted
+        // Server controls: require permission and either running or can start
         startStopButton.isEnabled = isRunning || hasCameraPermission
-        switchCameraButton.isEnabled = isRunning
-        resolutionSpinner.isEnabled = isRunning
-        cameraOrientationSpinner.isEnabled = isRunning
-        rotationSpinner.isEnabled = isRunning
+        
+        // Camera controls: enabled when camera service is available (bound)
+        switchCameraButton.isEnabled = isCameraAvailable
+        resolutionSpinner.isEnabled = isCameraAvailable
+        cameraOrientationSpinner.isEnabled = isCameraAvailable
+        rotationSpinner.isEnabled = isCameraAvailable
+        
+        // Max connections: only enabled when server is running
         maxConnectionsSpinner.isEnabled = isRunning
         
         // Update flashlight button
@@ -743,9 +777,10 @@ class MainActivity : AppCompatActivity() {
         if (!isServiceBound && cameraService == null) {
             val intent = Intent(this, CameraService::class.java)
             try {
-                bindService(intent, serviceConnection, 0)
+                bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
             } catch (e: Exception) {
                 // Service not running, which is fine
+                Log.d("MainActivity", "Service not available in onResume: ${e.message}")
             }
         }
         updateUI()
@@ -762,6 +797,7 @@ class MainActivity : AppCompatActivity() {
         if (isServiceBound) {
             cameraService?.clearCallbacks()
             unbindService(serviceConnection)
+            isServiceBound = false
         }
     }
 }
