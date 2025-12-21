@@ -179,8 +179,11 @@ class MainActivity : AppCompatActivity() {
         // Start the service to enable camera preview, but don't necessarily start the HTTP server
         // The service will run in foreground mode and provide camera frames to the preview
         if (!isServiceBound) {
+            Log.d("MainActivity", "Starting camera service for preview only")
             val intent = Intent(this, CameraService::class.java)
             startAndBindService(intent)
+        } else {
+            Log.d("MainActivity", "Camera service already bound, skipping start")
         }
     }
     
@@ -657,10 +660,7 @@ class MainActivity : AppCompatActivity() {
     private fun stopServer() {
         // Stop only the HTTP server, not the entire service
         // This keeps the camera running so the preview continues to work
-        val service = cameraService
-        if (service != null) {
-            service.stopServer()
-        } else {
+        cameraService?.stopServer() ?: run {
             Log.w("MainActivity", "Cannot stop server: service not bound")
             Toast.makeText(this, "Cannot stop server: service not connected", Toast.LENGTH_SHORT).show()
         }
