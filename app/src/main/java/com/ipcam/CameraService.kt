@@ -74,7 +74,7 @@ class CameraService : Service(), LifecycleOwner {
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
     // Flashlight control
-    private var camera: androidx.camera.core.Camera? = null
+    @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var isFlashlightOn: Boolean = false
     @Volatile private var hasFlashUnit: Boolean = false
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
