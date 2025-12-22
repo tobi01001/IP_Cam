@@ -108,7 +108,10 @@ class MainActivity : AppCompatActivity() {
                     isUpdatingSpinners = true
                     try {
                         updateUI()
-                        loadResolutions()
+                        // Don't call loadResolutions() here - it causes constant spinner refreshing
+                        // Resolution spinner only needs updating when:
+                        // 1. Camera switches (different supported resolutions) - handled in switchCamera()
+                        // 2. User explicitly changes resolution - handled in applyResolution()
                         loadCameraOrientationOptions()
                         loadRotationOptions()
                     } finally {
