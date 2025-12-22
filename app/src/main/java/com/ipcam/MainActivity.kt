@@ -52,6 +52,9 @@ class MainActivity : AppCompatActivity() {
     // Flag to prevent spinner listeners from triggering during programmatic updates
     private var isUpdatingSpinners = false
     
+    // Track last applied resolution to prevent infinite loop when setSelection triggers onItemSelected
+    private var lastAppliedResolution: String? = null
+    
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
@@ -435,15 +438,33 @@ class MainActivity : AppCompatActivity() {
         
         // Set current selection if service is available
         val currentResolution = cameraService?.getSelectedResolution()
-        if (currentResolution != null) {
-            val index = items.indexOf("${currentResolution.width}x${currentResolution.height}")
-            if (index >= 0) {
-                resolutionSpinner.setSelection(index)
-            }
+        val selectionString = if (currentResolution != null) {
+            "${currentResolution.width}x${currentResolution.height}"
+        } else {
+            getString(R.string.resolution_auto)
+        }
+        
+        // Update lastAppliedResolution to match current state to prevent false triggers
+        lastAppliedResolution = selectionString
+        
+        val index = items.indexOf(selectionString)
+        if (index >= 0) {
+            resolutionSpinner.setSelection(index)
         }
     }
     
     private fun applyResolution(selection: String) {
+        // Prevent infinite loop: only apply if resolution actually changed
+        // onItemSelected fires every time setSelection() is called, even with same value
+        // This causes: callback → loadResolutions → setSelection → onItemSelected → applyResolution → requestBindCamera → infinite loop
+        if (selection == lastAppliedResolution) {
+            Log.d("MainActivity", "applyResolution: same value '$selection', skipping")
+            return
+        }
+        
+        Log.d("MainActivity", "applyResolution: changing from '$lastAppliedResolution' to '$selection'")
+        lastAppliedResolution = selection
+        
         val service = cameraService ?: return
         
         if (selection == getString(R.string.resolution_auto)) {
