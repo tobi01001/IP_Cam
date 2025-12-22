@@ -1539,9 +1539,7 @@ class CameraService : Service(), LifecycleOwner {
             }
         }
         
-        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-        val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
-        Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients: camera=$cameraName, resolution=$resolutionStr, orientation=$cameraOrientation, rotation=$rotation")
+        Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients")
     }
     
     private fun updateBatteryCache() {
@@ -2144,13 +2142,19 @@ class CameraService : Service(), LifecycleOwner {
                         };
                         
                         // Handle camera state updates pushed by server
+                        let lastReceivedState = null;  // Track last state to detect actual changes
+                        
                         eventSource.addEventListener('state', function(event) {
                             try {
                                 const state = JSON.parse(event.data);
                                 console.log('Received state update from server:', state);
                                 
+                                // Check if this is an actual change
+                                const cameraChanged = !lastReceivedState || lastReceivedState.camera !== state.camera;
+                                const resolutionChanged = !lastReceivedState || lastReceivedState.resolution !== state.resolution;
+                                
                                 // Update resolution spinner if changed
-                                if (state.resolution) {
+                                if (state.resolution && resolutionChanged) {
                                     const formatSelect = document.getElementById('formatSelect');
                                     const options = formatSelect.options;
                                     for (let i = 0; i < options.length; i++) {
@@ -2213,10 +2217,14 @@ class CameraService : Service(), LifecycleOwner {
                                     setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 }
                                 
-                                // If camera switched or resolution changed, reload formats
-                                if (state.camera || state.resolution) {
+                                // If camera switched or resolution actually changed, reload formats
+                                if (cameraChanged) {
+                                    console.log('Camera changed, reloading formats');
                                     loadFormats();
                                 }
+                                
+                                // Store current state for next comparison
+                                lastReceivedState = state;
                                 
                             } catch (e) {
                                 console.error('Failed to handle state update:', e);
