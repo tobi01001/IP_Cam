@@ -1488,15 +1488,18 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     /**
-     * Broadcast camera state update to all SSE clients for real-time synchronization.
-     * This ensures all connected web clients stay in sync with the authoritative camera state.
+     * Build camera state JSON string for SSE broadcasts.
+     * Centralizes JSON construction to avoid duplication and ensure consistency.
      */
-    private fun broadcastCameraState() {
+    private fun buildCameraStateJson(): String {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
         
         // Build JSON state object
-        val stateJson = """
+        // Note: Using manual string construction for simplicity. For production use,
+        // consider using a JSON library like Gson or kotlinx.serialization for better
+        // safety and automatic escaping.
+        return """
         {
             "type": "state",
             "camera": "$cameraName",
@@ -1509,7 +1512,14 @@ class CameraService : Service(), LifecycleOwner {
             "serverRunning": ${isServerRunning()}
         }
         """.trimIndent().replace("\n", "").replace("  ", "")
-        
+    }
+    
+    /**
+     * Broadcast camera state update to all SSE clients for real-time synchronization.
+     * This ensures all connected web clients stay in sync with the authoritative camera state.
+     */
+    private fun broadcastCameraState() {
+        val stateJson = buildCameraStateJson()
         val message = "event: state\ndata: $stateJson\n\n"
         
         synchronized(sseClientsLock) {
@@ -1529,6 +1539,8 @@ class CameraService : Service(), LifecycleOwner {
             }
         }
         
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
         Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients: camera=$cameraName, resolution=$resolutionStr, orientation=$cameraOrientation, rotation=$rotation")
     }
     
@@ -1834,6 +1846,10 @@ class CameraService : Service(), LifecycleOwner {
                         </ul>
                     </div>
                     <script>
+                        // Configuration constants
+                        const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
+                        const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
+                        
                         const streamImg = document.getElementById('stream');
                         const startStreamBtn = document.getElementById('startStreamBtn');
                         let lastFrame = Date.now();
@@ -1958,7 +1974,7 @@ class CameraService : Service(), LifecycleOwner {
                                 .then(response => response.json())
                                 .then(data => {
                                     document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, 200);
+                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to set format';
@@ -1972,7 +1988,7 @@ class CameraService : Service(), LifecycleOwner {
                                 .then(response => response.json())
                                 .then(data => {
                                     document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, 200);
+                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to set camera orientation';
@@ -1986,7 +2002,7 @@ class CameraService : Service(), LifecycleOwner {
                                 .then(response => response.json())
                                 .then(data => {
                                     document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, 200);
+                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to set rotation';
@@ -2001,7 +2017,7 @@ class CameraService : Service(), LifecycleOwner {
                                 .then(response => response.json())
                                 .then(data => {
                                     document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, 200);
+                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 })
                                 .catch(() => {
                                     document.getElementById('formatStatus').textContent = 'Failed to toggle resolution overlay';
@@ -2119,7 +2135,7 @@ class CameraService : Service(), LifecycleOwner {
                                     if (lastConnectionCount !== data.connections) {
                                         lastConnectionCount = data.connections;
                                         // Debounce refresh to avoid too many requests
-                                        setTimeout(refreshConnections, 500);
+                                        setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
                                     }
                                 }
                             } catch (e) {
@@ -2194,7 +2210,7 @@ class CameraService : Service(), LifecycleOwner {
                                 // Reload stream if it's active to reflect changes immediately
                                 if (streamActive) {
                                     console.log('Reloading stream to reflect state changes');
-                                    setTimeout(reloadStream, 200);
+                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                                 }
                                 
                                 // If camera switched or resolution changed, reload formats
@@ -2538,21 +2554,7 @@ class CameraService : Service(), LifecycleOwner {
             messageQueue.offer(initialMessage)
             
             // Send initial camera state to newly connected client
-            val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
-            val stateJson = """
-            {
-                "type": "state",
-                "camera": "$cameraName",
-                "resolution": "$resolutionStr",
-                "cameraOrientation": "$cameraOrientation",
-                "rotation": $rotation,
-                "showResolutionOverlay": $showResolutionOverlay,
-                "flashlightAvailable": ${isFlashlightAvailable()},
-                "flashlightOn": ${isFlashlightEnabled()},
-                "serverRunning": ${isServerRunning()}
-            }
-            """.trimIndent().replace("\n", "").replace("  ", "")
+            val stateJson = buildCameraStateJson()
             val initialStateMessage = "event: state\ndata: $stateJson\n\n"
             messageQueue.offer(initialStateMessage)
             
