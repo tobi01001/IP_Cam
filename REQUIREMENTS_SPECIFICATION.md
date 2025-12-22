@@ -5,7 +5,7 @@
 **Document Type:** Technical Requirements Specification  
 **Target Platform:** Android 12+ (API Level 31+)
 
-**Note:** Android 12 (API 31) is the minimum supported version due to significant platform changes in foreground service management, privacy indicators, and background execution restrictions that are critical for reliable 24/7 camera operation. While the current codebase includes compatibility code for Android 7+, production deployment should target Android 12+ for optimal reliability and security.
+**Note:** Android 12 (API 31) is the minimum supported version due to significant platform changes in foreground service management, privacy indicators, and background execution restrictions that are critical for reliable 24/7 camera operation.
 
 ---
 
