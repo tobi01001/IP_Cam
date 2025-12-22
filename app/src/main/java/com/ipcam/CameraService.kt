@@ -673,8 +673,12 @@ class CameraService : Service(), LifecycleOwner {
      * This ensures settings are properly applied without conflicts.
      * Uses proper async handling to avoid blocking the main thread.
      * Prevents overlapping bind operations.
+     * 
+     * PRIVATE: Only CameraService methods should trigger rebinding.
+     * External callers should use methods like switchCamera() or setResolutionAndRebind()
+     * that encapsulate both the setting change and rebinding.
      */
-    fun requestBindCamera() {
+    private fun requestBindCamera() {
         // Check if a binding operation is already in progress
         synchronized(bindingLock) {
             if (isBindingInProgress) {
@@ -994,6 +998,17 @@ class CameraService : Service(), LifecycleOwner {
         // Callers must explicitly call requestBindCamera() if they want to rebind the camera.
         // If we call it here, it creates infinite loop:
         // bindCamera completes → callback → loadResolutions → setSelection → onItemSelected → setResolution → requestBindCamera → repeat
+    }
+    
+    /**
+     * Set resolution and trigger camera rebinding.
+     * This is the recommended way for external callers (MainActivity, HTTP endpoints)
+     * to change resolution, as it encapsulates both the setting change and rebinding.
+     */
+    fun setResolutionAndRebind(resolution: Size?) {
+        selectedResolution = resolution
+        saveSettings()
+        requestBindCamera()
     }
     
     fun setCameraOrientation(orientation: String) {
@@ -2452,9 +2467,8 @@ class CameraService : Service(), LifecycleOwner {
             val params = session.parameters
             val value = params["value"]?.firstOrNull()
             if (value.isNullOrBlank()) {
-                // Set resolution and trigger rebind
-                setResolution(null)
-                requestBindCamera()
+                // Set resolution and trigger rebind atomically
+                setResolutionAndRebind(null)
                 val message = """{"status":"ok","message":"Resolution reset to auto"}"""
                 return newFixedLengthResponse(Response.Status.OK, "application/json", message)
             }
@@ -2482,9 +2496,8 @@ class CameraService : Service(), LifecycleOwner {
             val exactMatch = supported.any { it.width == desired.width && it.height == desired.height }
             
             return if (exactMatch) {
-                // Set resolution and trigger rebind
-                setResolution(desired)
-                requestBindCamera()
+                // Set resolution and trigger rebind atomically
+                setResolutionAndRebind(desired)
                 Log.d(TAG, "Resolution set via HTTP to ${sizeLabel(desired)}")
                 newFixedLengthResponse(
                     Response.Status.OK,

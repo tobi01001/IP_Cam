@@ -471,16 +471,14 @@ class MainActivity : AppCompatActivity() {
         val service = cameraService ?: return
         
         if (selection == getString(R.string.resolution_auto)) {
-            service.setResolution(null)
-            service.requestBindCamera() // Explicitly trigger rebind after changing resolution
+            service.setResolutionAndRebind(null) // Set resolution and trigger rebind atomically
         } else {
             val parts = selection.split("x")
             if (parts.size == 2) {
                 val width = parts[0].toIntOrNull()
                 val height = parts[1].toIntOrNull()
                 if (width != null && height != null) {
-                    service.setResolution(Size(width, height))
-                    service.requestBindCamera() // Explicitly trigger rebind after changing resolution
+                    service.setResolutionAndRebind(Size(width, height)) // Set resolution and trigger rebind atomically
                 }
             }
         }
