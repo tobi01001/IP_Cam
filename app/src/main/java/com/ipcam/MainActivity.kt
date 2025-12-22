@@ -109,8 +109,12 @@ class MainActivity : AppCompatActivity() {
                         loadCameraOrientationOptions()
                         loadRotationOptions()
                     } finally {
-                        // Always reset flag even if an exception occurs
-                        isUpdatingSpinners = false
+                        // Use post() to defer resetting the flag until AFTER all pending UI events are processed
+                        // This ensures setSelection() completes before flag is cleared, preventing infinite rebind loop
+                        // setSelection() posts to UI thread, so we must also post the flag reset
+                        resolutionSpinner.post {
+                            isUpdatingSpinners = false
+                        }
                     }
                 }
             }
