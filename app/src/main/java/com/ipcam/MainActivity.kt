@@ -6,10 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.ImageFormat
-import android.hardware.camera2.CameraCharacteristics
-import android.hardware.camera2.CameraManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -52,6 +48,12 @@ class MainActivity : AppCompatActivity() {
     private var isServiceBound = false
     private var hasCameraPermission = false
     private var hasNotificationPermission = false
+    
+    // Flag to prevent spinner listeners from triggering during programmatic updates
+    private var isUpdatingSpinners = false
+    
+    // Track last applied resolution to prevent infinite loop when setSelection triggers onItemSelected
+    private var lastAppliedResolution: String? = null
     
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
@@ -102,10 +104,24 @@ class MainActivity : AppCompatActivity() {
             // Set up callbacks to receive updates from the service
             cameraService?.setOnCameraStateChangedCallback { _ ->
                 runOnUiThread {
-                    updateUI()
-                    loadResolutions()
-                    loadCameraOrientationOptions()
-                    loadRotationOptions()
+                    // Set flag to prevent spinner listeners from triggering during programmatic updates
+                    isUpdatingSpinners = true
+                    try {
+                        updateUI()
+                        // Don't call loadResolutions() here - it causes constant spinner refreshing
+                        // Resolution spinner only needs updating when:
+                        // 1. Camera switches (different supported resolutions) - handled in switchCamera()
+                        // 2. User explicitly changes resolution - handled in applyResolution()
+                        loadCameraOrientationOptions()
+                        loadRotationOptions()
+                    } finally {
+                        // Use post() to defer resetting the flag until AFTER all pending UI events are processed
+                        // This ensures setSelection() completes before flag is cleared, preventing infinite rebind loop
+                        // setSelection() posts to UI thread, so we must also post the flag reset
+                        resolutionSpinner.post {
+                            isUpdatingSpinners = false
+                        }
+                    }
                 }
             }
             
@@ -121,11 +137,17 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            updateUI()
-            loadResolutions()
-            loadCameraOrientationOptions()
-            loadRotationOptions()
-            loadMaxConnectionsOptions()
+            // Initial UI load - set flag to prevent spinner listeners from triggering
+            isUpdatingSpinners = true
+            try {
+                updateUI()
+                loadResolutions()
+                loadCameraOrientationOptions()
+                loadRotationOptions()
+                loadMaxConnectionsOptions()
+            } finally {
+                isUpdatingSpinners = false
+            }
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -177,9 +199,6 @@ class MainActivity : AppCompatActivity() {
         checkCameraPermission()
         checkBatteryOptimization()
         checkNotificationPermission()
-        
-        // Load camera formats immediately on startup (doesn't require service to be running)
-        loadResolutions()
         
         // Start the camera service for preview (server may or may not start)
         if (hasCameraPermission) {
@@ -347,8 +366,12 @@ class MainActivity : AppCompatActivity() {
     private fun setupResolutionSpinner() {
         resolutionSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow resolution changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyResolution(selectedItem)
                 }
             }
@@ -362,8 +385,12 @@ class MainActivity : AppCompatActivity() {
     private fun setupRotationSpinner() {
         rotationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow rotation changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyRotation(selectedItem)
                 }
             }
@@ -380,8 +407,12 @@ class MainActivity : AppCompatActivity() {
     private fun setupCameraOrientationSpinner() {
         cameraOrientationSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val selectedItem = parent?.getItemAtPosition(position) as? String
-                if (selectedItem != null && cameraService?.isServerRunning() == true) {
+                // Allow orientation changes when camera service is bound (server doesn't need to be running)
+                if (selectedItem != null && cameraService != null) {
                     applyCameraOrientation(selectedItem)
                 }
             }
@@ -395,50 +426,11 @@ class MainActivity : AppCompatActivity() {
         loadCameraOrientationOptions()
     }
     
-    /**
-     * Get camera formats directly using Camera2 API without requiring the service
-     * This allows displaying formats even when the server hasn't been started yet
-     * Note: Returns all available formats since camera orientation preference is not yet loaded
-     * 
-     * This logic is intentionally duplicated from CameraService.getSupportedResolutions()
-     * to avoid creating dependencies and keep MainActivity changes minimal and isolated.
-     */
-    private fun getCameraFormatsDirectly(cameraSelector: CameraSelector = CameraSelector.DEFAULT_BACK_CAMERA): List<Size> {
-        try {
-            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            val targetFacing = if (cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) {
-                CameraCharacteristics.LENS_FACING_FRONT
-            } else {
-                CameraCharacteristics.LENS_FACING_BACK
-            }
-            
-            val sizes = cameraManager.cameraIdList.mapNotNull { id ->
-                try {
-                    val characteristics = cameraManager.getCameraCharacteristics(id)
-                    val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-                    if (facing != targetFacing) return@mapNotNull null
-                    val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-                    // Use safe call and elvis operator to handle potential nulls
-                    config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList() ?: emptyList()
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Error getting formats for camera $id", e)
-                    null
-                }
-            }.flatten()
-            
-            // Return all formats without orientation filtering since user preference isn't loaded yet
-            // Formats will be updated with proper filtering once service connects
-            return sizes.distinctBy { Pair(it.width, it.height) }
-                .sortedByDescending { it.width * it.height }
-        } catch (e: Exception) {
-            Log.e("MainActivity", "Error getting camera formats directly", e)
-            return emptyList()
-        }
-    }
+
     
     private fun loadResolutions() {
-        // Try to get resolutions from service if available, otherwise query directly
-        val resolutions = cameraService?.getSupportedResolutions() ?: getCameraFormatsDirectly()
+        // Get resolutions from service ONLY - single source of truth
+        val resolutions = cameraService?.getSupportedResolutions() ?: emptyList()
         
         val items = mutableListOf(getString(R.string.resolution_auto))
         items.addAll(resolutions.map { "${it.width}x${it.height}" })
@@ -449,26 +441,44 @@ class MainActivity : AppCompatActivity() {
         
         // Set current selection if service is available
         val currentResolution = cameraService?.getSelectedResolution()
-        if (currentResolution != null) {
-            val index = items.indexOf("${currentResolution.width}x${currentResolution.height}")
-            if (index >= 0) {
-                resolutionSpinner.setSelection(index)
-            }
+        val selectionString = if (currentResolution != null) {
+            "${currentResolution.width}x${currentResolution.height}"
+        } else {
+            getString(R.string.resolution_auto)
+        }
+        
+        // Update lastAppliedResolution to match current state to prevent false triggers
+        lastAppliedResolution = selectionString
+        
+        val index = items.indexOf(selectionString)
+        if (index >= 0) {
+            resolutionSpinner.setSelection(index)
         }
     }
     
     private fun applyResolution(selection: String) {
+        // Prevent infinite loop: only apply if resolution actually changed
+        // onItemSelected fires every time setSelection() is called, even with same value
+        // This causes: callback → loadResolutions → setSelection → onItemSelected → applyResolution → requestBindCamera → infinite loop
+        if (selection == lastAppliedResolution) {
+            Log.d("MainActivity", "applyResolution: same value '$selection', skipping")
+            return
+        }
+        
+        Log.d("MainActivity", "applyResolution: changing from '$lastAppliedResolution' to '$selection'")
+        lastAppliedResolution = selection
+        
         val service = cameraService ?: return
         
         if (selection == getString(R.string.resolution_auto)) {
-            service.setResolution(null)
+            service.setResolutionAndRebind(null) // Set resolution and trigger rebind atomically
         } else {
             val parts = selection.split("x")
             if (parts.size == 2) {
                 val width = parts[0].toIntOrNull()
                 val height = parts[1].toIntOrNull()
                 if (width != null && height != null) {
-                    service.setResolution(Size(width, height))
+                    service.setResolutionAndRebind(Size(width, height)) // Set resolution and trigger rebind atomically
                 }
             }
         }

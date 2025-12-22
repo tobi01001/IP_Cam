@@ -77,6 +77,9 @@ class CameraService : Service(), LifecycleOwner {
     @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var isFlashlightOn: Boolean = false
     @Volatile private var hasFlashUnit: Boolean = false
+    // Camera binding state management
+    @Volatile private var isBindingInProgress: Boolean = false
+    private val bindingLock = Any() // Lock for binding synchronization
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -553,17 +556,50 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun bindCamera() {
+        // Ensure lifecycle is in correct state
+        if (lifecycleRegistry.currentState != Lifecycle.State.STARTED) {
+            Log.w(TAG, "Cannot bind camera - lifecycle not in STARTED state: ${lifecycleRegistry.currentState}")
+            lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        }
+        
         val builder = ImageAnalysis.Builder()
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         
         // Use ResolutionSelector instead of deprecated setTargetResolution
         selectedResolution?.let { resolution ->
+            Log.d(TAG, "Attempting to bind camera with resolution: ${resolution.width}x${resolution.height}")
             val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionFilter { supportedSizes, _ ->
-                    // Filter to find exact match or closest
-                    supportedSizes.filter { size ->
+                    // Try to find exact match first
+                    val exactMatch = supportedSizes.filter { size ->
                         size.width == resolution.width && size.height == resolution.height
-                    }.ifEmpty { supportedSizes }
+                    }
+                    
+                    if (exactMatch.isNotEmpty()) {
+                        Log.d(TAG, "Found exact resolution match: ${resolution.width}x${resolution.height}")
+                        exactMatch
+                    } else {
+                        // No exact match - find closest by total pixels
+                        val targetPixels = resolution.width * resolution.height
+                        val targetAspectRatio = resolution.width.toFloat() / resolution.height.toFloat()
+                        
+                        val closest = supportedSizes.minByOrNull { size ->
+                            val pixels = size.width * size.height
+                            val aspectRatio = size.width.toFloat() / size.height.toFloat()
+                            val pixelDiff = Math.abs(pixels - targetPixels)
+                            val aspectDiff = Math.abs(aspectRatio - targetAspectRatio) * 1000000 // Weight aspect ratio heavily
+                            pixelDiff + aspectDiff.toInt()
+                        }
+                        
+                        if (closest != null) {
+                            Log.w(TAG, "Exact resolution ${resolution.width}x${resolution.height} not available. Using closest: ${closest.width}x${closest.height}")
+                        } else {
+                            Log.e(TAG, "Could not find any suitable resolution. Using default.")
+                        }
+                        
+                        // Return closest match or all supported if none found
+                        closest?.let { listOf(it) } ?: supportedSizes
+                    }
                 }
                 .build()
             builder.setResolutionSelector(resolutionSelector)
@@ -577,35 +613,135 @@ class CameraService : Service(), LifecycleOwner {
             }
         
         try {
+            Log.d(TAG, "Unbinding all use cases before rebinding...")
             cameraProvider?.unbindAll()
+            
+            Log.d(TAG, "Binding camera to lifecycle...")
             camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            
+            if (camera == null) {
+                Log.e(TAG, "Camera binding returned null!")
+                return
+            }
             
             // Check if flash is available for back camera
             checkFlashAvailability()
             
             // Restore flashlight state if enabled for back camera
+            // Use post-delayed to ensure camera is fully initialized
             if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
-                enableTorch(true)
+                // Delay torch enable to ensure camera control is ready
+                // Using Handler instead of Thread.sleep to avoid blocking
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    enableTorch(true)
+                }, 200)
             }
+            
+            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
+            
+            // Notify observers that camera state has changed (binding completed)
+            onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
-            Log.e(TAG, "Camera binding failed", e)
+            Log.e(TAG, "Camera binding failed with exception", e)
+            e.printStackTrace()
         }
     }
     
+    /**
+     * Properly stop camera activities before applying new settings.
+     * This ensures clean state transition and prevents resource conflicts.
+     */
+    private fun stopCamera() {
+        try {
+            // Clear old analyzer to stop frame processing
+            imageAnalysis?.clearAnalyzer()
+            
+            // Unbind all use cases from lifecycle
+            cameraProvider?.unbindAll()
+            
+            // Clear camera reference
+            camera = null
+            
+            Log.d(TAG, "Camera stopped successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping camera", e)
+        }
+    }
+    
+    /**
+     * Stop camera, apply settings, and restart camera.
+     * This ensures settings are properly applied without conflicts.
+     * Uses proper async handling to avoid blocking the main thread.
+     * Prevents overlapping bind operations.
+     * 
+     * PRIVATE: Only CameraService methods should trigger rebinding.
+     * External callers should use methods like switchCamera() or setResolutionAndRebind()
+     * that encapsulate both the setting change and rebinding.
+     */
     private fun requestBindCamera() {
+        // Check if a binding operation is already in progress
+        synchronized(bindingLock) {
+            if (isBindingInProgress) {
+                Log.d(TAG, "requestBindCamera() ignored - binding already in progress")
+                return
+            }
+            isBindingInProgress = true
+        }
+        
+        // Log stack trace to identify caller
+        val stackTrace = Thread.currentThread().stackTrace
+        val caller = if (stackTrace.size > 3) {
+            "${stackTrace[3].className}.${stackTrace[3].methodName}:${stackTrace[3].lineNumber}"
+        } else "unknown"
+        Log.d(TAG, "requestBindCamera() called by: $caller")
+        
         ContextCompat.getMainExecutor(this).execute {
-            bindCamera()
+            try {
+                // Stop camera first to ensure clean state
+                Log.d(TAG, "Stopping camera before rebinding...")
+                stopCamera()
+                
+                // Schedule rebinding after a short delay to ensure resources are released
+                // Using Handler instead of Thread.sleep to avoid blocking main thread
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        Log.d(TAG, "Delay complete, rebinding camera now...")
+                        bindCamera()
+                        // Callback is now invoked directly in bindCamera() after binding succeeds
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error in bindCamera() from postDelayed", e)
+                    } finally {
+                        // Clear the flag after binding completes or fails
+                        synchronized(bindingLock) {
+                            isBindingInProgress = false
+                            Log.d(TAG, "isBindingInProgress flag cleared")
+                        }
+                    }
+                }, 100)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in requestBindCamera()", e)
+                // Clear flag if we fail before even scheduling the delayed binding
+                synchronized(bindingLock) {
+                    isBindingInProgress = false
+                }
+            }
         }
     }
     
     private fun processImage(image: ImageProxy) {
         try {
             val bitmap = imageProxyToBitmap(image)
-            Log.d(TAG, "ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+            // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
+            val frameCount = lastFrameTimestamp.toInt() % 30
+            if (frameCount == 0) {
+                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+            }
             
             // Apply camera orientation and rotation without creating squared bitmaps
             val finalBitmap = applyRotationCorrectly(bitmap)
-            Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+            if (frameCount == 0) {
+                Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+            }
             
             // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
             val annotatedBitmap = annotateBitmap(finalBitmap)
@@ -745,6 +881,13 @@ class CameraService : Service(), LifecycleOwner {
     
     fun switchCamera(cameraSelector: CameraSelector) {
         currentCamera = cameraSelector
+        // Always reset resolution to auto when switching cameras, even if the resolution
+        // might be supported by both cameras. This is safer because:
+        // 1. Different cameras may have different aspect ratios (back: 16:9, front: 4:3)
+        // 2. Even with matching dimensions, sensor characteristics differ
+        // 3. Provides consistent, predictable behavior for users
+        // 4. Avoids potential issues with unsupported resolution edge cases
+        selectedResolution = null
         saveSettings()
         
         // Turn off flashlight when switching cameras
@@ -753,9 +896,9 @@ class CameraService : Service(), LifecycleOwner {
             saveSettings()
         }
         
+        // Request bind but DON'T invoke callback here
+        // The callback will be invoked naturally when bindCamera() completes
         requestBindCamera()
-        // Notify MainActivity of the camera change
-        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     /**
@@ -822,6 +965,8 @@ class CameraService : Service(), LifecycleOwner {
         isFlashlightOn = !isFlashlightOn
         enableTorch(isFlashlightOn)
         saveSettings()
+        // Notify MainActivity of flashlight state change
+        onCameraStateChangedCallback?.invoke(currentCamera)
         return isFlashlightOn
     }
     
@@ -848,6 +993,21 @@ class CameraService : Service(), LifecycleOwner {
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
         saveSettings()
+        // DON'T call requestBindCamera() here!
+        // This method just saves the resolution setting.
+        // Callers must explicitly call requestBindCamera() if they want to rebind the camera.
+        // If we call it here, it creates infinite loop:
+        // bindCamera completes → callback → loadResolutions → setSelection → onItemSelected → setResolution → requestBindCamera → repeat
+    }
+    
+    /**
+     * Set resolution and trigger camera rebinding.
+     * This is the recommended way for external callers (MainActivity, HTTP endpoints)
+     * to change resolution, as it encapsulates both the setting change and rebinding.
+     */
+    fun setResolutionAndRebind(resolution: Size?) {
+        selectedResolution = resolution
+        saveSettings()
         requestBindCamera()
     }
     
@@ -856,6 +1016,8 @@ class CameraService : Service(), LifecycleOwner {
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
         saveSettings()
+        // Notify MainActivity of orientation change so it can reload resolutions
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getCameraOrientation(): String = cameraOrientation
@@ -863,6 +1025,8 @@ class CameraService : Service(), LifecycleOwner {
     fun setRotation(rot: Int) {
         rotation = rot
         saveSettings()
+        // Notify MainActivity of rotation change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getRotation(): Int = rotation
@@ -870,6 +1034,8 @@ class CameraService : Service(), LifecycleOwner {
     fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
         saveSettings()
+        // Notify MainActivity of overlay setting change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
@@ -970,6 +1136,8 @@ class CameraService : Service(), LifecycleOwner {
         if (newMax != maxConnections) {
             maxConnections = newMax
             saveSettings()
+            // Notify MainActivity of max connections change
+            onCameraStateChangedCallback?.invoke(currentCamera)
             // Note: Server needs to be restarted for the change to take effect
             return true
         }
@@ -1997,16 +2165,14 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveSwitch(): Response {
-            currentCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            val newCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
                 CameraSelector.DEFAULT_FRONT_CAMERA
             } else {
                 CameraSelector.DEFAULT_BACK_CAMERA
             }
             
-            selectedResolution = null
-            requestBindCamera()
-            // Notify MainActivity of the camera change
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            // Use the service method to ensure callbacks are triggered
+            switchCamera(newCamera)
             
             val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
             val json = """{"status": "ok", "camera": "$cameraName"}"""
@@ -2301,8 +2467,8 @@ class CameraService : Service(), LifecycleOwner {
             val params = session.parameters
             val value = params["value"]?.firstOrNull()
             if (value.isNullOrBlank()) {
-                selectedResolution = null
-                requestBindCamera()
+                // Set resolution and trigger rebind atomically
+                setResolutionAndRebind(null)
                 val message = """{"status":"ok","message":"Resolution reset to auto"}"""
                 return newFixedLengthResponse(Response.Status.OK, "application/json", message)
             }
@@ -2320,24 +2486,44 @@ class CameraService : Service(), LifecycleOwner {
                 return newFixedLengthResponse(
                     Response.Status.BAD_REQUEST,
                     "application/json",
-                    """{"status":"error","message":"Invalid format"}"""
+                    """{"status":"error","message":"Invalid format. Use format: WIDTHxHEIGHT (e.g., 1920x1080)"}"""
                 )
             }
             val desired = Size(width, height)
             val supported = getSupportedResolutions(currentCamera)
-            return if (supported.any { it.width == desired.width && it.height == desired.height }) {
-                selectedResolution = desired
-                requestBindCamera()
+            
+            // Check if exact resolution is supported
+            val exactMatch = supported.any { it.width == desired.width && it.height == desired.height }
+            
+            return if (exactMatch) {
+                // Set resolution and trigger rebind atomically
+                setResolutionAndRebind(desired)
+                Log.d(TAG, "Resolution set via HTTP to ${sizeLabel(desired)}")
                 newFixedLengthResponse(
                     Response.Status.OK,
                     "application/json",
                     """{"status":"ok","message":"Resolution set to ${sizeLabel(desired)}"}"""
                 )
             } else {
+                // Find closest resolution and suggest it
+                val targetPixels = width * height
+                val closest = supported.minByOrNull { size ->
+                    Math.abs((size.width * size.height) - targetPixels)
+                }
+                
+                val suggestion = if (closest != null) {
+                    " Closest available: ${sizeLabel(closest)}"
+                } else {
+                    ""
+                }
+                
+                val availableFormats = supported.take(5).joinToString(", ") { sizeLabel(it) }
+                val moreText = if (supported.size > 5) " and ${supported.size - 5} more" else ""
+                
                 newFixedLengthResponse(
                     Response.Status.BAD_REQUEST,
                     "application/json",
-                    """{"status":"error","message":"Resolution not supported"}"""
+                    """{"status":"error","message":"Resolution ${sizeLabel(desired)} not supported for current camera.$suggestion Available: $availableFormats$moreText"}"""
                 )
             }
         }
@@ -2360,7 +2546,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            rotation = newRotation
+            // Use service method to ensure callbacks are triggered
+            setRotation(newRotation)
             val message = "Rotation set to ${newRotation}°"
             
             return newFixedLengthResponse(
@@ -2386,7 +2573,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            cameraOrientation = newOrientation
+            // Use service method to ensure callbacks are triggered
+            setCameraOrientation(newOrientation)
             val message = "Camera orientation set to $newOrientation"
             
             return newFixedLengthResponse(
@@ -2412,7 +2600,8 @@ class CameraService : Service(), LifecycleOwner {
                 }
             }
             
-            showResolutionOverlay = showOverlay
+            // Use service method to ensure callbacks are triggered
+            setShowResolutionOverlay(showOverlay)
             val message = "Resolution overlay ${if (showOverlay) "enabled" else "disabled"}"
             
             return newFixedLengthResponse(
