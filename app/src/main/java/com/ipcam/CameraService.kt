@@ -671,7 +671,7 @@ class CameraService : Service(), LifecycleOwner {
      * Uses proper async handling to avoid blocking the main thread.
      * Prevents overlapping bind operations.
      */
-    private fun requestBindCamera() {
+    private fun requestBindCamera(onComplete: (() -> Unit)? = null) {
         // Check if a binding operation is already in progress
         synchronized(bindingLock) {
             if (isBindingInProgress) {
@@ -694,6 +694,8 @@ class CameraService : Service(), LifecycleOwner {
                     try {
                         Log.d(TAG, "Delay complete, rebinding camera now...")
                         bindCamera()
+                        // Invoke completion callback after binding succeeds
+                        onComplete?.invoke()
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in bindCamera() from postDelayed", e)
                     } finally {
@@ -882,9 +884,11 @@ class CameraService : Service(), LifecycleOwner {
             saveSettings()
         }
         
-        requestBindCamera()
-        // Notify MainActivity of the camera change
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // Request bind and notify after completion
+        requestBindCamera {
+            // Notify MainActivity of the camera change AFTER binding completes
+            onCameraStateChangedCallback?.invoke(currentCamera)
+        }
     }
     
     /**
@@ -979,9 +983,11 @@ class CameraService : Service(), LifecycleOwner {
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
         saveSettings()
-        requestBindCamera()
-        // Notify MainActivity of resolution change
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // Request bind and notify after completion
+        requestBindCamera {
+            // Notify MainActivity of resolution change AFTER binding completes
+            onCameraStateChangedCallback?.invoke(currentCamera)
+        }
     }
     
     fun setCameraOrientation(orientation: String) {
