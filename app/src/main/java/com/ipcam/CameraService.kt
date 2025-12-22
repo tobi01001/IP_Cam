@@ -674,7 +674,7 @@ class CameraService : Service(), LifecycleOwner {
      * Uses proper async handling to avoid blocking the main thread.
      * Prevents overlapping bind operations.
      */
-    private fun requestBindCamera() {
+    fun requestBindCamera() {
         // Check if a binding operation is already in progress
         synchronized(bindingLock) {
             if (isBindingInProgress) {
