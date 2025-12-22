@@ -681,7 +681,13 @@ class CameraService : Service(), LifecycleOwner {
             isBindingInProgress = true
         }
         
-        Log.d(TAG, "requestBindCamera() called - scheduling camera restart")
+        // Log stack trace to identify caller
+        val stackTrace = Thread.currentThread().stackTrace
+        val caller = if (stackTrace.size > 3) {
+            "${stackTrace[3].className}.${stackTrace[3].methodName}:${stackTrace[3].lineNumber}"
+        } else "unknown"
+        Log.d(TAG, "requestBindCamera() called by: $caller")
+        
         ContextCompat.getMainExecutor(this).execute {
             try {
                 // Stop camera first to ensure clean state
