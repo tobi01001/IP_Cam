@@ -214,6 +214,28 @@ The IP_Cam application is built around **five critical design principles** that 
 
 **Priority:** LOW - Implement only after core MJPEG functionality is stable and tested. MJPEG remains the primary streaming method for compatibility and low latency.
 
+### 3.7 UI Framework Recommendation
+
+**Recommendation:** For new implementations starting from scratch, **Jetpack Compose** is the preferred modern UI toolkit for Android development.
+
+**Rationale:**
+- **Declarative UI:** Reduces boilerplate code and improves maintainability
+- **State Management:** Better integration with Kotlin coroutines and state handling
+- **Native Kotlin:** Fully Kotlin-native with no XML layout files
+- **Modern Tooling:** Built-in preview support and easier testing
+- **Material Design 3:** Native support for latest Material Design guidelines
+- **Performance:** Optimized rendering with smart recomposition
+- **Future-Proof:** Google's recommended approach for new Android UI development
+
+**Important Constraint:** If Jetpack Compose is chosen for the implementation, the entire application UI MUST be fully Compose-compliant. Mixing Compose with traditional View-based UI (XML layouts, View Binding) should be avoided to maintain consistency, simplify maintenance, and leverage Compose's full benefits.
+
+**Alternative:** Implementations may choose traditional View-based UI (XML layouts with View Binding or Data Binding) if:
+- Team has existing expertise with View-based development
+- Integration with legacy codebases is required
+- Specific UI requirements are better suited to traditional views
+
+**Compose Compatibility:** Jetpack Compose is fully compatible with Android 12+ (minimum supported API 21, well below our target of API 31+).
+
 ---
 
 ## Conclusion
