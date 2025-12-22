@@ -638,6 +638,9 @@ class CameraService : Service(), LifecycleOwner {
             }
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
+            
+            // Notify observers that camera state has changed (binding completed)
+            onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed with exception", e)
             e.printStackTrace()
@@ -671,7 +674,7 @@ class CameraService : Service(), LifecycleOwner {
      * Uses proper async handling to avoid blocking the main thread.
      * Prevents overlapping bind operations.
      */
-    private fun requestBindCamera(onComplete: (() -> Unit)? = null) {
+    private fun requestBindCamera() {
         // Check if a binding operation is already in progress
         synchronized(bindingLock) {
             if (isBindingInProgress) {
@@ -700,8 +703,7 @@ class CameraService : Service(), LifecycleOwner {
                     try {
                         Log.d(TAG, "Delay complete, rebinding camera now...")
                         bindCamera()
-                        // Invoke completion callback after binding succeeds
-                        onComplete?.invoke()
+                        // Callback is now invoked directly in bindCamera() after binding succeeds
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in bindCamera() from postDelayed", e)
                     } finally {
@@ -890,11 +892,9 @@ class CameraService : Service(), LifecycleOwner {
             saveSettings()
         }
         
-        // Request bind and notify after completion
-        requestBindCamera {
-            // Notify MainActivity of the camera change AFTER binding completes
-            onCameraStateChangedCallback?.invoke(currentCamera)
-        }
+        // Request bind but DON'T invoke callback here
+        // The callback will be invoked naturally when bindCamera() completes
+        requestBindCamera()
     }
     
     /**
@@ -989,11 +989,10 @@ class CameraService : Service(), LifecycleOwner {
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
         saveSettings()
-        // Request bind and notify after completion
-        requestBindCamera {
-            // Notify MainActivity of resolution change AFTER binding completes
-            onCameraStateChangedCallback?.invoke(currentCamera)
-        }
+        // Request bind but DON'T invoke callback
+        // The callback will be invoked naturally when bindCamera() completes
+        // Invoking it here causes infinite loop: callback → loadResolutions → setSelection → onItemSelected → setResolution
+        requestBindCamera()
     }
     
     fun setCameraOrientation(orientation: String) {
