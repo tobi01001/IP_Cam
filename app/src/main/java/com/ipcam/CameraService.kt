@@ -493,6 +493,9 @@ class CameraService : Service(), LifecycleOwner {
             // Update notification with the actual port
             updateNotification("Server running on ${getServerUrl()}")
             
+            // Broadcast state change to web clients (if any connected during start)
+            broadcastCameraState()
+            
         } catch (e: IOException) {
             val errorMsg = "Failed to start server: ${e.message}"
             Log.e(TAG, errorMsg, e)
@@ -896,6 +899,9 @@ class CameraService : Service(), LifecycleOwner {
             saveSettings()
         }
         
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         // Request bind but DON'T invoke callback here
         // The callback will be invoked naturally when bindCamera() completes
         requestBindCamera()
@@ -965,6 +971,10 @@ class CameraService : Service(), LifecycleOwner {
         isFlashlightOn = !isFlashlightOn
         enableTorch(isFlashlightOn)
         saveSettings()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         // Notify MainActivity of flashlight state change
         onCameraStateChangedCallback?.invoke(currentCamera)
         return isFlashlightOn
@@ -1008,6 +1018,10 @@ class CameraService : Service(), LifecycleOwner {
     fun setResolutionAndRebind(resolution: Size?) {
         selectedResolution = resolution
         saveSettings()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         requestBindCamera()
     }
     
@@ -1016,6 +1030,10 @@ class CameraService : Service(), LifecycleOwner {
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
         saveSettings()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         // Notify MainActivity of orientation change so it can reload resolutions
         onCameraStateChangedCallback?.invoke(currentCamera)
     }
@@ -1025,6 +1043,10 @@ class CameraService : Service(), LifecycleOwner {
     fun setRotation(rot: Int) {
         rotation = rot
         saveSettings()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         // Notify MainActivity of rotation change
         onCameraStateChangedCallback?.invoke(currentCamera)
     }
@@ -1034,6 +1056,10 @@ class CameraService : Service(), LifecycleOwner {
     fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
         saveSettings()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
         // Notify MainActivity of overlay setting change
         onCameraStateChangedCallback?.invoke(currentCamera)
     }
@@ -1188,6 +1214,10 @@ class CameraService : Service(), LifecycleOwner {
             httpServer?.stop()
             httpServer = null
             updateNotification("Camera preview active. Server stopped.")
+            
+            // Broadcast state change to any remaining web clients before they disconnect
+            broadcastCameraState()
+            
             Log.d(TAG, "Server stopped successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping server", e)
@@ -1455,6 +1485,51 @@ class CameraService : Service(), LifecycleOwner {
         
         // Notify MainActivity of connection count change
         notifyConnectionsChanged()
+    }
+    
+    /**
+     * Broadcast camera state update to all SSE clients for real-time synchronization.
+     * This ensures all connected web clients stay in sync with the authoritative camera state.
+     */
+    private fun broadcastCameraState() {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
+        
+        // Build JSON state object
+        val stateJson = """
+        {
+            "type": "state",
+            "camera": "$cameraName",
+            "resolution": "$resolutionStr",
+            "cameraOrientation": "$cameraOrientation",
+            "rotation": $rotation,
+            "showResolutionOverlay": $showResolutionOverlay,
+            "flashlightAvailable": ${isFlashlightAvailable()},
+            "flashlightOn": ${isFlashlightEnabled()},
+            "serverRunning": ${isServerRunning()}
+        }
+        """.trimIndent().replace("\n", "").replace("  ", "")
+        
+        val message = "event: state\ndata: $stateJson\n\n"
+        
+        synchronized(sseClientsLock) {
+            val iterator = sseClients.iterator()
+            while (iterator.hasNext()) {
+                val client = iterator.next()
+                try {
+                    if (client.active) {
+                        client.outputStream.write(message.toByteArray())
+                        client.outputStream.flush()
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "SSE client ${client.id} disconnected during state broadcast")
+                    client.active = false
+                    iterator.remove()
+                }
+            }
+        }
+        
+        Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients: camera=$cameraName, resolution=$resolutionStr, orientation=$cameraOrientation, rotation=$rotation")
     }
     
     private fun updateBatteryCache() {
@@ -2052,6 +2127,86 @@ class CameraService : Service(), LifecycleOwner {
                             }
                         };
                         
+                        // Handle camera state updates pushed by server
+                        eventSource.addEventListener('state', function(event) {
+                            try {
+                                const state = JSON.parse(event.data);
+                                console.log('Received state update from server:', state);
+                                
+                                // Update resolution spinner if changed
+                                if (state.resolution) {
+                                    const formatSelect = document.getElementById('formatSelect');
+                                    const options = formatSelect.options;
+                                    for (let i = 0; i < options.length; i++) {
+                                        if (options[i].value === state.resolution || 
+                                            (state.resolution === 'auto' && options[i].value === '')) {
+                                            if (formatSelect.selectedIndex !== i) {
+                                                formatSelect.selectedIndex = i;
+                                                console.log('Updated resolution spinner to:', state.resolution);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Update camera orientation spinner if changed
+                                if (state.cameraOrientation) {
+                                    const orientationSelect = document.getElementById('orientationSelect');
+                                    const options = orientationSelect.options;
+                                    for (let i = 0; i < options.length; i++) {
+                                        if (options[i].value === state.cameraOrientation) {
+                                            if (orientationSelect.selectedIndex !== i) {
+                                                orientationSelect.selectedIndex = i;
+                                                console.log('Updated orientation spinner to:', state.cameraOrientation);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Update rotation spinner if changed
+                                if (state.rotation !== undefined) {
+                                    const rotationSelect = document.getElementById('rotationSelect');
+                                    const options = rotationSelect.options;
+                                    for (let i = 0; i < options.length; i++) {
+                                        if (parseInt(options[i].value) === state.rotation) {
+                                            if (rotationSelect.selectedIndex !== i) {
+                                                rotationSelect.selectedIndex = i;
+                                                console.log('Updated rotation spinner to:', state.rotation);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                                
+                                // Update resolution overlay checkbox if changed
+                                if (state.showResolutionOverlay !== undefined) {
+                                    const checkbox = document.getElementById('resolutionOverlayCheckbox');
+                                    if (checkbox.checked !== state.showResolutionOverlay) {
+                                        checkbox.checked = state.showResolutionOverlay;
+                                        console.log('Updated resolution overlay checkbox to:', state.showResolutionOverlay);
+                                    }
+                                }
+                                
+                                // Update flashlight button state
+                                updateFlashlightButton();
+                                
+                                // Reload stream if it's active to reflect changes immediately
+                                if (streamActive) {
+                                    console.log('Reloading stream to reflect state changes');
+                                    setTimeout(reloadStream, 200);
+                                }
+                                
+                                // If camera switched or resolution changed, reload formats
+                                if (state.camera || state.resolution) {
+                                    loadFormats();
+                                }
+                                
+                            } catch (e) {
+                                console.error('Failed to handle state update:', e);
+                            }
+                        });
+                        
                         eventSource.onerror = function(error) {
                             console.error('SSE connection error:', error);
                             // EventSource will automatically try to reconnect
@@ -2381,6 +2536,25 @@ class CameraService : Service(), LifecycleOwner {
             val maxConns = this@CameraService.maxConnections
             val initialMessage = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
             messageQueue.offer(initialMessage)
+            
+            // Send initial camera state to newly connected client
+            val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+            val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
+            val stateJson = """
+            {
+                "type": "state",
+                "camera": "$cameraName",
+                "resolution": "$resolutionStr",
+                "cameraOrientation": "$cameraOrientation",
+                "rotation": $rotation,
+                "showResolutionOverlay": $showResolutionOverlay,
+                "flashlightAvailable": ${isFlashlightAvailable()},
+                "flashlightOn": ${isFlashlightEnabled()},
+                "serverRunning": ${isServerRunning()}
+            }
+            """.trimIndent().replace("\n", "").replace("  ", "")
+            val initialStateMessage = "event: state\ndata: $stateJson\n\n"
+            messageQueue.offer(initialStateMessage)
             
             // Submit SSE work to dedicated executor (doesn't block HTTP thread)
             streamingExecutor.submit {
