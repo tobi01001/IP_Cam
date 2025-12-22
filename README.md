@@ -25,6 +25,13 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 ## Target Device
 Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
 
+## Documentation
+
+- **[Requirements Specification](REQUIREMENTS_SPECIFICATION.md)** - Complete technical requirements for implementing IP_Cam from scratch
+- **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
+- **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
+- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Frame processing pipeline and performance analysis
+
 ## Requirements
 - Android 7.0 (API level 24) or higher
 - Camera permission
