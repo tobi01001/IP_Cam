@@ -80,13 +80,17 @@ The specification includes:
   - Lifecycle management
   - Error handling and recovery
 
-- **15 API Endpoints** fully specified:
-  - `/` - Web interface
-  - `/snapshot` - Single JPEG image
-  - `/stream` - MJPEG video stream
+- **API Endpoints** fully specified:
+  
+  **Essential for NVR Compliance (Core Requirements):**
+  - `/snapshot` - Single JPEG image (required by all NVR systems)
+  - `/stream` - MJPEG video stream (primary streaming endpoint)
+  - `/status` - System status (health check and monitoring)
+  
+  **Advanced Control & Configuration (Extended Requirements):**
+  - `/` - Web interface for human interaction
   - `/switch` - Camera switching
-  - `/status` - System status
-  - `/events` - Server-Sent Events
+  - `/events` - Server-Sent Events for real-time updates
   - `/connections` - Active connections list
   - `/formats` - Supported resolutions
   - `/setFormat` - Set resolution
@@ -96,6 +100,8 @@ The specification includes:
   - `/setMaxConnections` - Configure limits
   - `/toggleFlashlight` - Flashlight control
   - `/closeConnection` - Close specific connection
+  
+  *Note: Total of 15 endpoints. The 3 essential endpoints ensure NVR compatibility; remaining 12 provide advanced control, configuration, and user interface capabilities.*
 
 ### 3. Implementation Guidance
 
