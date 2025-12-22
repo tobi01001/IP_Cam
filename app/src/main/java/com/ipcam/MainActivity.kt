@@ -448,6 +448,7 @@ class MainActivity : AppCompatActivity() {
         
         if (selection == getString(R.string.resolution_auto)) {
             service.setResolution(null)
+            service.requestBindCamera() // Explicitly trigger rebind after changing resolution
         } else {
             val parts = selection.split("x")
             if (parts.size == 2) {
@@ -455,6 +456,7 @@ class MainActivity : AppCompatActivity() {
                 val height = parts[1].toIntOrNull()
                 if (width != null && height != null) {
                     service.setResolution(Size(width, height))
+                    service.requestBindCamera() // Explicitly trigger rebind after changing resolution
                 }
             }
         }

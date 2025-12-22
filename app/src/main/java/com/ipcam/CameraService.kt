@@ -989,10 +989,11 @@ class CameraService : Service(), LifecycleOwner {
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
         saveSettings()
-        // Request bind but DON'T invoke callback
-        // The callback will be invoked naturally when bindCamera() completes
-        // Invoking it here causes infinite loop: callback → loadResolutions → setSelection → onItemSelected → setResolution
-        requestBindCamera()
+        // DON'T call requestBindCamera() here!
+        // This method just saves the resolution setting.
+        // Callers must explicitly call requestBindCamera() if they want to rebind the camera.
+        // If we call it here, it creates infinite loop:
+        // bindCamera completes → callback → loadResolutions → setSelection → onItemSelected → setResolution → requestBindCamera → repeat
     }
     
     fun setCameraOrientation(orientation: String) {
@@ -2451,8 +2452,9 @@ class CameraService : Service(), LifecycleOwner {
             val params = session.parameters
             val value = params["value"]?.firstOrNull()
             if (value.isNullOrBlank()) {
-                // Use service method to ensure callbacks are triggered
+                // Set resolution and trigger rebind
                 setResolution(null)
+                requestBindCamera()
                 val message = """{"status":"ok","message":"Resolution reset to auto"}"""
                 return newFixedLengthResponse(Response.Status.OK, "application/json", message)
             }
@@ -2480,8 +2482,9 @@ class CameraService : Service(), LifecycleOwner {
             val exactMatch = supported.any { it.width == desired.width && it.height == desired.height }
             
             return if (exactMatch) {
-                // Use service method to ensure callbacks are triggered
+                // Set resolution and trigger rebind
                 setResolution(desired)
+                requestBindCamera()
                 Log.d(TAG, "Resolution set via HTTP to ${sizeLabel(desired)}")
                 newFixedLengthResponse(
                     Response.Status.OK,
