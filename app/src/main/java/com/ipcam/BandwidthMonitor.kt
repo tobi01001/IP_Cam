@@ -66,12 +66,12 @@ class BandwidthMonitor {
             val elapsed = now - stats.lastUpdateTime
             
             if (elapsed >= THROUGHPUT_WINDOW_MS) {
-                val bytesSinceLastUpdate = stats.bytesSent.get()
+                // Get current counter value and reset it atomically
+                val bytesSinceLastUpdate = stats.bytesSent.getAndSet(0)
                 val throughputBps = (bytesSinceLastUpdate * 8 * 1000) / elapsed // bits per second
                 
                 stats.currentThroughputBps = throughputBps
                 stats.lastUpdateTime = now
-                stats.bytesSent.set(0) // Reset counter
                 
                 // Add to history and maintain size
                 stats.throughputHistory.add(throughputBps)
@@ -147,11 +147,26 @@ class BandwidthMonitor {
     }
     
     /**
-     * Get total bytes sent to a client.
+     * Get total bytes sent to a client since last throughput calculation.
+     * Note: This resets periodically during throughput calculations.
      */
-    fun getTotalBytesSent(clientId: Long): Long {
+    fun getCurrentBytesSent(clientId: Long): Long {
         return statsLock.read {
             clientStats[clientId]?.bytesSent?.get() ?: 0L
+        }
+    }
+    
+    /**
+     * Get total bytes sent to a client (cumulative, not reset).
+     */
+    fun getTotalBytesSent(clientId: Long): Long {
+        // Calculate from history and current
+        return statsLock.read {
+            val stats = clientStats[clientId] ?: return@read 0L
+            val currentBytes = stats.bytesSent.get()
+            // Estimate total from throughput history (rough approximation)
+            val historicalBytes = stats.throughputHistory.sumOf { it / 8 } // Convert bits to bytes
+            currentBytes + historicalBytes
         }
     }
     
@@ -227,7 +242,7 @@ class BandwidthMonitor {
                 sb.append("  Current: ${String.format("%.2f", stats.currentThroughputBps / 1_000_000.0)} Mbps\n")
                 sb.append("  Average: ${String.format("%.2f", getAverageThroughputMbps(clientId))} Mbps\n")
                 sb.append("  Frames: ${stats.framesSent.get()}\n")
-                sb.append("  Bytes: ${stats.bytesSent.get() / 1024} KB\n")
+                sb.append("  Bytes (current window): ${stats.bytesSent.get() / 1024} KB\n")
                 sb.append("  Congested: ${isClientCongested(clientId)}\n")
             }
             

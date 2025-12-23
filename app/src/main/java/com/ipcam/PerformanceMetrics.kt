@@ -191,32 +191,27 @@ class PerformanceMetrics(private val context: Context) {
         val currentTime = System.currentTimeMillis()
         
         // Read /proc/stat for system-wide CPU time
-        val statReader = try {
-            java.io.BufferedReader(java.io.FileReader("/proc/stat"))
+        val systemCpuTime = try {
+            java.io.BufferedReader(java.io.FileReader("/proc/stat")).use { statReader ->
+                val statLine = statReader.readLine()
+                // Parse CPU times from first line
+                val statParts = statLine.split("\\s+".toRegex())
+                statParts.drop(1).take(8).mapNotNull { it.toLongOrNull() }.sum()
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Could not read /proc/stat", e)
             return CpuStats(0.0, 0.0, false)
         }
         
-        val statLine = statReader.readLine()
-        statReader.close()
-        
-        // Parse CPU times from first line
-        val statParts = statLine.split("\\s+".toRegex())
-        val systemCpuTime = statParts.drop(1).take(8).mapNotNull { it.toLongOrNull() }.sum()
-        
         // Read /proc/[pid]/stat for process CPU time
         val processCpuTime = try {
-            val procStatReader = java.io.BufferedReader(
-                java.io.FileReader("/proc/$processPid/stat")
-            )
-            val procLine = procStatReader.readLine()
-            procStatReader.close()
-            
-            val parts = procLine.split(" ")
-            val utime = parts[13].toLong() // User mode time
-            val stime = parts[14].toLong() // Kernel mode time
-            utime + stime
+            java.io.BufferedReader(java.io.FileReader("/proc/$processPid/stat")).use { procStatReader ->
+                val procLine = procStatReader.readLine()
+                val parts = procLine.split(" ")
+                val utime = parts[13].toLong() // User mode time
+                val stime = parts[14].toLong() // Kernel mode time
+                utime + stime
+            }
         } catch (e: Exception) {
             Log.w(TAG, "Could not read process CPU time", e)
             0L

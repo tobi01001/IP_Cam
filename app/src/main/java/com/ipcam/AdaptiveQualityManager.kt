@@ -9,7 +9,7 @@ import kotlin.math.min
  * Manages adaptive quality adjustments based on network conditions and system performance.
  * 
  * Dynamically adjusts:
- * - JPEG quality (70-90%)
+ * - JPEG quality (50-90%)
  * - Frame rate (5-30 fps)
  * - Resolution (optional)
  * 

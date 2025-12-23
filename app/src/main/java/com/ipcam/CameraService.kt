@@ -124,6 +124,7 @@ class CameraService : Service(), LifecycleOwner {
     private lateinit var performanceMetrics: PerformanceMetrics
     private lateinit var adaptiveQualityManager: AdaptiveQualityManager
     @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
+    private val clientIdCounter = AtomicInteger(0) // For unique client IDs
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -2456,8 +2457,8 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveStream(): Response {
-            // Generate unique client ID for this stream
-            val clientId = System.currentTimeMillis()
+            // Generate unique client ID using counter + timestamp to avoid collisions
+            val clientId = ((System.currentTimeMillis() / 1000) shl 32) or clientIdCounter.incrementAndGet().toLong()
             
             // Track this streaming connection
             activeStreams.incrementAndGet()
