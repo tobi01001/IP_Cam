@@ -119,6 +119,13 @@ class CameraService : Service(), LifecycleOwner {
     // Track if server was intentionally stopped (don't auto-restart in watchdog)
     @Volatile private var serverIntentionallyStopped: Boolean = false
     
+    // Bandwidth optimization and adaptive quality
+    private lateinit var bandwidthMonitor: BandwidthMonitor
+    private lateinit var performanceMetrics: PerformanceMetrics
+    private lateinit var adaptiveQualityManager: AdaptiveQualityManager
+    @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
+    private val clientIdCounter = AtomicInteger(0) // For unique client IDs
+    
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
     private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
@@ -274,6 +281,12 @@ class CameraService : Service(), LifecycleOwner {
         
         // Load saved settings
         loadSettings()
+        
+        // Initialize bandwidth optimization components
+        bandwidthMonitor = BandwidthMonitor()
+        performanceMetrics = PerformanceMetrics(this)
+        adaptiveQualityManager = AdaptiveQualityManager(bandwidthMonitor, performanceMetrics)
+        Log.d(TAG, "Bandwidth optimization components initialized")
         
         // Cache display density to avoid Binder calls from HTTP threads
         cachedDensity = resources.displayMetrics.density
@@ -735,6 +748,8 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun processImage(image: ImageProxy) {
+        val processingStart = System.currentTimeMillis()
+        
         try {
             val bitmap = imageProxyToBitmap(image)
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
@@ -752,11 +767,26 @@ class CameraService : Service(), LifecycleOwner {
             // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
             val annotatedBitmap = annotateBitmap(finalBitmap)
             
+            // Determine JPEG quality - use adaptive quality if enabled, otherwise use default
+            val jpegQuality = if (adaptiveQualityEnabled) {
+                // Use default client (0L) for non-client-specific compression
+                // Client-specific quality will be applied during streaming
+                val settings = adaptiveQualityManager.getClientSettings(0L)
+                settings.jpegQuality
+            } else {
+                JPEG_QUALITY_STREAM
+            }
+            
             // Pre-compress to JPEG for HTTP serving (avoid Bitmap.compress on HTTP threads)
+            val encodingStart = System.currentTimeMillis()
             val jpegBytes = ByteArrayOutputStream().use { stream ->
-                annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_STREAM, stream)
+                annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
                 stream.toByteArray()
             }
+            val encodingTime = System.currentTimeMillis() - encodingStart
+            
+            // Track encoding performance
+            performanceMetrics.recordFrameEncodingTime(encodingTime)
             
             // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
             synchronized(bitmapLock) {
@@ -771,11 +801,16 @@ class CameraService : Service(), LifecycleOwner {
                 lastFrameTimestamp = System.currentTimeMillis()
             }
             
+            // Track frame processing time
+            val processingTime = System.currentTimeMillis() - processingStart
+            performanceMetrics.recordFrameProcessingTime(processingTime)
+            
             // Notify MainActivity if it's listening - create a copy to avoid recycling issues
             val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
             onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
         } catch (e: Exception) {
             Log.e(TAG, "Error processing image", e)
+            performanceMetrics.recordFrameDropped()
         } finally {
             image.close()
         }
@@ -1740,6 +1775,9 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/setMaxConnections" -> serveSetMaxConnections(session)
                 uri == "/toggleFlashlight" -> serveToggleFlashlight()
                 uri == "/restart" -> serveRestartServer()
+                uri == "/stats" -> serveDetailedStats()
+                uri == "/enableAdaptiveQuality" -> serveEnableAdaptiveQuality()
+                uri == "/disableAdaptiveQuality" -> serveDisableAdaptiveQuality()
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -2419,9 +2457,12 @@ class CameraService : Service(), LifecycleOwner {
         }
         
         private fun serveStream(): Response {
+            // Generate unique client ID using counter + timestamp to avoid collisions
+            val clientId = ((System.currentTimeMillis() / 1000) shl 32) or clientIdCounter.incrementAndGet().toLong()
+            
             // Track this streaming connection
             activeStreams.incrementAndGet()
-            Log.d(TAG, "Stream connection opened. Active streams: ${activeStreams.get()}")
+            Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
             
             // Use PipedInputStream/PipedOutputStream to avoid blocking HTTP handler thread
             val pipedOutputStream = java.io.PipedOutputStream()
@@ -2431,7 +2472,19 @@ class CameraService : Service(), LifecycleOwner {
             streamingExecutor.submit {
                 try {
                     var streamActive = true
+                    var framesSent = 0
+                    val streamStartTime = System.currentTimeMillis()
+                    
                     while (streamActive && !Thread.currentThread().isInterrupted) {
+                        val frameStart = System.currentTimeMillis()
+                        
+                        // Get adaptive quality settings for this client
+                        val qualitySettings = if (adaptiveQualityEnabled) {
+                            adaptiveQualityManager.updateClientQuality(clientId)
+                        } else {
+                            AdaptiveQualityManager.ClientQualitySettings()
+                        }
+                        
                         // Get pre-compressed JPEG bytes to avoid Bitmap operations
                         val jpegBytes = synchronized(jpegLock) { 
                             lastFrameJpegBytes
@@ -2439,6 +2492,8 @@ class CameraService : Service(), LifecycleOwner {
                         
                         if (jpegBytes != null) {
                             try {
+                                val sendStart = System.currentTimeMillis()
+                                
                                 // Write MJPEG frame boundary and headers
                                 pipedOutputStream.write("--jpgboundary\r\n".toByteArray())
                                 pipedOutputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
@@ -2446,19 +2501,39 @@ class CameraService : Service(), LifecycleOwner {
                                 pipedOutputStream.write(jpegBytes)
                                 pipedOutputStream.write("\r\n".toByteArray())
                                 pipedOutputStream.flush()
+                                
+                                val sendDuration = System.currentTimeMillis() - sendStart
+                                
+                                // Track bandwidth usage
+                                bandwidthMonitor.recordBytesSent(clientId, jpegBytes.size.toLong())
+                                framesSent++
+                                
+                                // Log periodic stats
+                                if (framesSent % 30 == 0) {
+                                    val throughput = bandwidthMonitor.getAverageThroughputMbps(clientId)
+                                    Log.d(TAG, "Client $clientId: $framesSent frames sent, " +
+                                            "${String.format("%.2f", throughput)} Mbps, " +
+                                            "quality=${qualitySettings.jpegQuality}, " +
+                                            "delay=${qualitySettings.frameDelayMs}ms")
+                                }
                             } catch (e: IOException) {
                                 // Client disconnected or pipe broken
                                 streamActive = false
-                                Log.d(TAG, "Stream client disconnected")
+                                Log.d(TAG, "Stream client $clientId disconnected")
                             } catch (e: Exception) {
-                                Log.e(TAG, "Error writing frame to stream", e)
+                                Log.e(TAG, "Error writing frame to stream for client $clientId", e)
                                 streamActive = false
                             }
                             
-                            // Delay for ~10 fps
+                            // Use adaptive frame delay if enabled
                             if (streamActive) {
                                 try {
-                                    Thread.sleep(STREAM_FRAME_DELAY_MS)
+                                    val delay = if (adaptiveQualityEnabled) {
+                                        qualitySettings.frameDelayMs
+                                    } else {
+                                        STREAM_FRAME_DELAY_MS
+                                    }
+                                    Thread.sleep(delay)
                                 } catch (e: InterruptedException) {
                                     streamActive = false
                                 }
@@ -2473,15 +2548,20 @@ class CameraService : Service(), LifecycleOwner {
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "Streaming error", e)
+                    Log.e(TAG, "Streaming error for client $clientId", e)
                 } finally {
                     try {
                         pipedOutputStream.close()
                     } catch (e: IOException) {
                         // Ignore
                     }
+                    
+                    // Clean up client-specific monitoring
+                    bandwidthMonitor.removeClient(clientId)
+                    adaptiveQualityManager.removeClient(clientId)
+                    
                     activeStreams.decrementAndGet()
-                    Log.d(TAG, "Stream connection closed. Active streams: ${activeStreams.get()}")
+                    Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
                 }
             }
             
@@ -2524,6 +2604,12 @@ class CameraService : Service(), LifecycleOwner {
             val maxConns = this@CameraService.maxConnections
             val activeStreamCount = this@CameraService.activeStreams.get()
             val sseCount = synchronized(sseClientsLock) { sseClients.size }
+            
+            // Get bandwidth and performance stats
+            val globalStats = bandwidthMonitor.getGlobalStats()
+            val memStats = performanceMetrics.getMemoryStats()
+            val pressure = performanceMetrics.isUnderPressure()
+            
             val json = """
                 {
                     "status": "running",
@@ -2540,7 +2626,23 @@ class CameraService : Service(), LifecycleOwner {
                     "connections": "$activeConns/$maxConns",
                     "activeStreams": $activeStreamCount,
                     "activeSSEClients": $sseCount,
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight", "/restart"]
+                    "adaptiveQualityEnabled": $adaptiveQualityEnabled,
+                    "bandwidth": {
+                        "totalBytesSent": ${globalStats.totalBytesSent},
+                        "totalFramesSent": ${globalStats.totalFramesSent},
+                        "averageThroughputMbps": ${String.format("%.2f", globalStats.averageThroughputMbps)},
+                        "uptimeSeconds": ${String.format("%.1f", globalStats.uptime)}
+                    },
+                    "performance": {
+                        "heapUsedMB": ${memStats.heapUsedMB},
+                        "heapMaxMB": ${memStats.heapMaxMB},
+                        "heapUsagePercent": ${String.format("%.1f", memStats.heapUsageRatio * 100)},
+                        "framesProcessed": ${globalStats.totalFramesSent},
+                        "frameDropRate": ${String.format("%.2f", performanceMetrics.getFrameDropRate() * 100)},
+                        "avgProcessingTimeMs": ${String.format("%.1f", performanceMetrics.getAverageProcessingTime())},
+                        "pressureLevel": "${pressure.overall}"
+                    },
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight", "/restart", "/stats", "/enableAdaptiveQuality", "/disableAdaptiveQuality"]
                 }
             """.trimIndent()
             
@@ -2984,6 +3086,57 @@ class CameraService : Service(), LifecycleOwner {
                 Response.Status.OK,
                 "application/json",
                 """{"status":"ok","message":"Server restart initiated. Please wait 2-3 seconds before reconnecting."}"""
+            )
+        }
+        
+        /**
+         * Serve detailed performance and bandwidth statistics.
+         */
+        private fun serveDetailedStats(): Response {
+            val bandwidthStats = bandwidthMonitor.getDetailedStats()
+            val performanceStats = performanceMetrics.getDetailedStats()
+            val adaptiveStats = adaptiveQualityManager.getDetailedStats()
+            
+            val combinedStats = """
+                $bandwidthStats
+                
+                $performanceStats
+                
+                $adaptiveStats
+            """.trimIndent()
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "text/plain",
+                combinedStats
+            )
+        }
+        
+        /**
+         * Enable adaptive quality mode.
+         */
+        private fun serveEnableAdaptiveQuality(): Response {
+            adaptiveQualityEnabled = true
+            Log.d(TAG, "Adaptive quality enabled via HTTP")
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"Adaptive quality enabled","adaptiveQualityEnabled":true}"""
+            )
+        }
+        
+        /**
+         * Disable adaptive quality mode (revert to fixed quality).
+         */
+        private fun serveDisableAdaptiveQuality(): Response {
+            adaptiveQualityEnabled = false
+            Log.d(TAG, "Adaptive quality disabled via HTTP")
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"Adaptive quality disabled. Using fixed quality settings.","adaptiveQualityEnabled":false}"""
             )
         }
     }
