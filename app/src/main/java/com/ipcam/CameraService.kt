@@ -1293,6 +1293,24 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
+    /**
+     * Restart the server by stopping and starting it.
+     * Useful for applying configuration changes that require server restart,
+     * or for recovering from server issues remotely.
+     */
+    fun restartServer() {
+        try {
+            Log.d(TAG, "Restarting server...")
+            stopServer()
+            // Give server time to fully stop before restarting
+            Thread.sleep(500)
+            startServer()
+            Log.d(TAG, "Server restarted successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error restarting server", e)
+        }
+    }
+    
     fun getServerUrl(): String {
         val ipAddress = getIpAddress()
         return "http://$ipAddress:$actualPort"
@@ -1718,6 +1736,7 @@ class CameraService : Service(), LifecycleOwner {
                 uri == "/setResolutionOverlay" -> serveSetResolutionOverlay(session)
                 uri == "/setMaxConnections" -> serveSetMaxConnections(session)
                 uri == "/toggleFlashlight" -> serveToggleFlashlight()
+                uri == "/restart" -> serveRestartServer()
                 else -> newFixedLengthResponse(
                     Response.Status.NOT_FOUND,
                     MIME_PLAINTEXT,
@@ -1831,6 +1850,11 @@ class CameraService : Service(), LifecycleOwner {
                             <p>Loading connections...</p>
                         </div>
                         <button onclick="refreshConnections()">Refresh Connections</button>
+                        <h2>Server Management</h2>
+                        <div class="row">
+                            <button onclick="restartServer()">Restart Server</button>
+                        </div>
+                        <p class="note"><em>Note: Server restart will briefly interrupt all connections. Clients will automatically reconnect.</em></p>
                         <h2>Max Connections</h2>
                         <div class="row">
                             <label for="maxConnectionsSelect">Max Connections:</label>
@@ -1901,6 +1925,10 @@ class CameraService : Service(), LifecycleOwner {
                         <div class="endpoint">
                             <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
                             Toggle flashlight on/off for back camera. Only works if back camera is active and device has flash unit.
+                        </div>
+                        <div class="endpoint">
+                            <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
+                            Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
                         </div>
                         <h2>Keep the stream alive</h2>
                         <ul>
@@ -2196,6 +2224,34 @@ class CameraService : Service(), LifecycleOwner {
                                 });
                         }
 
+                        function restartServer() {
+                            if (!confirm('Restart server? All active connections will be briefly interrupted.')) {
+                                return;
+                            }
+                            
+                            document.getElementById('formatStatus').textContent = 'Restarting server...';
+                            
+                            fetch('/restart')
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    // Stop the stream during restart
+                                    if (streamActive) {
+                                        stopStream();
+                                    }
+                                    // Auto-reconnect after 3 seconds
+                                    setTimeout(() => {
+                                        document.getElementById('formatStatus').textContent = 'Server restarted. Reconnecting...';
+                                        if (streamActive) {
+                                            startStream();
+                                        }
+                                    }, 3000);
+                                })
+                                .catch(error => {
+                                    document.getElementById('formatStatus').textContent = 'Error restarting server: ' + error;
+                                });
+                        }
+
                         loadFormats();
                         refreshConnections();
                         updateFlashlightButton();
@@ -2478,7 +2534,7 @@ class CameraService : Service(), LifecycleOwner {
                     "connections": "$activeConns/$maxConns",
                     "activeStreams": $activeStreamCount,
                     "activeSSEClients": $sseCount,
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight"]
+                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight", "/restart"]
                 }
             """.trimIndent()
             
@@ -2906,6 +2962,30 @@ class CameraService : Service(), LifecycleOwner {
                 Response.Status.OK,
                 "application/json",
                 """{"status":"ok","message":"$message","flashlight":$newState}"""
+            )
+        }
+        
+        /**
+         * Serve server restart endpoint.
+         * Restarts the HTTP server remotely, useful for applying configuration changes
+         * or recovering from server issues without physical access to the device.
+         */
+        private fun serveRestartServer(): Response {
+            // Perform restart in background to avoid blocking the response
+            serviceScope.launch {
+                try {
+                    // Small delay to allow response to be sent
+                    delay(100)
+                    restartServer()
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in background restart", e)
+                }
+            }
+            
+            return newFixedLengthResponse(
+                Response.Status.OK,
+                "application/json",
+                """{"status":"ok","message":"Server restart initiated. Please wait 2-3 seconds before reconnecting."}"""
             )
         }
     }
