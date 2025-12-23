@@ -1718,12 +1718,12 @@ class CameraService : Service(), LifecycleOwner {
                         <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                         <h2>Live Stream</h2>
                         <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
-                            <button id="startStreamBtn" onclick="startStream()" style="font-size: 16px; padding: 12px 24px;">Start Stream</button>
                             <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                            <div id="streamPlaceholder" style="color: #888; font-size: 18px;">Click "Start Stream" to begin</div>
                         </div>
                         <br>
                         <div class="row">
-                            <button onclick="stopStream()">Stop Stream</button>
+                            <button id="toggleStreamBtn" onclick="toggleStream()">Start Stream</button>
                             <button onclick="reloadStream()">Refresh</button>
                             <button onclick="switchCamera()">Switch Camera</button>
                             <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
@@ -1849,15 +1849,27 @@ class CameraService : Service(), LifecycleOwner {
                         const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
                         
                         const streamImg = document.getElementById('stream');
-                        const startStreamBtn = document.getElementById('startStreamBtn');
+                        const streamPlaceholder = document.getElementById('streamPlaceholder');
+                        const toggleStreamBtn = document.getElementById('toggleStreamBtn');
                         let lastFrame = Date.now();
                         let streamActive = false;
                         let autoReloadInterval = null;
 
+                        // Toggle stream on/off with a single button
+                        function toggleStream() {
+                            if (streamActive) {
+                                stopStream();
+                            } else {
+                                startStream();
+                            }
+                        }
+
                         function startStream() {
                             streamImg.src = '/stream?ts=' + Date.now();
                             streamImg.style.display = 'block';
-                            startStreamBtn.style.display = 'none';
+                            streamPlaceholder.style.display = 'none';
+                            toggleStreamBtn.textContent = 'Stop Stream';
+                            toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
                             streamActive = true;
                             
                             // Auto-reload if stream stops
@@ -1872,7 +1884,9 @@ class CameraService : Service(), LifecycleOwner {
                         function stopStream() {
                             streamImg.src = '';
                             streamImg.style.display = 'none';
-                            startStreamBtn.style.display = 'block';
+                            streamPlaceholder.style.display = 'block';
+                            toggleStreamBtn.textContent = 'Start Stream';
+                            toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
                             streamActive = false;
                             if (autoReloadInterval) {
                                 clearInterval(autoReloadInterval);
@@ -1894,14 +1908,28 @@ class CameraService : Service(), LifecycleOwner {
                         streamImg.onload = () => { lastFrame = Date.now(); };
 
                         function switchCamera() {
+                            // Remember if stream was active before switching
+                            const wasStreamActive = streamActive;
+                            
                             fetch('/switch')
                                 .then(response => response.json())
                                 .then(data => {
-                                    alert('Switched to ' + data.camera);
-                                    setTimeout(() => location.reload(), 500);
+                                    document.getElementById('formatStatus').textContent = 'Switched to ' + data.camera + ' camera';
+                                    
+                                    // If stream was active, keep it active with the new camera
+                                    if (wasStreamActive) {
+                                        // Reload stream after a short delay to allow camera to switch
+                                        setTimeout(() => {
+                                            reloadStream();
+                                        }, STREAM_RELOAD_DELAY_MS);
+                                    }
+                                    
+                                    // Reload formats and update flashlight button for new camera
+                                    loadFormats();
+                                    updateFlashlightButton();
                                 })
                                 .catch(error => {
-                                    alert('Error switching camera: ' + error);
+                                    document.getElementById('formatStatus').textContent = 'Error switching camera: ' + error;
                                 });
                         }
 
