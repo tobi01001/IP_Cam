@@ -1297,17 +1297,20 @@ class CameraService : Service(), LifecycleOwner {
      * Restart the server by stopping and starting it.
      * Useful for applying configuration changes that require server restart,
      * or for recovering from server issues remotely.
+     * Runs in background thread to avoid blocking.
      */
     fun restartServer() {
-        try {
-            Log.d(TAG, "Restarting server...")
-            stopServer()
-            // Give server time to fully stop before restarting
-            Thread.sleep(500)
-            startServer()
-            Log.d(TAG, "Server restarted successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error restarting server", e)
+        serviceScope.launch {
+            try {
+                Log.d(TAG, "Restarting server...")
+                stopServer()
+                // Give server time to fully stop before restarting
+                delay(500)
+                startServer()
+                Log.d(TAG, "Server restarted successfully")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error restarting server", e)
+            }
         }
     }
     
@@ -2231,6 +2234,9 @@ class CameraService : Service(), LifecycleOwner {
                             
                             document.getElementById('formatStatus').textContent = 'Restarting server...';
                             
+                            // Remember if stream was active before restart
+                            const wasStreamActive = streamActive;
+                            
                             fetch('/restart')
                                 .then(response => response.json())
                                 .then(data => {
@@ -2239,10 +2245,10 @@ class CameraService : Service(), LifecycleOwner {
                                     if (streamActive) {
                                         stopStream();
                                     }
-                                    // Auto-reconnect after 3 seconds
+                                    // Auto-reconnect after 3 seconds if stream was active
                                     setTimeout(() => {
                                         document.getElementById('formatStatus').textContent = 'Server restarted. Reconnecting...';
-                                        if (streamActive) {
+                                        if (wasStreamActive) {
                                             startStream();
                                         }
                                     }, 3000);
@@ -2971,16 +2977,8 @@ class CameraService : Service(), LifecycleOwner {
          * or recovering from server issues without physical access to the device.
          */
         private fun serveRestartServer(): Response {
-            // Perform restart in background to avoid blocking the response
-            serviceScope.launch {
-                try {
-                    // Small delay to allow response to be sent
-                    delay(100)
-                    restartServer()
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in background restart", e)
-                }
-            }
+            // Call restartServer which already runs in background coroutine
+            restartServer()
             
             return newFixedLengthResponse(
                 Response.Status.OK,
