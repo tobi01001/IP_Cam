@@ -1012,14 +1012,21 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getSelectedResolution(): Size? = selectedResolution
     
-    fun setResolution(resolution: Size?) {
+    /**
+     * Update the resolution for the current camera in both selectedResolution
+     * and the per-camera resolution variable.
+     */
+    private fun updateCurrentCameraResolution(resolution: Size?) {
         selectedResolution = resolution
-        // Also update the per-camera resolution for current camera
         if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
             backCameraResolution = resolution
         } else {
             frontCameraResolution = resolution
         }
+    }
+    
+    fun setResolution(resolution: Size?) {
+        updateCurrentCameraResolution(resolution)
         saveSettings()
         // DON'T call requestBindCamera() here!
         // This method just saves the resolution setting.
@@ -1034,13 +1041,7 @@ class CameraService : Service(), LifecycleOwner {
      * to change resolution, as it encapsulates both the setting change and rebinding.
      */
     fun setResolutionAndRebind(resolution: Size?) {
-        selectedResolution = resolution
-        // Also update the per-camera resolution for current camera
-        if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
-            backCameraResolution = resolution
-        } else {
-            frontCameraResolution = resolution
-        }
+        updateCurrentCameraResolution(resolution)
         saveSettings()
         
         // Broadcast state change to web clients
@@ -1099,11 +1100,20 @@ class CameraService : Service(), LifecycleOwner {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
+        // Migration: Check for old single resolution format and migrate to per-camera format
+        val oldResWidth = prefs.getInt("resolutionWidth", -1)
+        val oldResHeight = prefs.getInt("resolutionHeight", -1)
+        val hasOldFormat = oldResWidth > 0 && oldResHeight > 0
+        
         // Load per-camera resolutions
         val backResWidth = prefs.getInt("backCameraResolutionWidth", -1)
         val backResHeight = prefs.getInt("backCameraResolutionHeight", -1)
         if (backResWidth > 0 && backResHeight > 0) {
             backCameraResolution = Size(backResWidth, backResHeight)
+        } else if (hasOldFormat) {
+            // Migration: Apply old resolution to back camera (most common default)
+            backCameraResolution = Size(oldResWidth, oldResHeight)
+            Log.d(TAG, "Migrated old resolution ${oldResWidth}x${oldResHeight} to back camera")
         }
         
         val frontResWidth = prefs.getInt("frontCameraResolutionWidth", -1)
@@ -1124,6 +1134,16 @@ class CameraService : Service(), LifecycleOwner {
             backCameraResolution
         } else {
             frontCameraResolution
+        }
+        
+        // Migration: Clean up old format keys after successful migration
+        if (hasOldFormat && (backCameraResolution != null || frontCameraResolution != null)) {
+            prefs.edit().apply {
+                remove("resolutionWidth")
+                remove("resolutionHeight")
+                apply()
+            }
+            Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
         Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
