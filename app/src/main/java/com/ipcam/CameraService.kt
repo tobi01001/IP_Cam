@@ -73,6 +73,9 @@ class CameraService : Service(), LifecycleOwner {
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
+    // Per-camera resolution memory: store resolution for each camera separately
+    private var backCameraResolution: Size? = null
+    private var frontCameraResolution: Size? = null
     // Flashlight control
     @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var isFlashlightOn: Boolean = false
@@ -883,14 +886,23 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     fun switchCamera(cameraSelector: CameraSelector) {
+        // Save current camera's resolution before switching
+        if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            backCameraResolution = selectedResolution
+        } else {
+            frontCameraResolution = selectedResolution
+        }
+        
+        // Switch to new camera
         currentCamera = cameraSelector
-        // Always reset resolution to auto when switching cameras, even if the resolution
-        // might be supported by both cameras. This is safer because:
-        // 1. Different cameras may have different aspect ratios (back: 16:9, front: 4:3)
-        // 2. Even with matching dimensions, sensor characteristics differ
-        // 3. Provides consistent, predictable behavior for users
-        // 4. Avoids potential issues with unsupported resolution edge cases
-        selectedResolution = null
+        
+        // Restore new camera's resolution from memory
+        selectedResolution = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            backCameraResolution
+        } else {
+            frontCameraResolution
+        }
+        
         saveSettings()
         
         // Turn off flashlight when switching cameras
@@ -1002,6 +1014,12 @@ class CameraService : Service(), LifecycleOwner {
     
     fun setResolution(resolution: Size?) {
         selectedResolution = resolution
+        // Also update the per-camera resolution for current camera
+        if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            backCameraResolution = resolution
+        } else {
+            frontCameraResolution = resolution
+        }
         saveSettings()
         // DON'T call requestBindCamera() here!
         // This method just saves the resolution setting.
@@ -1017,6 +1035,12 @@ class CameraService : Service(), LifecycleOwner {
      */
     fun setResolutionAndRebind(resolution: Size?) {
         selectedResolution = resolution
+        // Also update the per-camera resolution for current camera
+        if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            backCameraResolution = resolution
+        } else {
+            frontCameraResolution = resolution
+        }
         saveSettings()
         
         // Broadcast state change to web clients
@@ -1075,10 +1099,17 @@ class CameraService : Service(), LifecycleOwner {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
-        val resWidth = prefs.getInt("resolutionWidth", -1)
-        val resHeight = prefs.getInt("resolutionHeight", -1)
-        if (resWidth > 0 && resHeight > 0) {
-            selectedResolution = Size(resWidth, resHeight)
+        // Load per-camera resolutions
+        val backResWidth = prefs.getInt("backCameraResolutionWidth", -1)
+        val backResHeight = prefs.getInt("backCameraResolutionHeight", -1)
+        if (backResWidth > 0 && backResHeight > 0) {
+            backCameraResolution = Size(backResWidth, backResHeight)
+        }
+        
+        val frontResWidth = prefs.getInt("frontCameraResolutionWidth", -1)
+        val frontResHeight = prefs.getInt("frontCameraResolutionHeight", -1)
+        if (frontResWidth > 0 && frontResHeight > 0) {
+            frontCameraResolution = Size(frontResWidth, frontResHeight)
         }
         
         val cameraType = prefs.getString("cameraType", "back")
@@ -1086,6 +1117,13 @@ class CameraService : Service(), LifecycleOwner {
             CameraSelector.DEFAULT_FRONT_CAMERA
         } else {
             CameraSelector.DEFAULT_BACK_CAMERA
+        }
+        
+        // Set selectedResolution based on current camera
+        selectedResolution = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
+            backCameraResolution
+        } else {
+            frontCameraResolution
         }
         
         Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
@@ -1100,12 +1138,21 @@ class CameraService : Service(), LifecycleOwner {
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
-            selectedResolution?.let {
-                putInt("resolutionWidth", it.width)
-                putInt("resolutionHeight", it.height)
+            // Save per-camera resolutions
+            backCameraResolution?.let {
+                putInt("backCameraResolutionWidth", it.width)
+                putInt("backCameraResolutionHeight", it.height)
             } ?: run {
-                remove("resolutionWidth")
-                remove("resolutionHeight")
+                remove("backCameraResolutionWidth")
+                remove("backCameraResolutionHeight")
+            }
+            
+            frontCameraResolution?.let {
+                putInt("frontCameraResolutionWidth", it.width)
+                putInt("frontCameraResolutionHeight", it.height)
+            } ?: run {
+                remove("frontCameraResolutionWidth")
+                remove("frontCameraResolutionHeight")
             }
             
             val cameraType = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) "front" else "back"
