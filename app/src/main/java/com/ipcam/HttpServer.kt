@@ -229,6 +229,13 @@ class HttpServer(
                     .note { font-size: 13px; color: #444; }
                     .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
                     .status-info strong { color: #2e7d32; }
+                    #connectionsContainer { margin: 10px 0; overflow-x: auto; }
+                    #connectionsContainer table { width: 100%; border-collapse: collapse; }
+                    #connectionsContainer th { padding: 8px; text-align: left; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: bold; }
+                    #connectionsContainer td { padding: 8px; border: 1px solid #ddd; }
+                    #connectionsContainer tr:hover { background-color: #f5f5f5; }
+                    #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
+                    #connectionsContainer button:hover { background-color: #d32f2f; }
                 </style>
             </head>
             <body>
@@ -250,8 +257,62 @@ class HttpServer(
                         <button onclick="reloadStream()">Refresh</button>
                         <button onclick="switchCamera()">Switch Camera</button>
                         <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
+                        <select id="formatSelect"></select>
+                        <button onclick="applyFormat()">Apply Format</button>
                     </div>
+                    <div class="row">
+                        <label for="orientationSelect">Camera Orientation:</label>
+                        <select id="orientationSelect">
+                            <option value="landscape">Landscape (Default)</option>
+                            <option value="portrait">Portrait</option>
+                        </select>
+                        <button onclick="applyCameraOrientation()">Apply Orientation</button>
+                    </div>
+                    <div class="row">
+                        <label for="rotationSelect">Rotation:</label>
+                        <select id="rotationSelect">
+                            <option value="0">0° (Normal)</option>
+                            <option value="90">90° (Right)</option>
+                            <option value="180">180° (Upside Down)</option>
+                            <option value="270">270° (Left)</option>
+                        </select>
+                        <button onclick="applyRotation()">Apply Rotation</button>
+                    </div>
+                    <div class="row">
+                        <label>
+                            <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
+                            Show Resolution Overlay (Bottom Right)
+                        </label>
+                    </div>
+                    <div class="note" id="formatStatus"></div>
                     <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
+                    <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
+                    <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
+                    <h2>Active Connections</h2>
+                    <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
+                    <div id="connectionsContainer">
+                        <p>Loading connections...</p>
+                    </div>
+                    <button onclick="refreshConnections()">Refresh Connections</button>
+                    <h2>Server Management</h2>
+                    <div class="row">
+                        <button onclick="restartServer()">Restart Server</button>
+                    </div>
+                    <p class="note"><em>Note: Server restart will briefly interrupt all connections. Clients will automatically reconnect.</em></p>
+                    <h2>Max Connections</h2>
+                    <div class="row">
+                        <label for="maxConnectionsSelect">Max Connections:</label>
+                        <select id="maxConnectionsSelect">
+                            <option value="4">4</option>
+                            <option value="8">8</option>
+                            <option value="16">16</option>
+                            <option value="32" selected>32</option>
+                            <option value="64">64</option>
+                            <option value="100">100</option>
+                        </select>
+                        <button onclick="applyMaxConnections()">Apply</button>
+                    </div>
+                    <p class="note"><em>Note: Server restart required for max connections change to take effect.</em></p>
                     <h2>API Endpoints</h2>
                     <div class="endpoint">
                         <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
@@ -270,21 +331,70 @@ class HttpServer(
                         Returns server status as JSON
                     </div>
                     <div class="endpoint">
+                        <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
+                        Server-Sent Events stream for real-time connection count updates
+                    </div>
+                    <div class="endpoint">
+                        <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
+                        Lists supported camera resolutions for the active lens
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
+                        Apply a supported resolution (or omit to return to auto). Requires <code>value</code> parameter.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
+                        Set the base camera recording mode (landscape or portrait). Requires <code>value</code> parameter.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
+                        Rotate the video feed by the specified degrees. Requires <code>value</code> parameter.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
+                        Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
+                        Returns list of active connections as JSON
+                    </div>
+                    <div class="endpoint">
+                        <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
+                        Close a specific connection by ID. Requires <code>id</code> parameter.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
+                        Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
+                    </div>
+                    <div class="endpoint">
                         <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
-                        Toggle flashlight on/off for back camera
+                        Toggle flashlight on/off for back camera. Only works if back camera is active and device has flash unit.
+                    </div>
+                    <div class="endpoint">
+                        <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
+                        Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
                     </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
                         <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
                         <li>Allow background activity and keep the phone plugged in for long sessions</li>
+                        <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
+                        <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
                     </ul>
                 </div>
                 <script>
+                    // Configuration constants
+                    const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
+                    const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
+                    
                     const streamImg = document.getElementById('stream');
                     const streamPlaceholder = document.getElementById('streamPlaceholder');
                     const toggleStreamBtn = document.getElementById('toggleStreamBtn');
+                    let lastFrame = Date.now();
                     let streamActive = false;
+                    let autoReloadInterval = null;
 
+                    // Toggle stream on/off with a single button
                     function toggleStream() {
                         if (streamActive) {
                             stopStream();
@@ -298,8 +408,16 @@ class HttpServer(
                         streamImg.style.display = 'block';
                         streamPlaceholder.style.display = 'none';
                         toggleStreamBtn.textContent = 'Stop Stream';
-                        toggleStreamBtn.style.backgroundColor = '#f44336';
+                        toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
                         streamActive = true;
+                        
+                        // Auto-reload if stream stops
+                        if (autoReloadInterval) clearInterval(autoReloadInterval);
+                        autoReloadInterval = setInterval(() => {
+                            if (streamActive && Date.now() - lastFrame > 5000) {
+                                reloadStream();
+                            }
+                        }, 3000);
                     }
 
                     function stopStream() {
@@ -307,8 +425,12 @@ class HttpServer(
                         streamImg.style.display = 'none';
                         streamPlaceholder.style.display = 'block';
                         toggleStreamBtn.textContent = 'Start Stream';
-                        toggleStreamBtn.style.backgroundColor = '#4CAF50';
+                        toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
                         streamActive = false;
+                        if (autoReloadInterval) {
+                            clearInterval(autoReloadInterval);
+                            autoReloadInterval = null;
+                        }
                     }
 
                     function reloadStream() {
@@ -317,36 +439,405 @@ class HttpServer(
                         }
                     }
                     
+                    streamImg.onerror = () => {
+                        if (streamActive) {
+                            setTimeout(reloadStream, 1000);
+                        }
+                    };
+                    streamImg.onload = () => { lastFrame = Date.now(); };
+
                     function switchCamera() {
+                        // Remember if stream was active before switching
+                        const wasStreamActive = streamActive;
+                        
                         fetch('/switch')
                             .then(response => response.json())
                             .then(data => {
-                                console.log('Switched to ' + data.camera + ' camera');
-                                if (streamActive) {
-                                    setTimeout(reloadStream, 200);
+                                document.getElementById('formatStatus').textContent = 'Switched to ' + data.camera + ' camera';
+                                
+                                // If stream was active, keep it active with the new camera
+                                if (wasStreamActive) {
+                                    // Reload stream after a short delay to allow camera to switch
+                                    setTimeout(() => {
+                                        reloadStream();
+                                    }, STREAM_RELOAD_DELAY_MS);
                                 }
+                                
+                                // Reload formats and update flashlight button for new camera
+                                loadFormats();
+                                updateFlashlightButton();
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error switching camera: ' + error;
                             });
                     }
-                    
+
                     function toggleFlashlight() {
                         fetch('/toggleFlashlight')
                             .then(response => response.json())
-                            .then(data => console.log(data.message));
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                    updateFlashlightButton();
+                                } else {
+                                    document.getElementById('formatStatus').textContent = data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error toggling flashlight: ' + error;
+                            });
                     }
+
+                    function updateFlashlightButton() {
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                const button = document.getElementById('flashlightButton');
+                                if (data.flashlightAvailable) {
+                                    button.disabled = false;
+                                    button.textContent = data.flashlightOn ? 'Flashlight: ON' : 'Flashlight: OFF';
+                                    button.style.backgroundColor = data.flashlightOn ? '#FFA500' : '#4CAF50';
+                                } else {
+                                    button.disabled = true;
+                                    button.textContent = 'Flashlight N/A';
+                                    button.style.backgroundColor = '#9E9E9E';
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Error updating flashlight button:', error);
+                            });
+                    }
+
+                    function loadFormats() {
+                        fetch('/formats')
+                            .then(response => response.json())
+                            .then(data => {
+                                const select = document.getElementById('formatSelect');
+                                select.innerHTML = '';
+                                const auto = document.createElement('option');
+                                auto.value = '';
+                                auto.textContent = 'Auto (Camera default)';
+                                select.appendChild(auto);
+                                data.formats.forEach(fmt => {
+                                    const option = document.createElement('option');
+                                    option.value = fmt.value;
+                                    option.textContent = fmt.label;
+                                    if (data.selected === fmt.value) {
+                                        option.selected = true;
+                                    }
+                                    select.appendChild(option);
+                                });
+                                document.getElementById('formatStatus').textContent = data.selected ? 
+                                    'Selected: ' + data.selected : 'Selected: Auto';
+                            });
+                    }
+
+                    function applyFormat() {
+                        const value = document.getElementById('formatSelect').value;
+                        const url = value ? '/setFormat?value=' + encodeURIComponent(value) : '/setFormat';
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to set format';
+                            });
+                    }
+
+                    function applyCameraOrientation() {
+                        const value = document.getElementById('orientationSelect').value;
+                        const url = '/setCameraOrientation?value=' + encodeURIComponent(value);
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to set camera orientation';
+                            });
+                    }
+
+                    function applyRotation() {
+                        const value = document.getElementById('rotationSelect').value;
+                        const url = '/setRotation?value=' + encodeURIComponent(value);
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to set rotation';
+                            });
+                    }
+
+                    function toggleResolutionOverlay() {
+                        const checkbox = document.getElementById('resolutionOverlayCheckbox');
+                        const value = checkbox.checked ? 'true' : 'false';
+                        const url = '/setResolutionOverlay?value=' + value;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to toggle resolution overlay';
+                            });
+                    }
+
+                    function refreshConnections() {
+                        fetch('/connections')
+                            .then(response => {
+                                if (!response.ok) {
+                                    throw new Error('HTTP ' + response.status);
+                                }
+                                return response.json();
+                            })
+                            .then(data => {
+                                displayConnections(data.connections);
+                            })
+                            .catch(error => {
+                                console.error('Connection fetch error:', error);
+                                document.getElementById('connectionsContainer').innerHTML = 
+                                    '<p style="color: #f44336;">Error loading connections. Please refresh the page or check server status.</p>';
+                            });
+                    }
+
+                    function displayConnections(connections) {
+                        const container = document.getElementById('connectionsContainer');
+                        
+                        if (!connections || connections.length === 0) {
+                            container.innerHTML = '<p>No active connections</p>';
+                            return;
+                        }
+                        
+                        let html = '<table style="width: 100%; border-collapse: collapse;">';
+                        html += '<tr style="background-color: #f0f0f0;">';
+                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">ID</th>';
+                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Remote Address</th>';
+                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Endpoint</th>';
+                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Duration (s)</th>';
+                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Action</th>';
+                        html += '</tr>';
+                        
+                        connections.forEach(conn => {
+                            html += '<tr>';
+                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.id + '</td>';
+                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.remoteAddr + '</td>';
+                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.endpoint + '</td>';
+                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + Math.floor(conn.duration / 1000) + '</td>';
+                            html += '<td style="padding: 8px; border: 1px solid #ddd;">';
+                            html += '<button onclick="closeConnection(' + conn.id + ')" style="padding: 4px 8px; font-size: 12px;">Close</button>';
+                            html += '</td>';
+                            html += '</tr>';
+                        });
+                        
+                        html += '</table>';
+                        container.innerHTML = html;
+                    }
+
+                    function closeConnection(id) {
+                        if (!confirm('Close connection ' + id + '?')) {
+                            return;
+                        }
+                        
+                        fetch('/closeConnection?id=' + id)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                refreshConnections();
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error closing connection: ' + error;
+                            });
+                    }
+
+                    function applyMaxConnections() {
+                        const value = document.getElementById('maxConnectionsSelect').value;
+                        fetch('/setMaxConnections?value=' + value)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error setting max connections: ' + error;
+                            });
+                    }
+
+                    function restartServer() {
+                        if (!confirm('Restart server? All active connections will be briefly interrupted.')) {
+                            return;
+                        }
+                        
+                        document.getElementById('formatStatus').textContent = 'Restarting server...';
+                        
+                        // Remember if stream was active before restart
+                        const wasStreamActive = streamActive;
+                        
+                        fetch('/restart')
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                // Stop the stream during restart
+                                if (streamActive) {
+                                    stopStream();
+                                }
+                                // Auto-reconnect after 3 seconds if stream was active
+                                setTimeout(() => {
+                                    document.getElementById('formatStatus').textContent = 'Server restarted. Reconnecting...';
+                                    if (wasStreamActive) {
+                                        startStream();
+                                    }
+                                }, 3000);
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error restarting server: ' + error;
+                            });
+                    }
+
+                    loadFormats();
+                    refreshConnections();
+                    updateFlashlightButton();
+                    
+                    // Load max connections from server status
+                    fetch('/status')
+                        .then(response => response.json())
+                        .then(data => {
+                            const select = document.getElementById('maxConnectionsSelect');
+                            const options = select.options;
+                            for (let i = 0; i < options.length; i++) {
+                                if (parseInt(options[i].value) === data.maxConnections) {
+                                    select.selectedIndex = i;
+                                    break;
+                                }
+                            }
+                        });
                     
                     // Set up Server-Sent Events for real-time connection count updates
                     const eventSource = new EventSource('/events');
+                    let lastConnectionCount = '';
+                    
                     eventSource.onmessage = function(event) {
                         try {
                             const data = JSON.parse(event.data);
                             const connectionCount = document.getElementById('connectionCount');
                             if (connectionCount && data.connections) {
                                 connectionCount.textContent = data.connections;
+                                // Only refresh connection list if count changed
+                                if (lastConnectionCount !== data.connections) {
+                                    lastConnectionCount = data.connections;
+                                    // Debounce refresh to avoid too many requests
+                                    setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
+                                }
                             }
                         } catch (e) {
                             console.error('Failed to parse SSE data:', e);
                         }
                     };
+                    
+                    // Handle camera state updates pushed by server
+                    let lastReceivedState = null;  // Track last state to detect actual changes
+                    
+                    eventSource.addEventListener('state', function(event) {
+                        try {
+                            const state = JSON.parse(event.data);
+                            console.log('Received state update from server:', state);
+                            
+                            // Check if this is an actual change
+                            const cameraChanged = !lastReceivedState || lastReceivedState.camera !== state.camera;
+                            const resolutionChanged = !lastReceivedState || lastReceivedState.resolution !== state.resolution;
+                            
+                            // Update resolution spinner if changed
+                            if (state.resolution && resolutionChanged) {
+                                const formatSelect = document.getElementById('formatSelect');
+                                const options = formatSelect.options;
+                                for (let i = 0; i < options.length; i++) {
+                                    if (options[i].value === state.resolution || 
+                                        (state.resolution === 'auto' && options[i].value === '')) {
+                                        if (formatSelect.selectedIndex !== i) {
+                                            formatSelect.selectedIndex = i;
+                                            console.log('Updated resolution spinner to:', state.resolution);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Update camera orientation spinner if changed
+                            if (state.cameraOrientation) {
+                                const orientationSelect = document.getElementById('orientationSelect');
+                                const options = orientationSelect.options;
+                                for (let i = 0; i < options.length; i++) {
+                                    if (options[i].value === state.cameraOrientation) {
+                                        if (orientationSelect.selectedIndex !== i) {
+                                            orientationSelect.selectedIndex = i;
+                                            console.log('Updated orientation spinner to:', state.cameraOrientation);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Update rotation spinner if changed
+                            if (state.rotation !== undefined) {
+                                const rotationSelect = document.getElementById('rotationSelect');
+                                const options = rotationSelect.options;
+                                for (let i = 0; i < options.length; i++) {
+                                    if (parseInt(options[i].value) === state.rotation) {
+                                        if (rotationSelect.selectedIndex !== i) {
+                                            rotationSelect.selectedIndex = i;
+                                            console.log('Updated rotation spinner to:', state.rotation);
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // Update resolution overlay checkbox if changed
+                            if (state.showResolutionOverlay !== undefined) {
+                                const checkbox = document.getElementById('resolutionOverlayCheckbox');
+                                if (checkbox.checked !== state.showResolutionOverlay) {
+                                    checkbox.checked = state.showResolutionOverlay;
+                                    console.log('Updated resolution overlay checkbox to:', state.showResolutionOverlay);
+                                }
+                            }
+                            
+                            // Update flashlight button state
+                            updateFlashlightButton();
+                            
+                            // Reload stream if it's active to reflect changes immediately
+                            if (streamActive) {
+                                console.log('Reloading stream to reflect state changes');
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            }
+                            
+                            // If camera switched or resolution actually changed, reload formats
+                            if (cameraChanged) {
+                                console.log('Camera changed, reloading formats');
+                                loadFormats();
+                            }
+                            
+                            // Store current state for next comparison
+                            lastReceivedState = state;
+                            
+                        } catch (e) {
+                            console.error('Failed to handle state update:', e);
+                        }
+                    });
+                    
+                    eventSource.onerror = function(error) {
+                        console.error('SSE connection error:', error);
+                        // EventSource will automatically try to reconnect
+                    };
+                    
+                    // Clean up on page unload
+                    window.addEventListener('beforeunload', function() {
+                        eventSource.close();
+                    });
                 </script>
             </body>
             </html>
