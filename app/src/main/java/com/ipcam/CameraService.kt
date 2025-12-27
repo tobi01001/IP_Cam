@@ -244,7 +244,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
-        if (shouldStartServer && httpServer?.isAlive != true) {
+        if (shouldStartServer && httpServer?.isAlive() != true) {
             startServer()
         }
         
@@ -351,7 +351,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     private fun getNotificationText(): String {
-        return if (httpServer?.isAlive == true) {
+        return if (httpServer?.isAlive() == true) {
             "Server running on ${getServerUrl()}"
         } else {
             "Camera preview active"
@@ -843,7 +843,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
     
-    fun switchCamera(cameraSelector: CameraSelector) {
+    override fun switchCamera(cameraSelector: CameraSelector) {
         // Save current camera's resolution before switching
         if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
             backCameraResolution = selectedResolution
@@ -927,7 +927,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Toggle flashlight on/off
      * Only works for back camera with flash unit
      */
-    fun toggleFlashlight(): Boolean {
+    override fun toggleFlashlight(): Boolean {
         if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
             Log.w(TAG, "Flashlight only available for back camera")
             return false
@@ -953,22 +953,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Get current flashlight state
      */
-    fun isFlashlightEnabled(): Boolean = isFlashlightOn
+    override fun isFlashlightEnabled(): Boolean = isFlashlightOn
     
     /**
      * Check if flashlight is available (back camera with flash unit)
      */
-    fun isFlashlightAvailable(): Boolean {
+    override fun isFlashlightAvailable(): Boolean {
         return currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit
     }
     
-    fun getCurrentCamera(): CameraSelector = currentCamera
+    override fun getCurrentCamera(): CameraSelector = currentCamera
     
-    fun getSupportedResolutions(): List<Size> {
+    override fun getSupportedResolutions(): List<Size> {
         return getSupportedResolutions(currentCamera)
     }
     
-    fun getSelectedResolution(): Size? = selectedResolution
+    override fun getSelectedResolution(): Size? = selectedResolution
     
     /**
      * Update the resolution for the current camera in both selectedResolution
@@ -998,7 +998,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * This is the recommended way for external callers (MainActivity, HTTP endpoints)
      * to change resolution, as it encapsulates both the setting change and rebinding.
      */
-    fun setResolutionAndRebind(resolution: Size?) {
+    override fun setResolutionAndRebind(resolution: Size?) {
         updateCurrentCameraResolution(resolution)
         saveSettings()
         
@@ -1008,7 +1008,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         requestBindCamera()
     }
     
-    fun setCameraOrientation(orientation: String) {
+    override fun setCameraOrientation(orientation: String) {
         cameraOrientation = orientation
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
@@ -1023,7 +1023,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     fun getCameraOrientation(): String = cameraOrientation
     
-    fun setRotation(rot: Int) {
+    override fun setRotation(rot: Int) {
         rotation = rot
         saveSettings()
         
@@ -1036,7 +1036,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     fun getRotation(): Int = rotation
     
-    fun setShowResolutionOverlay(show: Boolean) {
+    override fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
         saveSettings()
         
@@ -1169,7 +1169,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         onConnectionsChangedCallback = null
     }
     
-    fun getActiveConnectionsCount(): Int {
+    override fun getActiveConnectionsCount(): Int {
         // Return the count of connections we can actually track
         return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
     }
@@ -1180,9 +1180,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
-    fun getMaxConnections(): Int = maxConnections
+    override fun getMaxConnections(): Int = maxConnections
     
-    fun setMaxConnections(max: Int): Boolean {
+    override fun setMaxConnections(max: Int): Boolean {
         val newMax = max.coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         if (newMax != maxConnections) {
             maxConnections = newMax
@@ -1257,7 +1257,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * or for recovering from server issues remotely.
      * Runs in background thread to avoid blocking.
      */
-    fun restartServer() {
+    override fun restartServer() {
         serviceScope.launch {
             try {
                 Log.d(TAG, "Restarting server...")
@@ -1272,7 +1272,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
-    fun getServerUrl(): String {
+    override fun getServerUrl(): String {
         val ipAddress = getIpAddress()
         return "http://$ipAddress:$actualPort"
     }
@@ -1342,7 +1342,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 var needsRecovery = false
                 
                 // Check server health - only restart if it wasn't intentionally stopped
-                if (!serverIntentionallyStopped && httpServer?.isAlive != true) {
+                if (!serverIntentionallyStopped && httpServer?.isAlive() != true) {
                     Log.w(TAG, "Watchdog: Server not alive, restarting...")
                     startServer()
                     needsRecovery = true
@@ -1389,7 +1389,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         Log.d(TAG, "Network state changed, checking server...")
                         serviceScope.launch {
                             delay(2000) // Wait for network to stabilize
-                            if (httpServer?.isAlive != true) {
+                            if (httpServer?.isAlive() != true) {
                                 Log.d(TAG, "Network recovered, restarting server")
                                 startServer()
                             }
@@ -1504,90 +1504,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
     
-    /**
-     * Broadcast connection count update to all SSE clients and MainActivity
-     */
-    private fun broadcastConnectionCount() {
-        val activeConns = asyncRunner?.getActiveConnections() ?: 0
-        val maxConns = asyncRunner?.getMaxConnections() ?: maxConnections
-        val message = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
-        
-        synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
-                try {
-                    if (client.active) {
-                        client.outputStream.write(message.toByteArray())
-                        client.outputStream.flush()
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "SSE client ${client.id} disconnected")
-                    client.active = false
-                    iterator.remove()
-                }
-            }
-        }
-        
-        // Notify MainActivity of connection count change
-        notifyConnectionsChanged()
-    }
-    
-    /**
-     * Build camera state JSON string for SSE broadcasts.
-     * Centralizes JSON construction to avoid duplication and ensure consistency.
-     */
-    private fun buildCameraStateJson(): String {
-        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-        val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
-        
-        // Build JSON state object
-        // Note: Using manual string construction for simplicity. For production use,
-        // consider using a JSON library like Gson or kotlinx.serialization for better
-        // safety and automatic escaping.
-        return """
-        {
-            "type": "state",
-            "camera": "$cameraName",
-            "resolution": "$resolutionStr",
-            "cameraOrientation": "$cameraOrientation",
-            "rotation": $rotation,
-            "showResolutionOverlay": $showResolutionOverlay,
-            "flashlightAvailable": ${isFlashlightAvailable()},
-            "flashlightOn": ${isFlashlightEnabled()},
-            "serverRunning": ${isServerRunning()}
-        }
-        """.trimIndent().replace("\n", "").replace("  ", "")
-    }
-    
-    /**
-     * Broadcast camera state update to all SSE clients for real-time synchronization.
-     * This ensures all connected web clients stay in sync with the authoritative camera state.
-     */
-    private fun broadcastCameraState() {
-        val stateJson = buildCameraStateJson()
-        val message = "event: state\ndata: $stateJson\n\n"
-        
-        synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
-                try {
-                    if (client.active) {
-                        client.outputStream.write(message.toByteArray())
-                        client.outputStream.flush()
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "SSE client ${client.id} disconnected during state broadcast")
-                    client.active = false
-                    iterator.remove()
-                }
-            }
-        }
-        
-        Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients")
-    }
-    
     private fun updateBatteryCache() {
         cachedBatteryInfo = getBatteryInfo()
         lastBatteryUpdate = System.currentTimeMillis()
@@ -1627,7 +1543,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return BatteryInfo(percentage, isCharging)
     }
     
-    private fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
+    override fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
     
     private fun getSupportedResolutions(cameraSelector: CameraSelector): List<Size> {
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -1673,10 +1589,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun getSelectedResolutionLabel(): String {
         return selectedResolution?.let { sizeLabel(it) } ?: "auto"
-    }
-    
-    override fun sizeLabel(size: Size): String {
-        return "${size.width}x${size.height}"
     }
     
     override fun getCameraStateJson(): String {

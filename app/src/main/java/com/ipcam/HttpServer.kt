@@ -69,7 +69,7 @@ class HttpServer(
             
             install(StatusPages) {
                 exception<Throwable> { call, cause ->
-                    Log.e(TAG, "Request failed: ${call.request.uri}", cause)
+                    Log.e(TAG, "Request failed: ${call.request.local.uri}", cause)
                     call.respondText(
                         text = "Internal server error: ${cause.message}",
                         status = HttpStatusCode.InternalServerError
