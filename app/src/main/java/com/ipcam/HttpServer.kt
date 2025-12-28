@@ -419,6 +419,7 @@ class HttpServer(
                     let lastFrame = Date.now();
                     let streamActive = false;
                     let autoReloadInterval = null;
+                    let currentStreamingMode = 'mjpeg'; // Will be loaded from server
 
                     // Toggle stream on/off with a single button
                     function toggleStream() {
@@ -430,20 +431,24 @@ class HttpServer(
                     }
 
                     function startStream() {
-                        streamImg.src = '/stream?ts=' + Date.now();
+                        // Use appropriate stream URL based on mode
+                        const streamUrl = currentStreamingMode === 'mp4' ? '/stream.mp4' : '/stream';
+                        streamImg.src = streamUrl + '?ts=' + Date.now();
                         streamImg.style.display = 'block';
                         streamPlaceholder.style.display = 'none';
                         toggleStreamBtn.textContent = 'Stop Stream';
                         toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
                         streamActive = true;
                         
-                        // Auto-reload if stream stops
-                        if (autoReloadInterval) clearInterval(autoReloadInterval);
-                        autoReloadInterval = setInterval(() => {
-                            if (streamActive && Date.now() - lastFrame > 5000) {
-                                reloadStream();
-                            }
-                        }, 3000);
+                        // Auto-reload if stream stops (only for MJPEG, MP4 is continuous)
+                        if (currentStreamingMode === 'mjpeg') {
+                            if (autoReloadInterval) clearInterval(autoReloadInterval);
+                            autoReloadInterval = setInterval(() => {
+                                if (streamActive && Date.now() - lastFrame > 5000) {
+                                    reloadStream();
+                                }
+                            }, 3000);
+                        }
                     }
 
                     function stopStream() {
@@ -461,7 +466,8 @@ class HttpServer(
 
                     function reloadStream() {
                         if (streamActive) {
-                            streamImg.src = '/stream?ts=' + Date.now();
+                            const streamUrl = currentStreamingMode === 'mp4' ? '/stream.mp4' : '/stream';
+                            streamImg.src = streamUrl + '?ts=' + Date.now();
                         }
                     }
                     
@@ -565,6 +571,7 @@ class HttpServer(
                                 const select = document.getElementById('streamingModeSelect');
                                 const mode = data.streamingMode || 'mjpeg';
                                 select.value = mode;
+                                currentStreamingMode = mode; // Update the current mode variable
                                 document.getElementById('streamingModeStatus').textContent = 
                                     'Current mode: ' + mode.toUpperCase();
                             })
@@ -620,17 +627,28 @@ class HttpServer(
                         const value = document.getElementById('streamingModeSelect').value;
                         const url = '/setStreamingMode?value=' + encodeURIComponent(value);
                         const statusElement = document.getElementById('streamingModeStatus');
+                        const wasStreamActive = streamActive;
                         
                         statusElement.textContent = 'Changing streaming mode to ' + value.toUpperCase() + '...';
+                        
+                        // Stop current stream before mode change
+                        if (streamActive) {
+                            stopStream();
+                        }
                         
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
+                                // Update current streaming mode
+                                currentStreamingMode = value;
                                 statusElement.textContent = data.message + ' Reloading stream in 2 seconds...';
-                                // Wait 2 seconds for camera to rebind, then reload stream
+                                
+                                // Wait 2 seconds for camera to rebind, then reload stream if it was active
                                 setTimeout(() => {
-                                    reloadStream();
                                     statusElement.textContent = 'Streaming mode changed to ' + value.toUpperCase();
+                                    if (wasStreamActive) {
+                                        startStream();
+                                    }
                                 }, 2000);
                             })
                             .catch((error) => {

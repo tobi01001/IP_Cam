@@ -637,7 +637,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 mp4StreamWriter?.start()
             }
             
-            // Create Preview use case with encoder's input surface
+            // Create Preview use case with encoder's input surface for encoding
             val preview = Preview.Builder().build()
             preview.setSurfaceProvider { request ->
                 val surface = mp4StreamWriter?.getInputSurface()
@@ -649,9 +649,47 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
             }
             
-            // Bind to lifecycle
-            Log.d(TAG, "Binding camera to lifecycle with Preview for MP4...")
-            camera = cameraProvider?.bindToLifecycle(this, currentCamera, preview)
+            // Also create ImageAnalysis use case for app preview ONLY
+            // This ensures the MainActivity can still display the camera feed
+            // BUT we use a lightweight processor that doesn't do JPEG compression
+            val builder = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // More efficient for preview
+            
+            // Use lower resolution for preview to reduce CPU load
+            Log.d(TAG, "Setting up lightweight ImageAnalysis for app preview (MP4 mode)")
+            val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setResolutionFilter { supportedSizes, _ ->
+                    // Use a smaller resolution for preview (e.g., 720p max)
+                    val maxPreviewPixels = 1280 * 720
+                    val suitable = supportedSizes.filter { size ->
+                        val pixels = size.width * size.height
+                        pixels <= maxPreviewPixels
+                    }.sortedByDescending { it.width * it.height }
+                    
+                    if (suitable.isNotEmpty()) {
+                        Log.d(TAG, "Using ${suitable.first().width}x${suitable.first().height} for app preview in MP4 mode")
+                        listOf(suitable.first())
+                    } else {
+                        // Fallback to smallest available
+                        val smallest = supportedSizes.minByOrNull { it.width * it.height }
+                        smallest?.let { listOf(it) } ?: supportedSizes
+                    }
+                }
+                .build()
+            builder.setResolutionSelector(previewResolutionSelector)
+            
+            imageAnalysis = builder.build()
+                .also {
+                    it.setAnalyzer(cameraExecutor) { image ->
+                        // Lightweight processing for app preview only - no JPEG compression
+                        processImageForPreviewOnly(image)
+                    }
+                }
+            
+            // Bind both Preview (for encoding) and ImageAnalysis (for app preview) to lifecycle
+            Log.d(TAG, "Binding camera to lifecycle with Preview for MP4 encoding and lightweight ImageAnalysis for app preview...")
+            camera = cameraProvider?.bindToLifecycle(this, currentCamera, preview, imageAnalysis)
             
             // Start processing encoder output in background
             startMp4EncoderProcessing()
@@ -664,6 +702,62 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             saveSettings()
             bindCameraForMjpeg(targetResolution)
         }
+    }
+    
+    /**
+     * Lightweight image processing for app preview only (MP4 mode)
+     * Does NOT do JPEG compression or heavy processing - just updates the preview bitmap
+     */
+    private fun processImageForPreviewOnly(image: ImageProxy) {
+        try {
+            // Simple conversion to bitmap for preview
+            val bitmap = imageProxyToBitmap(image)
+            
+            // Apply rotation for preview
+            val finalBitmap = applyRotationCorrectly(bitmap)
+            
+            // Simple annotation (just timestamp, no heavy processing)
+            val annotatedBitmap = annotateBitmapLightweight(finalBitmap)
+            
+            // Update preview callback for MainActivity (no JPEG compression needed)
+            val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
+            onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
+            
+            // Clean up
+            if (bitmap != finalBitmap) {
+                bitmap.recycle()
+            }
+            if (finalBitmap != annotatedBitmap) {
+                finalBitmap.recycle()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in lightweight preview processing", e)
+        } finally {
+            image.close()
+        }
+    }
+    
+    /**
+     * Lightweight bitmap annotation for preview (MP4 mode)
+     * Only adds minimal overlays, no heavy processing
+     */
+    private fun annotateBitmapLightweight(bitmap: Bitmap): Bitmap {
+        val mutableBitmap = bitmap.copy(bitmap.config, true)
+        val canvas = Canvas(mutableBitmap)
+        
+        val paint = Paint().apply {
+            textSize = 30f
+            color = Color.WHITE
+            style = Paint.Style.FILL
+            setShadowLayer(3f, 2f, 2f, Color.BLACK)
+        }
+        
+        // Only add timestamp (skip battery/resolution overlays to save CPU)
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        canvas.drawText(timestamp, 10f, 40f, paint)
+        
+        return mutableBitmap
     }
     
     /**
