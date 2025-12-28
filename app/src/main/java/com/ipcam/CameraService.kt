@@ -762,6 +762,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Start background coroutine to process MP4 encoder output
+     * Runs continuously to maintain a buffer of encoded frames
      */
     private fun startMp4EncoderProcessing() {
         serviceScope.launch {
