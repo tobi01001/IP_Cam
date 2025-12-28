@@ -654,7 +654,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // BUT we use a lightweight processor that doesn't do JPEG compression
             val builder = ImageAnalysis.Builder()
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888) // More efficient for preview
+                // Use default YUV format - imageProxyToBitmap() expects YUV planes
             
             // Use lower resolution for preview to reduce CPU load
             Log.d(TAG, "Setting up lightweight ImageAnalysis for app preview (MP4 mode)")
