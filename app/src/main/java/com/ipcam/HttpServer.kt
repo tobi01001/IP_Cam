@@ -263,7 +263,8 @@ class HttpServer(
                     <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
                     <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
-                        <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        <img id="streamImg" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        <video id="streamVideo" style="display: none; max-width: 100%; height: auto;" controls autoplay muted></video>
                         <div id="streamPlaceholder" style="color: #888; font-size: 18px;">Click "Start Stream" to begin</div>
                     </div>
                     <br>
@@ -413,7 +414,8 @@ class HttpServer(
                     const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
                     const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
                     
-                    const streamImg = document.getElementById('stream');
+                    const streamImg = document.getElementById('streamImg');
+                    const streamVideo = document.getElementById('streamVideo');
                     const streamPlaceholder = document.getElementById('streamPlaceholder');
                     const toggleStreamBtn = document.getElementById('toggleStreamBtn');
                     let lastFrame = Date.now();
@@ -431,10 +433,20 @@ class HttpServer(
                     }
 
                     function startStream() {
-                        // Use appropriate stream URL based on mode
-                        const streamUrl = currentStreamingMode === 'mp4' ? '/stream.mp4' : '/stream';
-                        streamImg.src = streamUrl + '?ts=' + Date.now();
-                        streamImg.style.display = 'block';
+                        const isMp4 = currentStreamingMode === 'mp4';
+                        const streamUrl = isMp4 ? '/stream.mp4' : '/stream';
+                        
+                        // Use video tag for MP4, img tag for MJPEG
+                        if (isMp4) {
+                            streamImg.style.display = 'none';
+                            streamVideo.src = streamUrl + '?ts=' + Date.now();
+                            streamVideo.style.display = 'block';
+                        } else {
+                            streamVideo.style.display = 'none';
+                            streamImg.src = streamUrl + '?ts=' + Date.now();
+                            streamImg.style.display = 'block';
+                        }
+                        
                         streamPlaceholder.style.display = 'none';
                         toggleStreamBtn.textContent = 'Stop Stream';
                         toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
@@ -454,6 +466,8 @@ class HttpServer(
                     function stopStream() {
                         streamImg.src = '';
                         streamImg.style.display = 'none';
+                        streamVideo.src = '';
+                        streamVideo.style.display = 'none';
                         streamPlaceholder.style.display = 'block';
                         toggleStreamBtn.textContent = 'Start Stream';
                         toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
@@ -466,8 +480,14 @@ class HttpServer(
 
                     function reloadStream() {
                         if (streamActive) {
-                            const streamUrl = currentStreamingMode === 'mp4' ? '/stream.mp4' : '/stream';
-                            streamImg.src = streamUrl + '?ts=' + Date.now();
+                            const isMp4 = currentStreamingMode === 'mp4';
+                            const streamUrl = isMp4 ? '/stream.mp4' : '/stream';
+                            
+                            if (isMp4) {
+                                streamVideo.src = streamUrl + '?ts=' + Date.now();
+                            } else {
+                                streamImg.src = streamUrl + '?ts=' + Date.now();
+                            }
                         }
                     }
                     

@@ -839,21 +839,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else "unknown"
         Log.d(TAG, "requestBindCamera() called by: $caller")
         
-        ContextCompat.getMainExecutor(this).execute {
+        // Run camera operations on background thread to avoid blocking UI
+        serviceScope.launch(Dispatchers.IO) {
             try {
                 // Stop camera first to ensure clean state
                 Log.d(TAG, "Stopping camera before rebinding...")
                 stopCamera()
                 
-                // Schedule rebinding after a short delay to ensure resources are released
-                // Using Handler instead of Thread.sleep to avoid blocking main thread
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                // Brief delay to ensure resources are released
+                delay(100)
+                
+                // Switch to main thread for camera binding (CameraX requires main thread)
+                withContext(Dispatchers.Main) {
                     try {
                         Log.d(TAG, "Delay complete, rebinding camera now...")
                         bindCamera()
                         // Callback is now invoked directly in bindCamera() after binding succeeds
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error in bindCamera() from postDelayed", e)
+                        Log.e(TAG, "Error in bindCamera() from coroutine", e)
                     } finally {
                         // Clear the flag after binding completes or fails
                         synchronized(bindingLock) {
@@ -861,10 +864,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                             Log.d(TAG, "isBindingInProgress flag cleared")
                         }
                     }
-                }, 100)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in requestBindCamera()", e)
-                // Clear flag if we fail before even scheduling the delayed binding
+                // Clear flag if we fail before binding
                 synchronized(bindingLock) {
                     isBindingInProgress = false
                 }
