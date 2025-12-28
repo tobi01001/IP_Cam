@@ -115,6 +115,7 @@ class MainActivity : AppCompatActivity() {
                         // 2. User explicitly changes resolution - handled in applyResolution()
                         loadCameraOrientationOptions()
                         loadRotationOptions()
+                        updateStreamingModeSelection()
                     } finally {
                         // Use post() to defer resetting the flag until AFTER all pending UI events are processed
                         // This ensures setSelection() completes before flag is cleared, preventing infinite rebind loop
