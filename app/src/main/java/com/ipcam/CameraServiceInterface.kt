@@ -46,4 +46,8 @@ interface CameraServiceInterface {
     
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
+    
+    // Streaming mode
+    fun getStreamingMode(): StreamingMode
+    fun setStreamingMode(mode: StreamingMode)
 }
