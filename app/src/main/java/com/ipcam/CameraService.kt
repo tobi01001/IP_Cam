@@ -527,39 +527,51 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 StreamingMode.MJPEG -> {
                     Log.d(TAG, "Binding camera for MJPEG streaming mode")
                     bindCameraForMjpeg(targetResolution)
+                    
+                    // For MJPEG, binding is synchronous, so we can proceed with post-binding steps
+                    performPostBindingSteps()
                 }
                 StreamingMode.MP4 -> {
-                    Log.d(TAG, "Binding camera for MP4 streaming mode")
+                    Log.d(TAG, "Binding camera for MP4 streaming mode (async)")
+                    // For MP4, binding is asynchronous
+                    // Post-binding steps are handled inside bindCameraForMp4()
                     bindCameraForMp4(targetResolution)
+                    // Don't call performPostBindingSteps() here - it will be called after async binding completes
                 }
             }
-            
-            if (camera == null) {
-                Log.e(TAG, "Camera binding returned null!")
-                return
-            }
-            
-            // Check if flash is available for back camera
-            checkFlashAvailability()
-            
-            // Restore flashlight state if enabled for back camera
-            // Use post-delayed to ensure camera is fully initialized
-            if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
-                // Delay torch enable to ensure camera control is ready
-                // Using Handler instead of Thread.sleep to avoid blocking
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    enableTorch(true)
-                }, 200)
-            }
-            
-            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera in $streamingMode mode. Frame processing should resume.")
-            
-            // Notify observers that camera state has changed (binding completed)
-            onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed with exception", e)
             e.printStackTrace()
         }
+    }
+    
+    /**
+     * Perform post-binding steps like checking flash availability and notifying callbacks
+     * This should be called AFTER camera is successfully bound
+     */
+    private fun performPostBindingSteps() {
+        if (camera == null) {
+            Log.e(TAG, "Camera binding returned null!")
+            return
+        }
+        
+        // Check if flash is available for back camera
+        checkFlashAvailability()
+        
+        // Restore flashlight state if enabled for back camera
+        // Use post-delayed to ensure camera is fully initialized
+        if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
+            // Delay torch enable to ensure camera control is ready
+            // Using Handler instead of Thread.sleep to avoid blocking
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                enableTorch(true)
+            }, 200)
+        }
+        
+        Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera in $streamingMode mode. Frame processing should resume.")
+        
+        // Notify observers that camera state has changed (binding completed)
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     /**
@@ -722,6 +734,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         
                         // Start processing encoder output in background
                         startMp4EncoderProcessing()
+                        
+                        // Perform post-binding steps (flash, callbacks, etc.)
+                        performPostBindingSteps()
                         
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to bind camera for MP4", e)
@@ -903,11 +918,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 try {
                     Log.d(TAG, "Delay complete, rebinding camera now...")
                     bindCamera()
-                    // Callback is now invoked directly in bindCamera() after binding succeeds
+                    
+                    // For MJPEG mode, binding is synchronous, so we can clear the flag now
+                    // For MP4 mode, binding is async, but we clear the flag here anyway
+                    // because the encoder initialization is already protected by mp4StreamLock
+                    // and we don't want to block other camera operations indefinitely
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in bindCamera() from coroutine", e)
                 } finally {
-                    // Clear the flag after binding completes or fails
+                    // Clear the flag after bindCamera() call completes
+                    // For MP4 mode, the actual encoder init continues in background
+                    // but we release the lock to allow other operations
                     synchronized(bindingLock) {
                         isBindingInProgress = false
                         Log.d(TAG, "isBindingInProgress flag cleared")
