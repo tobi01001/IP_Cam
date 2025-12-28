@@ -7,7 +7,9 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 ## Features
 - **Live Camera Preview**: View what the camera sees directly in the app
 - **HTTP Web Server**: Access the camera through any web browser
-- **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
+- **Dual Streaming Modes**: 
+  - **MJPEG Streaming**: Real-time video streaming with low latency (~100ms), compatible with surveillance systems
+  - **MP4/H.264 Streaming**: Hardware-accelerated H.264 encoding with better bandwidth efficiency (30-50% savings)
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
 - **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Camera Selection**: Switch between front and back cameras
@@ -20,7 +22,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **Settings Persistence**: All settings saved and restored across app restarts
 - **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
-- **Low Latency**: Optimized for fast streaming with JPEG compression
+- **Single Source of Truth**: Only one encoder active at a time to prevent resource conflicts
 
 ## Target Device
 Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
@@ -31,6 +33,9 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 - **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
 - **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
 - **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Frame processing pipeline and performance analysis
+- **[MP4 Streaming Implementation](MP4_STREAMING_IMPLEMENTATION.md)** - Technical guide for MP4/H.264 streaming feature
+- **[MP4 Streaming Progress](MP4_STREAMING_PROGRESS.md)** - Implementation status and feature checklist
+- **[MP4 Testing Guide](MP4_TESTING_GUIDE.md)** - Comprehensive testing procedures for MP4 streaming
 
 ## Requirements
 - Android 7.0 (API level 24) or higher
@@ -81,17 +86,25 @@ Simply open the displayed URL in any web browser on the same network to access t
 
 #### API Endpoints
 
+**Core Endpoints:**
 - **`GET /`** - Web interface with live stream
 - **`GET /snapshot`** - Capture and return a single JPEG image
-- **`GET /stream`** - MJPEG video stream
+- **`GET /stream`** - MJPEG video stream (multipart/x-mixed-replace)
+- **`GET /stream.mp4`** - MP4/H.264 video stream (fragmented MP4)
 - **`GET /switch`** - Switch between front and back camera (returns JSON)
 - **`GET /status`** - Get server status and camera information (returns JSON with connection info)
+
+**Configuration Endpoints:**
 - **`GET /formats`** - List supported resolutions for the active camera
 - **`GET /setFormat?value=WIDTHxHEIGHT`** - Apply a supported resolution (omit to return to auto)
 - **`GET /setCameraOrientation?value=landscape|portrait`** - Set camera recording mode
 - **`GET /setRotation?value=0|90|180|270`** - Set camera rotation
 - **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
 - **`GET /toggleFlashlight`** - Toggle flashlight on/off for back camera (returns JSON with state)
+
+**Streaming Mode Endpoints:**
+- **`GET /streamingMode`** - Get current streaming mode (returns JSON with mode: "mjpeg" or "mp4")
+- **`GET /setStreamingMode?value=mjpeg|mp4`** - Switch streaming mode (returns JSON)
 
 #### Example Usage
 
@@ -100,9 +113,29 @@ Simply open the displayed URL in any web browser on the same network to access t
 curl http://192.168.1.100:8080/snapshot -o snapshot.jpg
 ```
 
-**View stream in browser:**
+**View MJPEG stream in browser:**
 ```html
 <img src="http://192.168.1.100:8080/stream" />
+```
+
+**View MP4 stream in browser:**
+```html
+<video src="http://192.168.1.100:8080/stream.mp4" controls autoplay></video>
+```
+
+**Play MP4 stream in VLC:**
+```bash
+vlc http://192.168.1.100:8080/stream.mp4
+```
+
+**Switch to MP4 streaming mode:**
+```bash
+curl http://192.168.1.100:8080/setStreamingMode?value=mp4
+```
+
+**Check current streaming mode:**
+```bash
+curl http://192.168.1.100:8080/streamingMode
 ```
 
 **Switch camera:**
@@ -129,6 +162,73 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 ```bash
 curl http://192.168.1.100:8080/toggleFlashlight
 ```
+
+### Streaming Modes
+
+IP_Cam supports two streaming modes, each optimized for different use cases:
+
+#### MJPEG Mode (Default)
+
+**Best for: Low latency, maximum compatibility**
+
+- **Latency**: ~100ms (near real-time)
+- **Bandwidth**: Higher (~2-4 Mbps for 1080p)
+- **Compatibility**: Works with all NVR systems and older devices
+- **Format**: Motion JPEG (frame-by-frame JPEG compression)
+- **Endpoint**: `http://DEVICE_IP:8080/stream`
+
+**Use MJPEG when:**
+- You need lowest possible latency
+- Working with older surveillance systems
+- Browser compatibility is critical
+- Bandwidth is not a concern
+
+#### MP4/H.264 Mode
+
+**Best for: Bandwidth efficiency, modern systems**
+
+- **Latency**: ~1-2 seconds (buffering required)
+- **Bandwidth**: Lower (~1-2 Mbps for 1080p, 30-50% savings)
+- **Compatibility**: Modern browsers, VLC, most NVR systems
+- **Format**: Fragmented MP4 with H.264 encoding
+- **Hardware Acceleration**: Uses MediaCodec for efficient encoding
+- **Endpoint**: `http://DEVICE_IP:8080/stream.mp4`
+
+**Use MP4 when:**
+- Bandwidth is limited (mobile data, poor WiFi)
+- Recording for extended periods
+- Battery life is a concern
+- Latency tolerance of 1-2 seconds is acceptable
+
+#### Switching Modes
+
+**Via API:**
+```bash
+# Switch to MP4 mode
+curl http://192.168.1.100:8080/setStreamingMode?value=mp4
+
+# Switch to MJPEG mode
+curl http://192.168.1.100:8080/setStreamingMode?value=mjpeg
+
+# Check current mode
+curl http://192.168.1.100:8080/streamingMode
+```
+
+**Important Notes:**
+- Only one mode is active at a time (single source of truth)
+- Mode switches trigger a camera rebind (brief interruption)
+- Settings persist across app restarts
+- MP4 requires H.264 hardware encoder support
+
+#### Bandwidth Comparison
+
+| Resolution | MJPEG Bitrate | MP4 Bitrate | Savings |
+|-----------|---------------|-------------|---------|
+| 720p      | 1.5-2 Mbps    | 1 Mbps      | 33-50%  |
+| 1080p     | 2-4 Mbps      | 2 Mbps      | 30-50%  |
+| 1440p     | 4-6 Mbps      | 3 Mbps      | 40-50%  |
+
+*Note: Actual bitrates vary based on scene complexity and motion*
 
 ### Camera Orientation Control
 
