@@ -1415,9 +1415,68 @@ class HttpServer(
         
         call.respondBytesWriter(ContentType.parse("video/mp4")) {
             try {
-                // TODO: Implement MP4 streaming
-                // For now, return error
-                throw NotImplementedError("MP4 streaming implementation pending - requires MediaCodec integration")
+                // Send fMP4 initialization segment (ftyp + moov boxes)
+                val ftypBox = Mp4BoxWriter.createFtypBox()
+                writeFully(ftypBox, 0, ftypBox.size)
+                
+                // Get codec config and create moov box
+                val codecConfig = cameraService.getMp4InitSegment()
+                val moovBox = Mp4BoxWriter.createMoovBox(1920, 1080, codecConfig)
+                writeFully(moovBox, 0, moovBox.size)
+                flush()
+                
+                Log.d(TAG, "MP4 init segment sent to client $clientId")
+                
+                // Stream media segments (moof + mdat boxes)
+                var sequenceNumber = 1
+                var baseMediaDecodeTime = 0L
+                val timescale = 30 // 30 fps timescale
+                
+                while (isActive) {
+                    // Get next encoded frame from camera service
+                    val frame = cameraService.getMp4EncodedFrame()
+                    
+                    if (frame != null) {
+                        // Create moof box (movie fragment)
+                        val moofBox = Mp4BoxWriter.createMoofBox(
+                            sequenceNumber = sequenceNumber,
+                            baseMediaDecodeTime = baseMediaDecodeTime,
+                            sampleSize = frame.data.size
+                        )
+                        
+                        // Create mdat box (media data)
+                        val mdatBox = Mp4BoxWriter.createMdatBox(frame.data)
+                        
+                        // Write moof + mdat (one fragment)
+                        writeFully(moofBox, 0, moofBox.size)
+                        writeFully(mdatBox, 0, mdatBox.size)
+                        flush()
+                        
+                        // Track bandwidth
+                        val totalBytes = moofBox.size + mdatBox.size
+                        cameraService.recordBytesSent(clientId, totalBytes.toLong())
+                        
+                        // Update timing for next fragment
+                        sequenceNumber++
+                        baseMediaDecodeTime += (1000000L / timescale) // Increment by frame duration
+                        
+                        if (frame.isKeyFrame) {
+                            Log.d(TAG, "Sent keyframe to MP4 client $clientId, seq=$sequenceNumber")
+                        }
+                    } else {
+                        // No frame available, wait a bit
+                        delay(10)
+                    }
+                    
+                    // Check for backpressure - if client is too slow, drop frames
+                    // This prevents memory buildup from slow clients
+                    if (!isActive) {
+                        break
+                    }
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error streaming MP4 to client $clientId", e)
             } finally {
                 cameraService.removeClient(clientId)
                 activeStreams.decrementAndGet()

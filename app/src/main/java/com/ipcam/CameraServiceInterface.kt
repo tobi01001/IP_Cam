@@ -50,4 +50,8 @@ interface CameraServiceInterface {
     // Streaming mode
     fun getStreamingMode(): StreamingMode
     fun setStreamingMode(mode: StreamingMode)
+    
+    // MP4 frame access
+    fun getMp4EncodedFrame(): Mp4StreamWriter.EncodedFrame?
+    fun getMp4InitSegment(): ByteArray?
 }
