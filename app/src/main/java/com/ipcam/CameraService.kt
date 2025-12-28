@@ -169,6 +169,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          // Settings keys
          private const val PREF_MAX_CONNECTIONS = "maxConnections"
          private const val PREF_STREAMING_MODE = "streamingMode"
+         // MP4 encoder settings
+         private const val MP4_ENCODER_BITRATE = 2_000_000 // 2 Mbps default
+         private const val MP4_ENCODER_FRAME_RATE = 30 // 30 fps
+         private const val MP4_ENCODER_I_FRAME_INTERVAL = 2 // I-frame every 2 seconds
+         private const val MP4_ENCODER_PROCESSING_INTERVAL_MS = 10L // Process encoder output every 10ms
      }
      
      /**
@@ -624,9 +629,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             synchronized(mp4StreamLock) {
                 mp4StreamWriter = Mp4StreamWriter(
                     resolution = targetResolution,
-                    bitrate = 2_000_000, // 2 Mbps
-                    frameRate = 30,
-                    iFrameInterval = 2
+                    bitrate = MP4_ENCODER_BITRATE,
+                    frameRate = MP4_ENCODER_FRAME_RATE,
+                    iFrameInterval = MP4_ENCODER_I_FRAME_INTERVAL
                 )
                 mp4StreamWriter?.initialize()
                 mp4StreamWriter?.start()
@@ -670,7 +675,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             try {
                 while (isActive && mp4StreamWriter?.isRunning() == true) {
                     mp4StreamWriter?.processEncoderOutput()
-                    delay(10) // Process every 10ms
+                    delay(MP4_ENCODER_PROCESSING_INTERVAL_MS)
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in MP4 encoder processing", e)

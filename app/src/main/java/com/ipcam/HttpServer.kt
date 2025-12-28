@@ -1419,18 +1419,22 @@ class HttpServer(
                 val ftypBox = Mp4BoxWriter.createFtypBox()
                 writeFully(ftypBox, 0, ftypBox.size)
                 
+                // Get actual resolution from camera service
+                val resolution = cameraService.getSelectedResolution() ?: Size(1920, 1080)
+                
                 // Get codec config and create moov box
                 val codecConfig = cameraService.getMp4InitSegment()
-                val moovBox = Mp4BoxWriter.createMoovBox(1920, 1080, codecConfig)
+                val moovBox = Mp4BoxWriter.createMoovBox(resolution.width, resolution.height, codecConfig)
                 writeFully(moovBox, 0, moovBox.size)
                 flush()
                 
-                Log.d(TAG, "MP4 init segment sent to client $clientId")
+                Log.d(TAG, "MP4 init segment sent to client $clientId (${resolution.width}x${resolution.height})")
                 
                 // Stream media segments (moof + mdat boxes)
                 var sequenceNumber = 1
                 var baseMediaDecodeTime = 0L
-                val timescale = 30 // 30 fps timescale
+                val timescale = 30L // 30 fps timescale (matches encoder frame rate)
+                val frameDuration = timescale // Duration of one frame in timescale units (1 frame at 30fps = 1 timescale unit)
                 
                 while (isActive) {
                     // Get next encoded frame from camera service
@@ -1458,7 +1462,7 @@ class HttpServer(
                         
                         // Update timing for next fragment
                         sequenceNumber++
-                        baseMediaDecodeTime += (1000000L / timescale) // Increment by frame duration
+                        baseMediaDecodeTime += frameDuration // Increment by one frame duration
                         
                         if (frame.isKeyFrame) {
                             Log.d(TAG, "Sent keyframe to MP4 client $clientId, seq=$sequenceNumber")

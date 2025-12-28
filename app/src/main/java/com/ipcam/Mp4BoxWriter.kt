@@ -10,6 +10,16 @@ import java.nio.ByteOrder
  */
 object Mp4BoxWriter {
     
+    // MP4 box flags
+    private const val FTYP_MINOR_VERSION = 0x00000200
+    private const val TRUN_FLAG_DATA_OFFSET_PRESENT = 0x000001
+    private const val TRUN_FLAG_SAMPLE_SIZE_PRESENT = 0x000200
+    private const val TRUN_FLAGS = TRUN_FLAG_DATA_OFFSET_PRESENT or TRUN_FLAG_SAMPLE_SIZE_PRESENT // 0x000301
+    
+    // Rate and volume constants (fixed-point)
+    private const val FIXED_POINT_ONE = 0x00010000 // 1.0 in 16.16 fixed point
+    private const val MATRIX_UNITY_W = 0x40000000 // 1.0 in 2.30 fixed point
+    
     /**
      * Write a 32-bit big-endian integer
      */
@@ -58,7 +68,7 @@ object Mp4BoxWriter {
         out.writeBoxType("isom")
         
         // Minor version
-        out.writeInt32(0x00000200)
+        out.writeInt32(FTYP_MINOR_VERSION)
         
         // Compatible brands
         out.writeBoxType("isom")  // ISO Base Media
@@ -94,19 +104,19 @@ object Mp4BoxWriter {
         moovContent.writeInt32(0) // modification time
         moovContent.writeInt32(30) // timescale (30 fps)
         moovContent.writeInt32(0) // duration (unknown for live stream)
-        moovContent.writeInt32(0x00010000) // rate (1.0)
-        moovContent.write(byteArrayOf(0x01, 0x00)) // volume (1.0)
+        moovContent.writeInt32(FIXED_POINT_ONE) // rate (1.0 in 16.16 fixed point)
+        moovContent.write(byteArrayOf(0x01, 0x00)) // volume (1.0 in 8.8 fixed point)
         moovContent.write(ByteArray(10)) // reserved
-        // Unity matrix
-        moovContent.writeInt32(0x00010000)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0x00010000)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0)
-        moovContent.writeInt32(0x40000000)
+        // Unity matrix (identity transformation)
+        moovContent.writeInt32(FIXED_POINT_ONE) // a
+        moovContent.writeInt32(0) // b
+        moovContent.writeInt32(0) // u
+        moovContent.writeInt32(0) // c
+        moovContent.writeInt32(FIXED_POINT_ONE) // d
+        moovContent.writeInt32(0) // v
+        moovContent.writeInt32(0) // x
+        moovContent.writeInt32(0) // y
+        moovContent.writeInt32(MATRIX_UNITY_W) // w (1.0 in 2.30 fixed point)
         moovContent.write(ByteArray(24)) // pre_defined
         moovContent.writeInt32(2) // next_track_ID
         
@@ -175,7 +185,7 @@ object Mp4BoxWriter {
         // trun (track fragment run)
         trafContent.writeInt32(20)
         trafContent.writeBoxType("trun")
-        trafContent.writeInt32(0x000301) // flags: data-offset-present, sample-size-present
+        trafContent.writeInt32(TRUN_FLAGS) // flags: data-offset-present, sample-size-present
         trafContent.writeInt32(1) // sample_count
         trafContent.writeInt32(8) // data_offset (points to mdat)
         trafContent.writeInt32(sampleSize)
