@@ -989,6 +989,7 @@ class HttpServer(
                 "camera": "$cameraName",
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
+                "streamingMode": "${cameraService.getStreamingMode()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
                 "flashlightOn": ${cameraService.isFlashlightEnabled()},
                 "activeConnections": $activeConns,
@@ -996,7 +997,7 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats"]
+                "endpoints": ["/", "/snapshot", "/stream", "/stream.mp4", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats", "/streamingMode", "/setStreamingMode"]
             }
         """.trimIndent()
         

@@ -52,4 +52,10 @@
     <string name="notification_permission_rationale_message">This app needs notification permission to show service status updates and alerts. The service will work without it, but you won\'t see status notifications.</string>
     <string name="notification_permission_optional">The service will work without notification permission, but status updates won\'t be visible.</string>
     <string name="notification_permission_granted">Notification permission granted</string>
+    <string name="streaming_mode_label">Streaming Mode:</string>
+    <string name="streaming_mode_mjpeg">MJPEG (Low Latency)</string>
+    <string name="streaming_mode_mp4">MP4/H.264 (Better Bandwidth)</string>
+    <string name="endpoint_streaming_mode">GET /streamingMode - Get current streaming mode</string>
+    <string name="endpoint_set_streaming_mode">GET /setStreamingMode?value=mjpeg|mp4 - Set streaming mode</string>
+    <string name="endpoint_stream_mp4">GET /stream.mp4 - MP4/H.264 live stream</string>
 </resources>

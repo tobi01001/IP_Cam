@@ -230,8 +230,11 @@ class MainActivity : AppCompatActivity() {
         val endpoints = """
             ${getString(R.string.endpoint_snapshot)}
             ${getString(R.string.endpoint_stream)}
+            ${getString(R.string.endpoint_stream_mp4)}
             ${getString(R.string.endpoint_switch)}
             ${getString(R.string.endpoint_status)}
+            ${getString(R.string.endpoint_streaming_mode)}
+            ${getString(R.string.endpoint_set_streaming_mode)}
             ${getString(R.string.endpoint_formats)}
             ${getString(R.string.endpoint_set_format)}
             ${getString(R.string.endpoint_camera_orientation)}
