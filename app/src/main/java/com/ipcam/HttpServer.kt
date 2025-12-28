@@ -220,6 +220,16 @@ class HttpServer(
                     img { max-width: 100%; height: auto; border: 1px solid #ddd; background: #000; }
                     button { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
                     button:hover { background-color: #45a049; }
+                    #streamContainer:fullscreen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
+                    #streamContainer:-webkit-full-screen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
+                    #streamContainer:-moz-full-screen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
+                    #streamContainer:-ms-fullscreen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
+                    #streamContainer:fullscreen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+                    #streamContainer:-webkit-full-screen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+                    #streamContainer:-moz-full-screen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+                    #streamContainer:-ms-fullscreen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
+                    #fullscreenBtn { background-color: #2196F3; }
+                    #fullscreenBtn:hover { background-color: #0b7dda; }
                     .endpoint { background-color: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #4CAF50; }
                     code { background-color: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
                     .endpoint a { color: #1976D2; text-decoration: none; font-weight: 500; }
@@ -255,6 +265,7 @@ class HttpServer(
                     <div class="row">
                         <button id="toggleStreamBtn" onclick="toggleStream()">Start Stream</button>
                         <button onclick="reloadStream()">Refresh</button>
+                        <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
                         <button onclick="switchCamera()">Switch Camera</button>
                         <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
                         <select id="formatSelect"></select>
@@ -697,6 +708,52 @@ class HttpServer(
                             .catch(error => {
                                 document.getElementById('formatStatus').textContent = 'Error restarting server: ' + error;
                             });
+                    }
+
+                    function toggleFullscreen() {
+                        const container = document.getElementById('streamContainer');
+                        const fullscreenBtn = document.getElementById('fullscreenBtn');
+                        
+                        if (!document.fullscreenElement && !document.webkitFullscreenElement && 
+                            !document.mozFullScreenElement && !document.msFullscreenElement) {
+                            // Enter fullscreen
+                            if (container.requestFullscreen) {
+                                container.requestFullscreen();
+                            } else if (container.webkitRequestFullscreen) {
+                                container.webkitRequestFullscreen();
+                            } else if (container.mozRequestFullScreen) {
+                                container.mozRequestFullScreen();
+                            } else if (container.msRequestFullscreen) {
+                                container.msRequestFullscreen();
+                            }
+                        } else {
+                            // Exit fullscreen
+                            if (document.exitFullscreen) {
+                                document.exitFullscreen();
+                            } else if (document.webkitExitFullscreen) {
+                                document.webkitExitFullscreen();
+                            } else if (document.mozCancelFullScreen) {
+                                document.mozCancelFullScreen();
+                            } else if (document.msExitFullscreen) {
+                                document.msExitFullscreen();
+                            }
+                        }
+                    }
+                    
+                    // Update fullscreen button text based on fullscreen state
+                    document.addEventListener('fullscreenchange', updateFullscreenButton);
+                    document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+                    document.addEventListener('mozfullscreenchange', updateFullscreenButton);
+                    document.addEventListener('msfullscreenchange', updateFullscreenButton);
+                    
+                    function updateFullscreenButton() {
+                        const fullscreenBtn = document.getElementById('fullscreenBtn');
+                        if (document.fullscreenElement || document.webkitFullscreenElement || 
+                            document.mozFullScreenElement || document.msFullscreenElement) {
+                            fullscreenBtn.textContent = 'Exit Fullscreen';
+                        } else {
+                            fullscreenBtn.textContent = 'Fullscreen';
+                        }
                     }
 
                     loadFormats();
