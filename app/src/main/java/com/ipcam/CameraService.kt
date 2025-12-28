@@ -124,6 +124,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
     private val clientIdCounter = AtomicInteger(0) // For unique client IDs
     
+    // Streaming mode: MJPEG or MP4
+    @Volatile private var streamingMode: StreamingMode = StreamingMode.MJPEG
+    private var mp4StreamWriter: Mp4StreamWriter? = null
+    private val mp4StreamLock = Any() // Lock for MP4 stream access
+    
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
     private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
@@ -162,6 +167,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
          // Settings keys
          private const val PREF_MAX_CONNECTIONS = "maxConnections"
+         private const val PREF_STREAMING_MODE = "streamingMode"
      }
      
      /**
@@ -1058,6 +1064,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
+        // Load streaming mode
+        val streamingModeStr = prefs.getString(PREF_STREAMING_MODE, "mjpeg")
+        streamingMode = StreamingMode.fromString(streamingModeStr)
+        
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
         val oldResHeight = prefs.getInt("resolutionHeight", -1)
@@ -1104,7 +1114,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, streamingMode=$streamingMode")
     }
     
     private fun saveSettings() {
@@ -1115,6 +1125,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putBoolean("showResolutionOverlay", showResolutionOverlay)
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
+            
+            // Save streaming mode
+            putString(PREF_STREAMING_MODE, streamingMode.toString())
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1603,7 +1616,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "rotation": $rotation,
             "showResolutionOverlay": $showResolutionOverlay,
             "flashlightAvailable": ${isFlashlightAvailable()},
-            "flashlightOn": ${isFlashlightEnabled()}
+            "flashlightOn": ${isFlashlightEnabled()},
+            "streamingMode": "$streamingMode"
         }
         """.trimIndent()
     }
@@ -1634,6 +1648,29 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {
         adaptiveQualityEnabled = enabled
         Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
+    }
+    
+    override fun getStreamingMode(): StreamingMode = streamingMode
+    
+    override fun setStreamingMode(mode: StreamingMode) {
+        if (streamingMode == mode) {
+            Log.d(TAG, "Streaming mode already set to $mode")
+            return
+        }
+        
+        Log.d(TAG, "Changing streaming mode from $streamingMode to $mode")
+        streamingMode = mode
+        saveSettings()
+        
+        // Rebind camera to apply new streaming mode
+        // This will stop the old encoder and start the new one
+        requestBindCamera()
+        
+        // Broadcast state change to web clients
+        broadcastCameraState()
+        
+        // Notify MainActivity of mode change
+        onCameraStateChangedCallback?.invoke(currentCamera)
     }
     
     /**

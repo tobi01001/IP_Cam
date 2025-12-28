@@ -113,6 +113,11 @@ class HttpServer(
                 // Adaptive quality control
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
+                
+                // Streaming mode control
+                get("/streamingMode") { serveGetStreamingMode() }
+                get("/setStreamingMode") { serveSetStreamingMode() }
+                get("/stream.mp4") { serveMp4Stream() }
             }
         }
         
@@ -984,6 +989,7 @@ class HttpServer(
                 "camera": "$cameraName",
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
+                "streamingMode": "${cameraService.getStreamingMode()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
                 "flashlightOn": ${cameraService.isFlashlightEnabled()},
                 "activeConnections": $activeConns,
@@ -991,7 +997,7 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats"]
+                "endpoints": ["/", "/snapshot", "/stream", "/stream.mp4", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats", "/streamingMode", "/setStreamingMode"]
             }
         """.trimIndent()
         
@@ -1349,5 +1355,74 @@ class HttpServer(
             """{"status":"ok","message":"Adaptive quality disabled. Using fixed quality settings.","adaptiveQualityEnabled":false}""",
             ContentType.Application.Json
         )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveGetStreamingMode() {
+        val mode = cameraService.getStreamingMode()
+        call.respondText(
+            """{"status":"ok","streamingMode":"$mode"}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetStreamingMode() {
+        val valueStr = call.parameters["value"]?.lowercase()
+        
+        if (valueStr == null) {
+            call.respondText(
+                """{"status":"error","message":"Missing value parameter. Use value=mjpeg or value=mp4"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val newMode = when (valueStr) {
+            "mjpeg", "mjpg" -> StreamingMode.MJPEG
+            "mp4", "h264", "h.264" -> StreamingMode.MP4
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid streaming mode. Use mjpeg or mp4"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setStreamingMode(newMode)
+        call.respondText(
+            """{"status":"ok","message":"Streaming mode set to $newMode. Stream will switch to new mode.","streamingMode":"$newMode"}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveMp4Stream() {
+        val currentMode = cameraService.getStreamingMode()
+        
+        if (currentMode != StreamingMode.MP4) {
+            call.respondText(
+                "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable.",
+                ContentType.Text.Plain,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val clientId = clientIdCounter.incrementAndGet()
+        activeStreams.incrementAndGet()
+        Log.d(TAG, "MP4 stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
+        
+        call.respondBytesWriter(ContentType.parse("video/mp4")) {
+            try {
+                // TODO: Implement MP4 streaming
+                // For now, return error
+                throw NotImplementedError("MP4 streaming implementation pending - requires MediaCodec integration")
+            } finally {
+                cameraService.removeClient(clientId)
+                activeStreams.decrementAndGet()
+                Log.d(TAG, "MP4 stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
+            }
+        }
     }
 }
