@@ -35,6 +35,7 @@ import android.view.OrientationEventListener
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -168,6 +169,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          // Settings keys
          private const val PREF_MAX_CONNECTIONS = "maxConnections"
          private const val PREF_STREAMING_MODE = "streamingMode"
+         // MP4 encoder settings
+         private const val MP4_ENCODER_BITRATE = 2_000_000 // 2 Mbps default
+         private const val MP4_ENCODER_FRAME_RATE = 30 // 30 fps
+         private const val MP4_ENCODER_I_FRAME_INTERVAL = 2 // I-frame every 2 seconds
+         private const val MP4_ENCODER_PROCESSING_INTERVAL_MS = 10L // Process encoder output every 10ms
      }
      
      /**
@@ -510,62 +516,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lifecycleRegistry.currentState = Lifecycle.State.STARTED
         }
         
-        val builder = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        
-        // Use ResolutionSelector instead of deprecated setTargetResolution
-        selectedResolution?.let { resolution ->
-            Log.d(TAG, "Attempting to bind camera with resolution: ${resolution.width}x${resolution.height}")
-            val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
-                .setResolutionFilter { supportedSizes, _ ->
-                    // Try to find exact match first
-                    val exactMatch = supportedSizes.filter { size ->
-                        size.width == resolution.width && size.height == resolution.height
-                    }
-                    
-                    if (exactMatch.isNotEmpty()) {
-                        Log.d(TAG, "Found exact resolution match: ${resolution.width}x${resolution.height}")
-                        exactMatch
-                    } else {
-                        // No exact match - find closest by total pixels
-                        val targetPixels = resolution.width * resolution.height
-                        val targetAspectRatio = resolution.width.toFloat() / resolution.height.toFloat()
-                        
-                        val closest = supportedSizes.minByOrNull { size ->
-                            val pixels = size.width * size.height
-                            val aspectRatio = size.width.toFloat() / size.height.toFloat()
-                            val pixelDiff = Math.abs(pixels - targetPixels)
-                            val aspectDiff = Math.abs(aspectRatio - targetAspectRatio) * 1000000 // Weight aspect ratio heavily
-                            pixelDiff + aspectDiff.toInt()
-                        }
-                        
-                        if (closest != null) {
-                            Log.w(TAG, "Exact resolution ${resolution.width}x${resolution.height} not available. Using closest: ${closest.width}x${closest.height}")
-                        } else {
-                            Log.e(TAG, "Could not find any suitable resolution. Using default.")
-                        }
-                        
-                        // Return closest match or all supported if none found
-                        closest?.let { listOf(it) } ?: supportedSizes
-                    }
-                }
-                .build()
-            builder.setResolutionSelector(resolutionSelector)
-        }
-        
-        imageAnalysis = builder.build()
-            .also {
-                it.setAnalyzer(cameraExecutor) { image ->
-                    processImage(image)
-                }
-            }
-        
         try {
             Log.d(TAG, "Unbinding all use cases before rebinding...")
             cameraProvider?.unbindAll()
             
-            Log.d(TAG, "Binding camera to lifecycle...")
-            camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            // Determine resolution for encoder
+            val targetResolution = selectedResolution ?: Size(1920, 1080)
+            
+            when (streamingMode) {
+                StreamingMode.MJPEG -> {
+                    Log.d(TAG, "Binding camera for MJPEG streaming mode")
+                    bindCameraForMjpeg(targetResolution)
+                }
+                StreamingMode.MP4 -> {
+                    Log.d(TAG, "Binding camera for MP4 streaming mode")
+                    bindCameraForMp4(targetResolution)
+                }
+            }
             
             if (camera == null) {
                 Log.e(TAG, "Camera binding returned null!")
@@ -585,13 +552,231 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }, 200)
             }
             
-            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
+            Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera in $streamingMode mode. Frame processing should resume.")
             
             // Notify observers that camera state has changed (binding completed)
             onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed with exception", e)
             e.printStackTrace()
+        }
+    }
+    
+    /**
+     * Bind camera for MJPEG streaming using ImageAnalysis
+     */
+    private fun bindCameraForMjpeg(targetResolution: Size) {
+        val builder = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+        
+        // Use ResolutionSelector instead of deprecated setTargetResolution
+        Log.d(TAG, "Attempting to bind camera with resolution: ${targetResolution.width}x${targetResolution.height}")
+        val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+            .setResolutionFilter { supportedSizes, _ ->
+                // Try to find exact match first
+                val exactMatch = supportedSizes.filter { size ->
+                    size.width == targetResolution.width && size.height == targetResolution.height
+                }
+                
+                if (exactMatch.isNotEmpty()) {
+                    Log.d(TAG, "Found exact resolution match: ${targetResolution.width}x${targetResolution.height}")
+                    exactMatch
+                } else {
+                    // No exact match - find closest by total pixels
+                    val targetPixels = targetResolution.width * targetResolution.height
+                    val targetAspectRatio = targetResolution.width.toFloat() / targetResolution.height.toFloat()
+                    
+                    val closest = supportedSizes.minByOrNull { size ->
+                        val pixels = size.width * size.height
+                        val aspectRatio = size.width.toFloat() / size.height.toFloat()
+                        val pixelDiff = Math.abs(pixels - targetPixels)
+                        val aspectDiff = Math.abs(aspectRatio - targetAspectRatio) * 1000000 // Weight aspect ratio heavily
+                        pixelDiff + aspectDiff.toInt()
+                    }
+                    
+                    if (closest != null) {
+                        Log.w(TAG, "Exact resolution ${targetResolution.width}x${targetResolution.height} not available. Using closest: ${closest.width}x${closest.height}")
+                    } else {
+                        Log.e(TAG, "Could not find any suitable resolution. Using default.")
+                    }
+                    
+                    // Return closest match or all supported if none found
+                    closest?.let { listOf(it) } ?: supportedSizes
+                }
+            }
+            .build()
+        builder.setResolutionSelector(resolutionSelector)
+        
+        imageAnalysis = builder.build()
+            .also {
+                it.setAnalyzer(cameraExecutor) { image ->
+                    processImage(image)
+                }
+            }
+        
+        Log.d(TAG, "Binding camera to lifecycle with ImageAnalysis for MJPEG...")
+        camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+    }
+    
+    /**
+     * Bind camera for MP4 streaming using Preview with MediaCodec surface
+     */
+    private fun bindCameraForMp4(targetResolution: Size) {
+        // Initialize MP4 encoder
+        try {
+            Log.d(TAG, "Initializing MP4 encoder with resolution ${targetResolution.width}x${targetResolution.height}")
+            
+            synchronized(mp4StreamLock) {
+                mp4StreamWriter = Mp4StreamWriter(
+                    resolution = targetResolution,
+                    bitrate = MP4_ENCODER_BITRATE,
+                    frameRate = MP4_ENCODER_FRAME_RATE,
+                    iFrameInterval = MP4_ENCODER_I_FRAME_INTERVAL
+                )
+                mp4StreamWriter?.initialize()
+                mp4StreamWriter?.start()
+            }
+            
+            // Create Preview use case with encoder's input surface for encoding
+            val preview = Preview.Builder().build()
+            preview.setSurfaceProvider { request ->
+                val surface = mp4StreamWriter?.getInputSurface()
+                if (surface != null) {
+                    Log.d(TAG, "Providing encoder input surface to camera")
+                    request.provideSurface(surface, cameraExecutor) { }
+                } else {
+                    Log.e(TAG, "MP4 encoder input surface is null!")
+                }
+            }
+            
+            // Also create ImageAnalysis use case for app preview ONLY
+            // This ensures the MainActivity can still display the camera feed
+            // BUT we use a lightweight processor that doesn't do JPEG compression
+            val builder = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                // Use default YUV format - imageProxyToBitmap() expects YUV planes
+            
+            // Use lower resolution for preview to reduce CPU load
+            Log.d(TAG, "Setting up lightweight ImageAnalysis for app preview (MP4 mode)")
+            val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                .setResolutionFilter { supportedSizes, _ ->
+                    // Use a smaller resolution for preview (e.g., 720p max)
+                    val maxPreviewPixels = 1280 * 720
+                    val suitable = supportedSizes.filter { size ->
+                        val pixels = size.width * size.height
+                        pixels <= maxPreviewPixels
+                    }.sortedByDescending { it.width * it.height }
+                    
+                    if (suitable.isNotEmpty()) {
+                        Log.d(TAG, "Using ${suitable.first().width}x${suitable.first().height} for app preview in MP4 mode")
+                        listOf(suitable.first())
+                    } else {
+                        // Fallback to smallest available
+                        val smallest = supportedSizes.minByOrNull { it.width * it.height }
+                        smallest?.let { listOf(it) } ?: supportedSizes
+                    }
+                }
+                .build()
+            builder.setResolutionSelector(previewResolutionSelector)
+            
+            imageAnalysis = builder.build()
+                .also {
+                    it.setAnalyzer(cameraExecutor) { image ->
+                        // Lightweight processing for app preview only - no JPEG compression
+                        processImageForPreviewOnly(image)
+                    }
+                }
+            
+            // Bind both Preview (for encoding) and ImageAnalysis (for app preview) to lifecycle
+            Log.d(TAG, "Binding camera to lifecycle with Preview for MP4 encoding and lightweight ImageAnalysis for app preview...")
+            camera = cameraProvider?.bindToLifecycle(this, currentCamera, preview, imageAnalysis)
+            
+            // Start processing encoder output in background
+            startMp4EncoderProcessing()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to initialize MP4 encoder", e)
+            // Fallback to MJPEG on error
+            Log.w(TAG, "Falling back to MJPEG mode due to MP4 encoder initialization failure")
+            streamingMode = StreamingMode.MJPEG
+            saveSettings()
+            bindCameraForMjpeg(targetResolution)
+        }
+    }
+    
+    /**
+     * Lightweight image processing for app preview only (MP4 mode)
+     * Does NOT do JPEG compression or heavy processing - just updates the preview bitmap
+     */
+    private fun processImageForPreviewOnly(image: ImageProxy) {
+        try {
+            // Simple conversion to bitmap for preview
+            val bitmap = imageProxyToBitmap(image)
+            
+            // Apply rotation for preview
+            val finalBitmap = applyRotationCorrectly(bitmap)
+            
+            // Simple annotation (just timestamp, no heavy processing)
+            val annotatedBitmap = annotateBitmapLightweight(finalBitmap)
+            
+            // Update preview callback for MainActivity (no JPEG compression needed)
+            val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
+            onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
+            
+            // Clean up
+            if (bitmap != finalBitmap) {
+                bitmap.recycle()
+            }
+            if (finalBitmap != annotatedBitmap) {
+                finalBitmap.recycle()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in lightweight preview processing", e)
+        } finally {
+            image.close()
+        }
+    }
+    
+    /**
+     * Lightweight bitmap annotation for preview (MP4 mode)
+     * Only adds minimal overlays, no heavy processing
+     */
+    private fun annotateBitmapLightweight(bitmap: Bitmap): Bitmap {
+        val mutableBitmap = bitmap.copy(bitmap.config, true)
+        val canvas = Canvas(mutableBitmap)
+        
+        val paint = Paint().apply {
+            textSize = 30f
+            color = Color.WHITE
+            style = Paint.Style.FILL
+            setShadowLayer(3f, 2f, 2f, Color.BLACK)
+        }
+        
+        // Only add timestamp (skip battery/resolution overlays to save CPU)
+        val timestamp = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        canvas.drawText(timestamp, 10f, 40f, paint)
+        
+        return mutableBitmap
+    }
+    
+    /**
+     * Start background coroutine to process MP4 encoder output
+     * Runs continuously to maintain a buffer of encoded frames
+     */
+    private fun startMp4EncoderProcessing() {
+        serviceScope.launch {
+            Log.d(TAG, "Started MP4 encoder processing coroutine")
+            try {
+                while (isActive && mp4StreamWriter?.isRunning() == true) {
+                    mp4StreamWriter?.processEncoderOutput()
+                    delay(MP4_ENCODER_PROCESSING_INTERVAL_MS)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error in MP4 encoder processing", e)
+            } finally {
+                Log.d(TAG, "MP4 encoder processing coroutine ended")
+            }
         }
     }
     
@@ -603,6 +788,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
+            
+            // Stop and release MP4 encoder if active
+            synchronized(mp4StreamLock) {
+                mp4StreamWriter?.let {
+                    Log.d(TAG, "Stopping MP4 encoder...")
+                    it.stop()
+                    it.release()
+                    mp4StreamWriter = null
+                    Log.d(TAG, "MP4 encoder stopped and released")
+                }
+            }
             
             // Unbind all use cases from lifecycle
             cameraProvider?.unbindAll()
@@ -643,32 +839,35 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else "unknown"
         Log.d(TAG, "requestBindCamera() called by: $caller")
         
-        ContextCompat.getMainExecutor(this).execute {
+        // Run camera operations on main thread, but use coroutine with delay to avoid blocking UI
+        serviceScope.launch(Dispatchers.Main) {
             try {
                 // Stop camera first to ensure clean state
+                // Must be on main thread for CameraX operations
                 Log.d(TAG, "Stopping camera before rebinding...")
                 stopCamera()
                 
-                // Schedule rebinding after a short delay to ensure resources are released
-                // Using Handler instead of Thread.sleep to avoid blocking main thread
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    try {
-                        Log.d(TAG, "Delay complete, rebinding camera now...")
-                        bindCamera()
-                        // Callback is now invoked directly in bindCamera() after binding succeeds
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error in bindCamera() from postDelayed", e)
-                    } finally {
-                        // Clear the flag after binding completes or fails
-                        synchronized(bindingLock) {
-                            isBindingInProgress = false
-                            Log.d(TAG, "isBindingInProgress flag cleared")
-                        }
+                // Brief delay to ensure resources are released
+                // This delay is non-blocking (coroutine suspends, doesn't block thread)
+                delay(100)
+                
+                // Rebind camera (already on main thread)
+                try {
+                    Log.d(TAG, "Delay complete, rebinding camera now...")
+                    bindCamera()
+                    // Callback is now invoked directly in bindCamera() after binding succeeds
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in bindCamera() from coroutine", e)
+                } finally {
+                    // Clear the flag after binding completes or fails
+                    synchronized(bindingLock) {
+                        isBindingInProgress = false
+                        Log.d(TAG, "isBindingInProgress flag cleared")
                     }
-                }, 100)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Error in requestBindCamera()", e)
-                // Clear flag if we fail before even scheduling the delayed binding
+                // Clear flag if we fail before binding
                 synchronized(bindingLock) {
                     isBindingInProgress = false
                 }
@@ -1671,6 +1870,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Notify MainActivity of mode change
         onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getMp4EncodedFrame(): Mp4StreamWriter.EncodedFrame? {
+        synchronized(mp4StreamLock) {
+            return mp4StreamWriter?.getNextEncodedFrame()
+        }
+    }
+    
+    override fun getMp4InitSegment(): ByteArray? {
+        synchronized(mp4StreamLock) {
+            return mp4StreamWriter?.generateInitSegment()
+        }
     }
     
     /**

@@ -263,7 +263,8 @@ class HttpServer(
                     <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
                     <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
-                        <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        <img id="streamImg" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
+                        <video id="streamVideo" style="display: none; max-width: 100%; height: auto;" controls autoplay muted></video>
                         <div id="streamPlaceholder" style="color: #888; font-size: 18px;">Click "Start Stream" to begin</div>
                     </div>
                     <br>
@@ -295,14 +296,24 @@ class HttpServer(
                         <button onclick="applyRotation()">Apply Rotation</button>
                     </div>
                     <div class="row">
+                        <label for="streamingModeSelect">Streaming Mode:</label>
+                        <select id="streamingModeSelect">
+                            <option value="mjpeg">MJPEG (Low Latency ~100ms)</option>
+                            <option value="mp4">MP4/H.264 (Better Bandwidth, ~1-2s latency)</option>
+                        </select>
+                        <button onclick="applyStreamingMode()">Apply Streaming Mode</button>
+                    </div>
+                    <div class="row">
                         <label>
                             <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
                             Show Resolution Overlay (Bottom Right)
                         </label>
                     </div>
                     <div class="note" id="formatStatus"></div>
+                    <div class="note" id="streamingModeStatus"></div>
                     <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
                     <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
+                    <p class="note"><strong>Streaming Mode:</strong> MJPEG offers lowest latency, MP4/H.264 uses 30-50% less bandwidth but has 1-2 second latency. Mode change requires camera rebind.</p>
                     <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                     <h2>Active Connections</h2>
                     <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
@@ -403,12 +414,14 @@ class HttpServer(
                     const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
                     const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
                     
-                    const streamImg = document.getElementById('stream');
+                    const streamImg = document.getElementById('streamImg');
+                    const streamVideo = document.getElementById('streamVideo');
                     const streamPlaceholder = document.getElementById('streamPlaceholder');
                     const toggleStreamBtn = document.getElementById('toggleStreamBtn');
                     let lastFrame = Date.now();
                     let streamActive = false;
                     let autoReloadInterval = null;
+                    let currentStreamingMode = 'mjpeg'; // Will be loaded from server
 
                     // Toggle stream on/off with a single button
                     function toggleStream() {
@@ -420,25 +433,41 @@ class HttpServer(
                     }
 
                     function startStream() {
-                        streamImg.src = '/stream?ts=' + Date.now();
-                        streamImg.style.display = 'block';
+                        const isMp4 = currentStreamingMode === 'mp4';
+                        const streamUrl = isMp4 ? '/stream.mp4' : '/stream';
+                        
+                        // Use video tag for MP4, img tag for MJPEG
+                        if (isMp4) {
+                            streamImg.style.display = 'none';
+                            streamVideo.src = streamUrl + '?ts=' + Date.now();
+                            streamVideo.style.display = 'block';
+                        } else {
+                            streamVideo.style.display = 'none';
+                            streamImg.src = streamUrl + '?ts=' + Date.now();
+                            streamImg.style.display = 'block';
+                        }
+                        
                         streamPlaceholder.style.display = 'none';
                         toggleStreamBtn.textContent = 'Stop Stream';
                         toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
                         streamActive = true;
                         
-                        // Auto-reload if stream stops
-                        if (autoReloadInterval) clearInterval(autoReloadInterval);
-                        autoReloadInterval = setInterval(() => {
-                            if (streamActive && Date.now() - lastFrame > 5000) {
-                                reloadStream();
-                            }
-                        }, 3000);
+                        // Auto-reload if stream stops (only for MJPEG, MP4 is continuous)
+                        if (currentStreamingMode === 'mjpeg') {
+                            if (autoReloadInterval) clearInterval(autoReloadInterval);
+                            autoReloadInterval = setInterval(() => {
+                                if (streamActive && Date.now() - lastFrame > 5000) {
+                                    reloadStream();
+                                }
+                            }, 3000);
+                        }
                     }
 
                     function stopStream() {
                         streamImg.src = '';
                         streamImg.style.display = 'none';
+                        streamVideo.src = '';
+                        streamVideo.style.display = 'none';
                         streamPlaceholder.style.display = 'block';
                         toggleStreamBtn.textContent = 'Start Stream';
                         toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
@@ -451,7 +480,14 @@ class HttpServer(
 
                     function reloadStream() {
                         if (streamActive) {
-                            streamImg.src = '/stream?ts=' + Date.now();
+                            const isMp4 = currentStreamingMode === 'mp4';
+                            const streamUrl = isMp4 ? '/stream.mp4' : '/stream';
+                            
+                            if (isMp4) {
+                                streamVideo.src = streamUrl + '?ts=' + Date.now();
+                            } else {
+                                streamImg.src = streamUrl + '?ts=' + Date.now();
+                            }
                         }
                     }
                     
@@ -548,6 +584,23 @@ class HttpServer(
                             });
                     }
 
+                    function loadStreamingMode() {
+                        fetch('/streamingMode')
+                            .then(response => response.json())
+                            .then(data => {
+                                const select = document.getElementById('streamingModeSelect');
+                                const mode = data.streamingMode || 'mjpeg';
+                                select.value = mode;
+                                currentStreamingMode = mode; // Update the current mode variable
+                                document.getElementById('streamingModeStatus').textContent = 
+                                    'Current mode: ' + mode.toUpperCase();
+                            })
+                            .catch(() => {
+                                document.getElementById('streamingModeStatus').textContent = 
+                                    'Failed to load streaming mode';
+                            });
+                    }
+
                     function applyFormat() {
                         const value = document.getElementById('formatSelect').value;
                         const url = value ? '/setFormat?value=' + encodeURIComponent(value) : '/setFormat';
@@ -587,6 +640,40 @@ class HttpServer(
                             })
                             .catch(() => {
                                 document.getElementById('formatStatus').textContent = 'Failed to set rotation';
+                            });
+                    }
+
+                    function applyStreamingMode() {
+                        const value = document.getElementById('streamingModeSelect').value;
+                        const url = '/setStreamingMode?value=' + encodeURIComponent(value);
+                        const statusElement = document.getElementById('streamingModeStatus');
+                        const wasStreamActive = streamActive;
+                        
+                        statusElement.textContent = 'Changing streaming mode to ' + value.toUpperCase() + '...';
+                        
+                        // Stop current stream before mode change
+                        if (streamActive) {
+                            stopStream();
+                        }
+                        
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                // Update current streaming mode
+                                currentStreamingMode = value;
+                                statusElement.textContent = data.message + ' Reloading stream in 2 seconds...';
+                                
+                                // Wait 2 seconds for camera to rebind, then reload stream if it was active
+                                setTimeout(() => {
+                                    statusElement.textContent = 'Streaming mode changed to ' + value.toUpperCase();
+                                    if (wasStreamActive) {
+                                        startStream();
+                                    }
+                                }, 2000);
+                            })
+                            .catch((error) => {
+                                console.error('Streaming mode change error:', error);
+                                statusElement.textContent = 'Failed to change streaming mode. Error: ' + error;
                             });
                     }
 
@@ -762,6 +849,7 @@ class HttpServer(
                     }
 
                     loadFormats();
+                    loadStreamingMode();
                     refreshConnections();
                     updateFlashlightButton();
                     
@@ -1415,9 +1503,72 @@ class HttpServer(
         
         call.respondBytesWriter(ContentType.parse("video/mp4")) {
             try {
-                // TODO: Implement MP4 streaming
-                // For now, return error
-                throw NotImplementedError("MP4 streaming implementation pending - requires MediaCodec integration")
+                // Send fMP4 initialization segment (ftyp + moov boxes)
+                val ftypBox = Mp4BoxWriter.createFtypBox()
+                writeFully(ftypBox, 0, ftypBox.size)
+                
+                // Get actual resolution from camera service
+                val resolution = cameraService.getSelectedResolution() ?: Size(1920, 1080)
+                
+                // Get codec config and create moov box
+                val codecConfig = cameraService.getMp4InitSegment()
+                val moovBox = Mp4BoxWriter.createMoovBox(resolution.width, resolution.height, codecConfig)
+                writeFully(moovBox, 0, moovBox.size)
+                flush()
+                
+                Log.d(TAG, "MP4 init segment sent to client $clientId (${resolution.width}x${resolution.height})")
+                
+                // Stream media segments (moof + mdat boxes)
+                var sequenceNumber = 1
+                var baseMediaDecodeTime = 0L
+                val timescale = 30L // 30 fps timescale (matches encoder frame rate)
+                val frameDuration = timescale // Duration of one frame in timescale units (1 frame at 30fps = 1 timescale unit)
+                
+                while (isActive) {
+                    // Get next encoded frame from camera service
+                    val frame = cameraService.getMp4EncodedFrame()
+                    
+                    if (frame != null) {
+                        // Create moof box (movie fragment)
+                        val moofBox = Mp4BoxWriter.createMoofBox(
+                            sequenceNumber = sequenceNumber,
+                            baseMediaDecodeTime = baseMediaDecodeTime,
+                            sampleSize = frame.data.size
+                        )
+                        
+                        // Create mdat box (media data)
+                        val mdatBox = Mp4BoxWriter.createMdatBox(frame.data)
+                        
+                        // Write moof + mdat (one fragment)
+                        writeFully(moofBox, 0, moofBox.size)
+                        writeFully(mdatBox, 0, mdatBox.size)
+                        flush()
+                        
+                        // Track bandwidth
+                        val totalBytes = moofBox.size + mdatBox.size
+                        cameraService.recordBytesSent(clientId, totalBytes.toLong())
+                        
+                        // Update timing for next fragment
+                        sequenceNumber++
+                        baseMediaDecodeTime += frameDuration // Increment by one frame duration
+                        
+                        if (frame.isKeyFrame) {
+                            Log.d(TAG, "Sent keyframe to MP4 client $clientId, seq=$sequenceNumber")
+                        }
+                    } else {
+                        // No frame available, wait a bit
+                        delay(10)
+                    }
+                    
+                    // Check for backpressure - if client is too slow, drop frames
+                    // This prevents memory buildup from slow clients
+                    if (!isActive) {
+                        break
+                    }
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error streaming MP4 to client $clientId", e)
             } finally {
                 cameraService.removeClient(clientId)
                 activeStreams.decrementAndGet()

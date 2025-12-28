@@ -30,6 +30,7 @@ class Mp4StreamWriter(
     private val encodedDataQueue = LinkedBlockingQueue<EncodedFrame>(100)
     private var trackIndex = -1
     private var isCodecStarted = false
+    private var frameDropCount = 0 // Track dropped frames for logging
     
     companion object {
         private const val TAG = "Mp4StreamWriter"
@@ -109,8 +110,9 @@ class Mp4StreamWriter(
         
         if (isCodecStarted) {
             try {
-                mediaCodec?.signalEndOfInputStream()
-                // Drain remaining frames
+                // Note: We don't call signalEndOfInputStream() when using a Preview surface
+                // because the camera provides the surface input, not us directly.
+                // Just drain any remaining frames
                 drainEncoder(true)
             } catch (e: Exception) {
                 Log.e(TAG, "Error stopping encoder", e)
@@ -186,9 +188,15 @@ class Mp4StreamWriter(
                         outputBuffer.get(data, 0, bufferInfo.size)
                         
                         // Add to queue for streaming
+                        // Keep a rolling buffer: if queue is full, remove oldest frame
                         val frame = EncodedFrame(data, isKeyFrame, bufferInfo.presentationTimeUs)
                         if (!encodedDataQueue.offer(frame)) {
-                            Log.w(TAG, "Encoded frame queue full, dropping frame")
+                            // Queue is full - remove oldest frame and add new one
+                            encodedDataQueue.poll() // Remove oldest
+                            encodedDataQueue.offer(frame) // Add newest
+                            if (frameDropCount++ % 30 == 0) { // Log every 30 drops to avoid spam
+                                Log.w(TAG, "Encoded frame queue full, maintaining rolling buffer (dropped $frameDropCount frames total)")
+                            }
                         }
                     }
                     
