@@ -846,28 +846,37 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Properly stop camera activities before applying new settings.
      * This ensures clean state transition and prevents resource conflicts.
+     * Must be called on main thread for CameraX operations.
      */
     private fun stopCamera() {
         try {
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
             
-            // Stop and release MP4 encoder if active
-            synchronized(mp4StreamLock) {
-                mp4StreamWriter?.let {
-                    Log.d(TAG, "Stopping MP4 encoder...")
-                    it.stop()
-                    it.release()
-                    mp4StreamWriter = null
-                    Log.d(TAG, "MP4 encoder stopped and released")
-                }
-            }
-            
-            // Unbind all use cases from lifecycle
+            // Unbind all use cases from lifecycle (must be on main thread)
             cameraProvider?.unbindAll()
             
             // Clear camera reference
             camera = null
+            
+            // Stop and release MP4 encoder if active - do this on background thread to avoid blocking
+            val encoderToStop = synchronized(mp4StreamLock) { mp4StreamWriter }
+            if (encoderToStop != null) {
+                Log.d(TAG, "Scheduling MP4 encoder stop on background thread...")
+                serviceScope.launch(Dispatchers.IO) {
+                    try {
+                        encoderToStop.stop()
+                        encoderToStop.release()
+                        Log.d(TAG, "MP4 encoder stopped and released on background thread")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping MP4 encoder on background thread", e)
+                    }
+                }
+                // Clear reference immediately so new encoder can be created
+                synchronized(mp4StreamLock) {
+                    mp4StreamWriter = null
+                }
+            }
             
             Log.d(TAG, "Camera stopped successfully")
         } catch (e: Exception) {
