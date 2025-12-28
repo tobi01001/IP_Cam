@@ -41,7 +41,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
-import fi.iki.elonen.NanoHTTPD
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.io.IOException
@@ -58,10 +57,9 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 
-class CameraService : Service(), LifecycleOwner {
+class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private val binder = LocalBinder()
-    @Volatile private var httpServer: CameraHttpServer? = null
-    @Volatile private var asyncRunner: BoundedAsyncRunner? = null
+    @Volatile private var httpServer: HttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
     private var lastFrameBitmap: Bitmap? = null // For MainActivity preview only
     @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
@@ -186,83 +184,6 @@ class CameraService : Service(), LifecycleOwner {
          @Volatile var active: Boolean = true
      )
      
-     /**
-      * Custom AsyncRunner for NanoHTTPD with bounded thread pool.
-      * Prevents resource exhaustion from unbounded thread creation.
-      * Note: Thread pool max size is fixed at creation time. To change max connections,
-      * the server must be restarted.
-      */
-    private inner class BoundedAsyncRunner(private val maxPoolSize: Int) : NanoHTTPD.AsyncRunner {
-        private val threadCounter = AtomicInteger(0)
-        private val activeConnectionsCount = AtomicInteger(0)
-        private val threadPoolExecutor = ThreadPoolExecutor(
-            HTTP_CORE_POOL_SIZE,
-            maxPoolSize,
-            HTTP_KEEP_ALIVE_TIME,
-            TimeUnit.SECONDS,
-            LinkedBlockingQueue(HTTP_QUEUE_CAPACITY),
-            { r -> Thread(r, "NanoHttpd-${threadCounter.incrementAndGet()}") },
-            ThreadPoolExecutor.CallerRunsPolicy() // Graceful degradation under load
-        ).apply {
-            // Allow core threads to timeout to conserve resources
-            allowCoreThreadTimeOut(true)
-        }
-        
-        /**
-         * Get the current number of active connections being processed
-         */
-        fun getActiveConnections(): Int = activeConnectionsCount.get()
-        
-        /**
-         * Get the maximum number of connections that can be processed simultaneously
-         */
-        fun getMaxConnections(): Int = maxPoolSize
-        
-        override fun closeAll() {
-            threadPoolExecutor.shutdown()
-            try {
-                if (!threadPoolExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
-                    threadPoolExecutor.shutdownNow()
-                }
-            } catch (e: InterruptedException) {
-                threadPoolExecutor.shutdownNow()
-                Thread.currentThread().interrupt()
-            }
-        }
-        
-        override fun closed(clientHandler: NanoHTTPD.ClientHandler?) {
-            // Decrement active connection counter when a client handler finishes
-            val newCount = activeConnectionsCount.decrementAndGet()
-            Log.d(TAG, "Connection closed. Active connections: $newCount")
-            // Broadcast update to SSE clients and MainActivity
-            broadcastConnectionCount()
-        }
-        
-        override fun exec(code: NanoHTTPD.ClientHandler?) {
-            if (code == null) return
-            
-            // Increment counter when accepting a connection. This provides an accurate
-            // view of server load, even if the connection is immediately rejected.
-            // The brief moment where counter is higher before rejection is intentional.
-            val newCount = activeConnectionsCount.incrementAndGet()
-            Log.d(TAG, "Connection accepted. Active connections: $newCount")
-            // Broadcast update to SSE clients and MainActivity
-            broadcastConnectionCount()
-            
-            try {
-                threadPoolExecutor.execute(code)
-            } catch (e: RejectedExecutionException) {
-                Log.w(TAG, "HTTP request rejected due to thread pool saturation", e)
-                // Decrement counter since the connection was rejected and won't be processed
-                val rejectedCount = activeConnectionsCount.decrementAndGet()
-                Log.d(TAG, "Connection rejected. Active connections: $rejectedCount")
-                // Broadcast update to SSE clients and MainActivity
-                broadcastConnectionCount()
-                // Request will be dropped - client will need to retry
-            }
-        }
-    }
-    
     override val lifecycle: Lifecycle
         get() = lifecycleRegistry
     
@@ -323,7 +244,7 @@ class CameraService : Service(), LifecycleOwner {
         
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
-        if (shouldStartServer && httpServer?.isAlive != true) {
+        if (shouldStartServer && httpServer?.isAlive() != true) {
             startServer()
         }
         
@@ -430,7 +351,7 @@ class CameraService : Service(), LifecycleOwner {
     }
     
     private fun getNotificationText(): String {
-        return if (httpServer?.isAlive == true) {
+        return if (httpServer?.isAlive() == true) {
             "Server running on ${getServerUrl()}"
         } else {
             "Camera preview active"
@@ -463,7 +384,7 @@ class CameraService : Service(), LifecycleOwner {
             serverIntentionallyStopped = false
             
             // If server is already running, just return
-            if (httpServer?.isAlive == true) {
+            if (httpServer?.isAlive() == true) {
                 Log.d(TAG, "Server is already running on port $actualPort")
                 return
             }
@@ -492,11 +413,8 @@ class CameraService : Service(), LifecycleOwner {
                 showUserNotification("Port Changed", msg)
             }
             
-            httpServer = CameraHttpServer(actualPort).apply {
-                // Use custom bounded thread pool to prevent resource exhaustion
-                asyncRunner = BoundedAsyncRunner(maxConnections)
-                setAsyncRunner(asyncRunner!!)
-            }
+            // Create and start the Ktor-based HTTP server
+            httpServer = HttpServer(actualPort, this@CameraService)
             httpServer?.start()
             
             val startMsg = if (actualPort != PORT) {
@@ -513,6 +431,11 @@ class CameraService : Service(), LifecycleOwner {
             broadcastCameraState()
             
         } catch (e: IOException) {
+            val errorMsg = "Failed to start server: ${e.message}"
+            Log.e(TAG, errorMsg, e)
+            updateNotification("Server failed to start")
+            showUserNotification("Server Error", errorMsg)
+        } catch (e: Exception) {
             val errorMsg = "Failed to start server: ${e.message}"
             Log.e(TAG, errorMsg, e)
             updateNotification("Server failed to start")
@@ -920,7 +843,7 @@ class CameraService : Service(), LifecycleOwner {
         return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
     }
     
-    fun switchCamera(cameraSelector: CameraSelector) {
+    override fun switchCamera(cameraSelector: CameraSelector) {
         // Save current camera's resolution before switching
         if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
             backCameraResolution = selectedResolution
@@ -1004,7 +927,7 @@ class CameraService : Service(), LifecycleOwner {
      * Toggle flashlight on/off
      * Only works for back camera with flash unit
      */
-    fun toggleFlashlight(): Boolean {
+    override fun toggleFlashlight(): Boolean {
         if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
             Log.w(TAG, "Flashlight only available for back camera")
             return false
@@ -1030,22 +953,22 @@ class CameraService : Service(), LifecycleOwner {
     /**
      * Get current flashlight state
      */
-    fun isFlashlightEnabled(): Boolean = isFlashlightOn
+    override fun isFlashlightEnabled(): Boolean = isFlashlightOn
     
     /**
      * Check if flashlight is available (back camera with flash unit)
      */
-    fun isFlashlightAvailable(): Boolean {
+    override fun isFlashlightAvailable(): Boolean {
         return currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit
     }
     
-    fun getCurrentCamera(): CameraSelector = currentCamera
+    override fun getCurrentCamera(): CameraSelector = currentCamera
     
-    fun getSupportedResolutions(): List<Size> {
+    override fun getSupportedResolutions(): List<Size> {
         return getSupportedResolutions(currentCamera)
     }
     
-    fun getSelectedResolution(): Size? = selectedResolution
+    override fun getSelectedResolution(): Size? = selectedResolution
     
     /**
      * Update the resolution for the current camera in both selectedResolution
@@ -1075,7 +998,7 @@ class CameraService : Service(), LifecycleOwner {
      * This is the recommended way for external callers (MainActivity, HTTP endpoints)
      * to change resolution, as it encapsulates both the setting change and rebinding.
      */
-    fun setResolutionAndRebind(resolution: Size?) {
+    override fun setResolutionAndRebind(resolution: Size?) {
         updateCurrentCameraResolution(resolution)
         saveSettings()
         
@@ -1085,7 +1008,7 @@ class CameraService : Service(), LifecycleOwner {
         requestBindCamera()
     }
     
-    fun setCameraOrientation(orientation: String) {
+    override fun setCameraOrientation(orientation: String) {
         cameraOrientation = orientation
         // Clear resolution cache when orientation changes to force refresh with new filter
         resolutionCache.clear()
@@ -1100,7 +1023,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getCameraOrientation(): String = cameraOrientation
     
-    fun setRotation(rot: Int) {
+    override fun setRotation(rot: Int) {
         rotation = rot
         saveSettings()
         
@@ -1113,7 +1036,7 @@ class CameraService : Service(), LifecycleOwner {
     
     fun getRotation(): Int = rotation
     
-    fun setShowResolutionOverlay(show: Boolean) {
+    override fun setShowResolutionOverlay(show: Boolean) {
         showResolutionOverlay = show
         saveSettings()
         
@@ -1246,7 +1169,7 @@ class CameraService : Service(), LifecycleOwner {
         onConnectionsChangedCallback = null
     }
     
-    fun getActiveConnectionsCount(): Int {
+    override fun getActiveConnectionsCount(): Int {
         // Return the count of connections we can actually track
         return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
     }
@@ -1257,9 +1180,9 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
-    fun getMaxConnections(): Int = maxConnections
+    override fun getMaxConnections(): Int = maxConnections
     
-    fun setMaxConnections(max: Int): Boolean {
+    override fun setMaxConnections(max: Int): Boolean {
         val newMax = max.coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         if (newMax != maxConnections) {
             maxConnections = newMax
@@ -1308,7 +1231,7 @@ class CameraService : Service(), LifecycleOwner {
         onConnectionsChangedCallback?.invoke()
     }
     
-    fun isServerRunning(): Boolean = httpServer?.isAlive == true
+    fun isServerRunning(): Boolean = httpServer?.isAlive() == true
     
     fun stopServer() {
         try {
@@ -1334,7 +1257,7 @@ class CameraService : Service(), LifecycleOwner {
      * or for recovering from server issues remotely.
      * Runs in background thread to avoid blocking.
      */
-    fun restartServer() {
+    override fun restartServer() {
         serviceScope.launch {
             try {
                 Log.d(TAG, "Restarting server...")
@@ -1349,7 +1272,7 @@ class CameraService : Service(), LifecycleOwner {
         }
     }
     
-    fun getServerUrl(): String {
+    override fun getServerUrl(): String {
         val ipAddress = getIpAddress()
         return "http://$ipAddress:$actualPort"
     }
@@ -1419,7 +1342,7 @@ class CameraService : Service(), LifecycleOwner {
                 var needsRecovery = false
                 
                 // Check server health - only restart if it wasn't intentionally stopped
-                if (!serverIntentionallyStopped && httpServer?.isAlive != true) {
+                if (!serverIntentionallyStopped && httpServer?.isAlive() != true) {
                     Log.w(TAG, "Watchdog: Server not alive, restarting...")
                     startServer()
                     needsRecovery = true
@@ -1466,7 +1389,7 @@ class CameraService : Service(), LifecycleOwner {
                         Log.d(TAG, "Network state changed, checking server...")
                         serviceScope.launch {
                             delay(2000) // Wait for network to stabilize
-                            if (httpServer?.isAlive != true) {
+                            if (httpServer?.isAlive() != true) {
                                 Log.d(TAG, "Network recovered, restarting server")
                                 startServer()
                             }
@@ -1581,90 +1504,6 @@ class CameraService : Service(), LifecycleOwner {
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
     
-    /**
-     * Broadcast connection count update to all SSE clients and MainActivity
-     */
-    private fun broadcastConnectionCount() {
-        val activeConns = asyncRunner?.getActiveConnections() ?: 0
-        val maxConns = asyncRunner?.getMaxConnections() ?: maxConnections
-        val message = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
-        
-        synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
-                try {
-                    if (client.active) {
-                        client.outputStream.write(message.toByteArray())
-                        client.outputStream.flush()
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "SSE client ${client.id} disconnected")
-                    client.active = false
-                    iterator.remove()
-                }
-            }
-        }
-        
-        // Notify MainActivity of connection count change
-        notifyConnectionsChanged()
-    }
-    
-    /**
-     * Build camera state JSON string for SSE broadcasts.
-     * Centralizes JSON construction to avoid duplication and ensure consistency.
-     */
-    private fun buildCameraStateJson(): String {
-        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-        val resolutionStr = selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"
-        
-        // Build JSON state object
-        // Note: Using manual string construction for simplicity. For production use,
-        // consider using a JSON library like Gson or kotlinx.serialization for better
-        // safety and automatic escaping.
-        return """
-        {
-            "type": "state",
-            "camera": "$cameraName",
-            "resolution": "$resolutionStr",
-            "cameraOrientation": "$cameraOrientation",
-            "rotation": $rotation,
-            "showResolutionOverlay": $showResolutionOverlay,
-            "flashlightAvailable": ${isFlashlightAvailable()},
-            "flashlightOn": ${isFlashlightEnabled()},
-            "serverRunning": ${isServerRunning()}
-        }
-        """.trimIndent().replace("\n", "").replace("  ", "")
-    }
-    
-    /**
-     * Broadcast camera state update to all SSE clients for real-time synchronization.
-     * This ensures all connected web clients stay in sync with the authoritative camera state.
-     */
-    private fun broadcastCameraState() {
-        val stateJson = buildCameraStateJson()
-        val message = "event: state\ndata: $stateJson\n\n"
-        
-        synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
-                try {
-                    if (client.active) {
-                        client.outputStream.write(message.toByteArray())
-                        client.outputStream.flush()
-                    }
-                } catch (e: Exception) {
-                    Log.d(TAG, "SSE client ${client.id} disconnected during state broadcast")
-                    client.active = false
-                    iterator.remove()
-                }
-            }
-        }
-        
-        Log.d(TAG, "Broadcast camera state to ${sseClients.size} SSE clients")
-    }
-    
     private fun updateBatteryCache() {
         cachedBatteryInfo = getBatteryInfo()
         lastBatteryUpdate = System.currentTimeMillis()
@@ -1704,7 +1543,7 @@ class CameraService : Service(), LifecycleOwner {
         return BatteryInfo(percentage, isCharging)
     }
     
-    private fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
+    override fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
     
     private fun getSupportedResolutions(cameraSelector: CameraSelector): List<Size> {
         val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -1740,1404 +1579,74 @@ class CameraService : Service(), LifecycleOwner {
         return distinct
     }
     
-    inner class CameraHttpServer(port: Int) : NanoHTTPD(port) {
-        
-        override fun serve(session: IHTTPSession): Response {
-            val uri = session.uri
-            val method = session.method
-            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
-            Log.d(TAG, "Request: $method $uri (Active connections: $activeConns)")
-            
-            // Handle CORS preflight requests
-            if (method == Method.OPTIONS) {
-                val response = newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "")
-                response.addHeader("Access-Control-Allow-Origin", "*")
-                response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
-                response.addHeader("Access-Control-Allow-Headers", "Content-Type")
-                response.addHeader("Access-Control-Max-Age", "3600")
-                return response
-            }
-            
-            val response = when {
-                uri == "/" || uri == "/index.html" -> serveIndexPage()
-                uri == "/snapshot" -> serveSnapshot()
-                uri == "/stream" -> serveStream()
-                uri == "/switch" -> serveSwitch()
-                uri == "/status" -> serveStatus()
-                uri == "/events" -> serveSSE()
-                uri == "/connections" -> serveConnections()
-                uri == "/closeConnection" -> serveCloseConnection(session)
-                uri == "/formats" -> serveFormats()
-                uri == "/setFormat" -> serveSetFormat(session)
-                uri == "/setCameraOrientation" -> serveSetCameraOrientation(session)
-                uri == "/setRotation" -> serveSetRotation(session)
-                uri == "/setResolutionOverlay" -> serveSetResolutionOverlay(session)
-                uri == "/setMaxConnections" -> serveSetMaxConnections(session)
-                uri == "/toggleFlashlight" -> serveToggleFlashlight()
-                uri == "/restart" -> serveRestartServer()
-                uri == "/stats" -> serveDetailedStats()
-                uri == "/enableAdaptiveQuality" -> serveEnableAdaptiveQuality()
-                uri == "/disableAdaptiveQuality" -> serveDisableAdaptiveQuality()
-                else -> newFixedLengthResponse(
-                    Response.Status.NOT_FOUND,
-                    MIME_PLAINTEXT,
-                    "Not Found"
-                )
-            }
-            
-            // Add CORS headers for browser compatibility
-            // Note: Using wildcard (*) for local network IP camera is acceptable
-            // as it's intended for use on trusted local networks only.
-            // For production use with internet exposure, implement proper authentication.
-            response.addHeader("Access-Control-Allow-Origin", "*")
-            response.addHeader("Access-Control-Allow-Methods", "GET, OPTIONS")
-            response.addHeader("Access-Control-Allow-Headers", "Content-Type")
-            
-            return response
+    // ==================== CameraServiceInterface Implementation ====================
+    
+    override fun getLastFrameJpegBytes(): ByteArray? {
+        return synchronized(jpegLock) { 
+            lastFrameJpegBytes
         }
+    }
+    
+    override fun getSelectedResolutionLabel(): String {
+        return selectedResolution?.let { sizeLabel(it) } ?: "auto"
+    }
+    
+    override fun getCameraStateJson(): String {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        private fun serveIndexPage(): Response {
-            // Calculate active connections at the time of serving the page
-            // Exclude the current page request from the count to show actual active streaming connections
-            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
-            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
-            val maxConns = this@CameraService.maxConnections
-            val connectionDisplay = "$activeConns/$maxConns"
-            
-            val html = """
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <title>IP Camera</title>
-                    <meta name="viewport" content="width=device-width, initial-scale=1">
-                    <style>
-                        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }
-                        h1 { color: #333; }
-                        .container { background: white; padding: 20px; border-radius: 8px; max-width: 800px; margin: 0 auto; }
-                        img { max-width: 100%; height: auto; border: 1px solid #ddd; background: #000; }
-                        button { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
-                        button:hover { background-color: #45a049; }
-                        .endpoint { background-color: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #4CAF50; }
-                        code { background-color: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
-                        .endpoint a { color: #1976D2; text-decoration: none; font-weight: 500; }
-                        .endpoint a:hover { text-decoration: underline; color: #1565C0; }
-                        .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-                        select { padding: 8px; border-radius: 4px; }
-                        .note { font-size: 13px; color: #444; }
-                        .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
-                        .status-info strong { color: #2e7d32; }
-                        #connectionsContainer { margin: 10px 0; overflow-x: auto; }
-                        #connectionsContainer table { width: 100%; border-collapse: collapse; }
-                        #connectionsContainer th { padding: 8px; text-align: left; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: bold; }
-                        #connectionsContainer td { padding: 8px; border: 1px solid #ddd; }
-                        #connectionsContainer tr:hover { background-color: #f5f5f5; }
-                        #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
-                        #connectionsContainer button:hover { background-color: #d32f2f; }
-                    </style>
-                </head>
-                <body>
-                    <div class="container">
-                        <h1>IP Camera Server</h1>
-                        <div class="status-info">
-                            <strong>Server Status:</strong> Running | 
-                            <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
-                        </div>
-                        <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
-                        <h2>Live Stream</h2>
-                        <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
-                            <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
-                            <div id="streamPlaceholder" style="color: #888; font-size: 18px;">Click "Start Stream" to begin</div>
-                        </div>
-                        <br>
-                        <div class="row">
-                            <button id="toggleStreamBtn" onclick="toggleStream()">Start Stream</button>
-                            <button onclick="reloadStream()">Refresh</button>
-                            <button onclick="switchCamera()">Switch Camera</button>
-                            <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
-                            <select id="formatSelect"></select>
-                            <button onclick="applyFormat()">Apply Format</button>
-                        </div>
-                        <div class="row">
-                            <label for="orientationSelect">Camera Orientation:</label>
-                            <select id="orientationSelect">
-                                <option value="landscape">Landscape (Default)</option>
-                                <option value="portrait">Portrait</option>
-                            </select>
-                            <button onclick="applyCameraOrientation()">Apply Orientation</button>
-                        </div>
-                        <div class="row">
-                            <label for="rotationSelect">Rotation:</label>
-                            <select id="rotationSelect">
-                                <option value="0">0° (Normal)</option>
-                                <option value="90">90° (Right)</option>
-                                <option value="180">180° (Upside Down)</option>
-                                <option value="270">270° (Left)</option>
-                            </select>
-                            <button onclick="applyRotation()">Apply Rotation</button>
-                        </div>
-                        <div class="row">
-                            <label>
-                                <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
-                                Show Resolution Overlay (Bottom Right)
-                            </label>
-                        </div>
-                        <div class="note" id="formatStatus"></div>
-                        <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
-                        <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
-                        <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
-                        <h2>Active Connections</h2>
-                        <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
-                        <div id="connectionsContainer">
-                            <p>Loading connections...</p>
-                        </div>
-                        <button onclick="refreshConnections()">Refresh Connections</button>
-                        <h2>Server Management</h2>
-                        <div class="row">
-                            <button onclick="restartServer()">Restart Server</button>
-                        </div>
-                        <p class="note"><em>Note: Server restart will briefly interrupt all connections. Clients will automatically reconnect.</em></p>
-                        <h2>Max Connections</h2>
-                        <div class="row">
-                            <label for="maxConnectionsSelect">Max Connections:</label>
-                            <select id="maxConnectionsSelect">
-                                <option value="4">4</option>
-                                <option value="8">8</option>
-                                <option value="16">16</option>
-                                <option value="32" selected>32</option>
-                                <option value="64">64</option>
-                                <option value="100">100</option>
-                            </select>
-                            <button onclick="applyMaxConnections()">Apply</button>
-                        </div>
-                        <p class="note"><em>Note: Server restart required for max connections change to take effect.</em></p>
-                        <h2>API Endpoints</h2>
-                        <div class="endpoint">
-                            <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
-                            Returns a single JPEG image
-                        </div>
-                        <div class="endpoint">
-                            <strong>Stream:</strong> <a href="/stream" target="_blank"><code>GET /stream</code></a><br>
-                            Returns MJPEG stream
-                        </div>
-                        <div class="endpoint">
-                            <strong>Switch Camera:</strong> <a href="/switch" target="_blank"><code>GET /switch</code></a><br>
-                            Switches between front and back camera
-                        </div>
-                        <div class="endpoint">
-                            <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
-                            Returns server status as JSON
-                        </div>
-                        <div class="endpoint">
-                            <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
-                            Server-Sent Events stream for real-time connection count updates
-                        </div>
-                        <div class="endpoint">
-                            <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
-                            Lists supported camera resolutions for the active lens
-                        </div>
-                        <div class="endpoint">
-                            <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
-                            Apply a supported resolution (or omit to return to auto). Requires <code>value</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
-                            Set the base camera recording mode (landscape or portrait). Requires <code>value</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
-                            Rotate the video feed by the specified degrees. Requires <code>value</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
-                            Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
-                            Returns list of active connections as JSON
-                        </div>
-                        <div class="endpoint">
-                            <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
-                            Close a specific connection by ID. Requires <code>id</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
-                            Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
-                            Toggle flashlight on/off for back camera. Only works if back camera is active and device has flash unit.
-                        </div>
-                        <div class="endpoint">
-                            <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
-                            Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
-                        </div>
-                        <h2>Keep the stream alive</h2>
-                        <ul>
-                            <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
-                            <li>Allow background activity and keep the phone plugged in for long sessions</li>
-                            <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
-                            <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
-                        </ul>
-                    </div>
-                    <script>
-                        // Configuration constants
-                        const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
-                        const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
-                        
-                        const streamImg = document.getElementById('stream');
-                        const streamPlaceholder = document.getElementById('streamPlaceholder');
-                        const toggleStreamBtn = document.getElementById('toggleStreamBtn');
-                        let lastFrame = Date.now();
-                        let streamActive = false;
-                        let autoReloadInterval = null;
-
-                        // Toggle stream on/off with a single button
-                        function toggleStream() {
-                            if (streamActive) {
-                                stopStream();
-                            } else {
-                                startStream();
-                            }
-                        }
-
-                        function startStream() {
-                            streamImg.src = '/stream?ts=' + Date.now();
-                            streamImg.style.display = 'block';
-                            streamPlaceholder.style.display = 'none';
-                            toggleStreamBtn.textContent = 'Stop Stream';
-                            toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
-                            streamActive = true;
-                            
-                            // Auto-reload if stream stops
-                            if (autoReloadInterval) clearInterval(autoReloadInterval);
-                            autoReloadInterval = setInterval(() => {
-                                if (streamActive && Date.now() - lastFrame > 5000) {
-                                    reloadStream();
-                                }
-                            }, 3000);
-                        }
-
-                        function stopStream() {
-                            streamImg.src = '';
-                            streamImg.style.display = 'none';
-                            streamPlaceholder.style.display = 'block';
-                            toggleStreamBtn.textContent = 'Start Stream';
-                            toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
-                            streamActive = false;
-                            if (autoReloadInterval) {
-                                clearInterval(autoReloadInterval);
-                                autoReloadInterval = null;
-                            }
-                        }
-
-                        function reloadStream() {
-                            if (streamActive) {
-                                streamImg.src = '/stream?ts=' + Date.now();
-                            }
-                        }
-                        
-                        streamImg.onerror = () => {
-                            if (streamActive) {
-                                setTimeout(reloadStream, 1000);
-                            }
-                        };
-                        streamImg.onload = () => { lastFrame = Date.now(); };
-
-                        function switchCamera() {
-                            // Remember if stream was active before switching
-                            const wasStreamActive = streamActive;
-                            
-                            fetch('/switch')
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = 'Switched to ' + data.camera + ' camera';
-                                    
-                                    // If stream was active, keep it active with the new camera
-                                    if (wasStreamActive) {
-                                        // Reload stream after a short delay to allow camera to switch
-                                        setTimeout(() => {
-                                            reloadStream();
-                                        }, STREAM_RELOAD_DELAY_MS);
-                                    }
-                                    
-                                    // Reload formats and update flashlight button for new camera
-                                    loadFormats();
-                                    updateFlashlightButton();
-                                })
-                                .catch(error => {
-                                    document.getElementById('formatStatus').textContent = 'Error switching camera: ' + error;
-                                });
-                        }
-
-                        function toggleFlashlight() {
-                            fetch('/toggleFlashlight')
-                                .then(response => response.json())
-                                .then(data => {
-                                    if (data.status === 'ok') {
-                                        document.getElementById('formatStatus').textContent = data.message;
-                                        updateFlashlightButton();
-                                    } else {
-                                        document.getElementById('formatStatus').textContent = data.message;
-                                    }
-                                })
-                                .catch(error => {
-                                    document.getElementById('formatStatus').textContent = 'Error toggling flashlight: ' + error;
-                                });
-                        }
-
-                        function updateFlashlightButton() {
-                            fetch('/status')
-                                .then(response => response.json())
-                                .then(data => {
-                                    const button = document.getElementById('flashlightButton');
-                                    if (data.flashlightAvailable) {
-                                        button.disabled = false;
-                                        button.textContent = data.flashlightOn ? 'Flashlight: ON' : 'Flashlight: OFF';
-                                        button.style.backgroundColor = data.flashlightOn ? '#FFA500' : '#4CAF50';
-                                    } else {
-                                        button.disabled = true;
-                                        button.textContent = 'Flashlight N/A';
-                                        button.style.backgroundColor = '#9E9E9E';
-                                    }
-                                })
-                                .catch(error => {
-                                    console.error('Error updating flashlight button:', error);
-                                });
-                        }
-
-                        function loadFormats() {
-                            fetch('/formats')
-                                .then(response => response.json())
-                                .then(data => {
-                                    const select = document.getElementById('formatSelect');
-                                    select.innerHTML = '';
-                                    const auto = document.createElement('option');
-                                    auto.value = '';
-                                    auto.textContent = 'Auto (Camera default)';
-                                    select.appendChild(auto);
-                                    data.formats.forEach(fmt => {
-                                        const option = document.createElement('option');
-                                        option.value = fmt.value;
-                                        option.textContent = fmt.label;
-                                        if (data.selected === fmt.value) {
-                                            option.selected = true;
-                                        }
-                                        select.appendChild(option);
-                                    });
-                                    document.getElementById('formatStatus').textContent = data.selected ? 
-                                        'Selected: ' + data.selected : 'Selected: Auto';
-                                });
-                        }
-
-                        function applyFormat() {
-                            const value = document.getElementById('formatSelect').value;
-                            const url = value ? '/setFormat?value=' + encodeURIComponent(value) : '/setFormat';
-                            fetch(url)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
-                                })
-                                .catch(() => {
-                                    document.getElementById('formatStatus').textContent = 'Failed to set format';
-                                });
-                        }
-
-                        function applyCameraOrientation() {
-                            const value = document.getElementById('orientationSelect').value;
-                            const url = '/setCameraOrientation?value=' + encodeURIComponent(value);
-                            fetch(url)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
-                                })
-                                .catch(() => {
-                                    document.getElementById('formatStatus').textContent = 'Failed to set camera orientation';
-                                });
-                        }
-
-                        function applyRotation() {
-                            const value = document.getElementById('rotationSelect').value;
-                            const url = '/setRotation?value=' + encodeURIComponent(value);
-                            fetch(url)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
-                                })
-                                .catch(() => {
-                                    document.getElementById('formatStatus').textContent = 'Failed to set rotation';
-                                });
-                        }
-
-                        function toggleResolutionOverlay() {
-                            const checkbox = document.getElementById('resolutionOverlayCheckbox');
-                            const value = checkbox.checked ? 'true' : 'false';
-                            const url = '/setResolutionOverlay?value=' + value;
-                            fetch(url)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
-                                })
-                                .catch(() => {
-                                    document.getElementById('formatStatus').textContent = 'Failed to toggle resolution overlay';
-                                });
-                        }
-
-                        function refreshConnections() {
-                            fetch('/connections')
-                                .then(response => {
-                                    if (!response.ok) {
-                                        throw new Error('HTTP ' + response.status);
-                                    }
-                                    return response.json();
-                                })
-                                .then(data => {
-                                    displayConnections(data.connections);
-                                })
-                                .catch(error => {
-                                    console.error('Connection fetch error:', error);
-                                    document.getElementById('connectionsContainer').innerHTML = 
-                                        '<p style="color: #f44336;">Error loading connections. Please refresh the page or check server status.</p>';
-                                });
-                        }
-
-                        function displayConnections(connections) {
-                            const container = document.getElementById('connectionsContainer');
-                            
-                            if (!connections || connections.length === 0) {
-                                container.innerHTML = '<p>No active connections</p>';
-                                return;
-                            }
-                            
-                            let html = '<table style="width: 100%; border-collapse: collapse;">';
-                            html += '<tr style="background-color: #f0f0f0;">';
-                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">ID</th>';
-                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Remote Address</th>';
-                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Endpoint</th>';
-                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Duration (s)</th>';
-                            html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Action</th>';
-                            html += '</tr>';
-                            
-                            connections.forEach(conn => {
-                                html += '<tr>';
-                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.id + '</td>';
-                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.remoteAddr + '</td>';
-                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.endpoint + '</td>';
-                                html += '<td style="padding: 8px; border: 1px solid #ddd;">' + Math.floor(conn.duration / 1000) + '</td>';
-                                html += '<td style="padding: 8px; border: 1px solid #ddd;">';
-                                html += '<button onclick="closeConnection(' + conn.id + ')" style="padding: 4px 8px; font-size: 12px;">Close</button>';
-                                html += '</td>';
-                                html += '</tr>';
-                            });
-                            
-                            html += '</table>';
-                            container.innerHTML = html;
-                        }
-
-                        function closeConnection(id) {
-                            if (!confirm('Close connection ' + id + '?')) {
-                                return;
-                            }
-                            
-                            fetch('/closeConnection?id=' + id)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    refreshConnections();
-                                })
-                                .catch(error => {
-                                    document.getElementById('formatStatus').textContent = 'Error closing connection: ' + error;
-                                });
-                        }
-
-                        function applyMaxConnections() {
-                            const value = document.getElementById('maxConnectionsSelect').value;
-                            fetch('/setMaxConnections?value=' + value)
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                })
-                                .catch(error => {
-                                    document.getElementById('formatStatus').textContent = 'Error setting max connections: ' + error;
-                                });
-                        }
-
-                        function restartServer() {
-                            if (!confirm('Restart server? All active connections will be briefly interrupted.')) {
-                                return;
-                            }
-                            
-                            document.getElementById('formatStatus').textContent = 'Restarting server...';
-                            
-                            // Remember if stream was active before restart
-                            const wasStreamActive = streamActive;
-                            
-                            fetch('/restart')
-                                .then(response => response.json())
-                                .then(data => {
-                                    document.getElementById('formatStatus').textContent = data.message;
-                                    // Stop the stream during restart
-                                    if (streamActive) {
-                                        stopStream();
-                                    }
-                                    // Auto-reconnect after 3 seconds if stream was active
-                                    setTimeout(() => {
-                                        document.getElementById('formatStatus').textContent = 'Server restarted. Reconnecting...';
-                                        if (wasStreamActive) {
-                                            startStream();
-                                        }
-                                    }, 3000);
-                                })
-                                .catch(error => {
-                                    document.getElementById('formatStatus').textContent = 'Error restarting server: ' + error;
-                                });
-                        }
-
-                        loadFormats();
-                        refreshConnections();
-                        updateFlashlightButton();
-                        
-                        // Load max connections from server status
-                        fetch('/status')
-                            .then(response => response.json())
-                            .then(data => {
-                                const select = document.getElementById('maxConnectionsSelect');
-                                const options = select.options;
-                                for (let i = 0; i < options.length; i++) {
-                                    if (parseInt(options[i].value) === data.maxConnections) {
-                                        select.selectedIndex = i;
-                                        break;
-                                    }
-                                }
-                            });
-                        
-                        // Set up Server-Sent Events for real-time connection count updates
-                        const eventSource = new EventSource('/events');
-                        let lastConnectionCount = '';
-                        
-                        eventSource.onmessage = function(event) {
-                            try {
-                                const data = JSON.parse(event.data);
-                                const connectionCount = document.getElementById('connectionCount');
-                                if (connectionCount && data.connections) {
-                                    connectionCount.textContent = data.connections;
-                                    // Only refresh connection list if count changed
-                                    if (lastConnectionCount !== data.connections) {
-                                        lastConnectionCount = data.connections;
-                                        // Debounce refresh to avoid too many requests
-                                        setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
-                                    }
-                                }
-                            } catch (e) {
-                                console.error('Failed to parse SSE data:', e);
-                            }
-                        };
-                        
-                        // Handle camera state updates pushed by server
-                        let lastReceivedState = null;  // Track last state to detect actual changes
-                        
-                        eventSource.addEventListener('state', function(event) {
-                            try {
-                                const state = JSON.parse(event.data);
-                                console.log('Received state update from server:', state);
-                                
-                                // Check if this is an actual change
-                                const cameraChanged = !lastReceivedState || lastReceivedState.camera !== state.camera;
-                                const resolutionChanged = !lastReceivedState || lastReceivedState.resolution !== state.resolution;
-                                
-                                // Update resolution spinner if changed
-                                if (state.resolution && resolutionChanged) {
-                                    const formatSelect = document.getElementById('formatSelect');
-                                    const options = formatSelect.options;
-                                    for (let i = 0; i < options.length; i++) {
-                                        if (options[i].value === state.resolution || 
-                                            (state.resolution === 'auto' && options[i].value === '')) {
-                                            if (formatSelect.selectedIndex !== i) {
-                                                formatSelect.selectedIndex = i;
-                                                console.log('Updated resolution spinner to:', state.resolution);
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // Update camera orientation spinner if changed
-                                if (state.cameraOrientation) {
-                                    const orientationSelect = document.getElementById('orientationSelect');
-                                    const options = orientationSelect.options;
-                                    for (let i = 0; i < options.length; i++) {
-                                        if (options[i].value === state.cameraOrientation) {
-                                            if (orientationSelect.selectedIndex !== i) {
-                                                orientationSelect.selectedIndex = i;
-                                                console.log('Updated orientation spinner to:', state.cameraOrientation);
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // Update rotation spinner if changed
-                                if (state.rotation !== undefined) {
-                                    const rotationSelect = document.getElementById('rotationSelect');
-                                    const options = rotationSelect.options;
-                                    for (let i = 0; i < options.length; i++) {
-                                        if (parseInt(options[i].value) === state.rotation) {
-                                            if (rotationSelect.selectedIndex !== i) {
-                                                rotationSelect.selectedIndex = i;
-                                                console.log('Updated rotation spinner to:', state.rotation);
-                                            }
-                                            break;
-                                        }
-                                    }
-                                }
-                                
-                                // Update resolution overlay checkbox if changed
-                                if (state.showResolutionOverlay !== undefined) {
-                                    const checkbox = document.getElementById('resolutionOverlayCheckbox');
-                                    if (checkbox.checked !== state.showResolutionOverlay) {
-                                        checkbox.checked = state.showResolutionOverlay;
-                                        console.log('Updated resolution overlay checkbox to:', state.showResolutionOverlay);
-                                    }
-                                }
-                                
-                                // Update flashlight button state
-                                updateFlashlightButton();
-                                
-                                // Reload stream if it's active to reflect changes immediately
-                                if (streamActive) {
-                                    console.log('Reloading stream to reflect state changes');
-                                    setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
-                                }
-                                
-                                // If camera switched or resolution actually changed, reload formats
-                                if (cameraChanged) {
-                                    console.log('Camera changed, reloading formats');
-                                    loadFormats();
-                                }
-                                
-                                // Store current state for next comparison
-                                lastReceivedState = state;
-                                
-                            } catch (e) {
-                                console.error('Failed to handle state update:', e);
-                            }
-                        });
-                        
-                        eventSource.onerror = function(error) {
-                            console.error('SSE connection error:', error);
-                            // EventSource will automatically try to reconnect
-                        };
-                        
-                        // Clean up on page unload
-                        window.addEventListener('beforeunload', function() {
-                            eventSource.close();
-                        });
-                    </script>
-                </body>
-                </html>
-            """.trimIndent()
-            
-            return newFixedLengthResponse(Response.Status.OK, "text/html", html)
+        return """
+        {
+            "camera": "$cameraName",
+            "resolution": "$resolutionLabel",
+            "cameraOrientation": "$cameraOrientation",
+            "rotation": $rotation,
+            "showResolutionOverlay": $showResolutionOverlay,
+            "flashlightAvailable": ${isFlashlightAvailable()},
+            "flashlightOn": ${isFlashlightEnabled()}
         }
+        """.trimIndent()
+    }
+    
+    override fun recordBytesSent(clientId: Long, bytes: Long) {
+        bandwidthMonitor.recordBytesSent(clientId, bytes)
+    }
+    
+    override fun removeClient(clientId: Long) {
+        bandwidthMonitor.removeClient(clientId)
+        adaptiveQualityManager.removeClient(clientId)
+    }
+    
+    override fun getDetailedStats(): String {
+        val bandwidthStats = bandwidthMonitor.getDetailedStats()
+        val performanceStats = performanceMetrics.getDetailedStats()
+        val adaptiveStats = adaptiveQualityManager.getDetailedStats()
         
-        private fun serveSnapshot(): Response {
-            // Use pre-compressed JPEG bytes to avoid Bitmap operations on HTTP thread
-            val jpegBytes = synchronized(jpegLock) { 
-                lastFrameJpegBytes
-            }
+        return """
+            $bandwidthStats
             
-            return if (jpegBytes != null) {
-                newFixedLengthResponse(Response.Status.OK, "image/jpeg", jpegBytes.inputStream(), jpegBytes.size.toLong())
-            } else {
-                newFixedLengthResponse(Response.Status.SERVICE_UNAVAILABLE, MIME_PLAINTEXT, "No frame available")
-            }
-        }
-        
-        private fun serveStream(): Response {
-            // Generate unique client ID using counter + timestamp to avoid collisions
-            val clientId = ((System.currentTimeMillis() / 1000) shl 32) or clientIdCounter.incrementAndGet().toLong()
+            $performanceStats
             
-            // Track this streaming connection
-            activeStreams.incrementAndGet()
-            Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
-            
-            // Use PipedInputStream/PipedOutputStream to avoid blocking HTTP handler thread
-            val pipedOutputStream = java.io.PipedOutputStream()
-            val pipedInputStream = java.io.PipedInputStream(pipedOutputStream, 1024 * 1024) // 1MB buffer
-            
-            // Submit streaming work to dedicated executor (doesn't block HTTP thread)
-            streamingExecutor.submit {
-                try {
-                    var streamActive = true
-                    var framesSent = 0
-                    val streamStartTime = System.currentTimeMillis()
-                    
-                    while (streamActive && !Thread.currentThread().isInterrupted) {
-                        val frameStart = System.currentTimeMillis()
-                        
-                        // Get adaptive quality settings for this client
-                        val qualitySettings = if (adaptiveQualityEnabled) {
-                            adaptiveQualityManager.updateClientQuality(clientId)
-                        } else {
-                            AdaptiveQualityManager.ClientQualitySettings()
-                        }
-                        
-                        // Get pre-compressed JPEG bytes to avoid Bitmap operations
-                        val jpegBytes = synchronized(jpegLock) { 
-                            lastFrameJpegBytes
-                        }
-                        
-                        if (jpegBytes != null) {
-                            try {
-                                val sendStart = System.currentTimeMillis()
-                                
-                                // Write MJPEG frame boundary and headers
-                                pipedOutputStream.write("--jpgboundary\r\n".toByteArray())
-                                pipedOutputStream.write("Content-Type: image/jpeg\r\n".toByteArray())
-                                pipedOutputStream.write("Content-Length: ${jpegBytes.size}\r\n\r\n".toByteArray())
-                                pipedOutputStream.write(jpegBytes)
-                                pipedOutputStream.write("\r\n".toByteArray())
-                                pipedOutputStream.flush()
-                                
-                                val sendDuration = System.currentTimeMillis() - sendStart
-                                
-                                // Track bandwidth usage
-                                bandwidthMonitor.recordBytesSent(clientId, jpegBytes.size.toLong())
-                                framesSent++
-                                
-                                // Log periodic stats
-                                if (framesSent % 30 == 0) {
-                                    val throughput = bandwidthMonitor.getAverageThroughputMbps(clientId)
-                                    Log.d(TAG, "Client $clientId: $framesSent frames sent, " +
-                                            "${String.format("%.2f", throughput)} Mbps, " +
-                                            "quality=${qualitySettings.jpegQuality}, " +
-                                            "delay=${qualitySettings.frameDelayMs}ms")
-                                }
-                            } catch (e: IOException) {
-                                // Client disconnected or pipe broken
-                                streamActive = false
-                                Log.d(TAG, "Stream client $clientId disconnected")
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error writing frame to stream for client $clientId", e)
-                                streamActive = false
-                            }
-                            
-                            // Use adaptive frame delay if enabled
-                            if (streamActive) {
-                                try {
-                                    val delay = if (adaptiveQualityEnabled) {
-                                        qualitySettings.frameDelayMs
-                                    } else {
-                                        STREAM_FRAME_DELAY_MS
-                                    }
-                                    Thread.sleep(delay)
-                                } catch (e: InterruptedException) {
-                                    streamActive = false
-                                }
-                            }
-                        } else {
-                            // No frame available, wait a bit and retry
-                            try {
-                                Thread.sleep(STREAM_FRAME_DELAY_MS)
-                            } catch (e: InterruptedException) {
-                                streamActive = false
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Streaming error for client $clientId", e)
-                } finally {
-                    try {
-                        pipedOutputStream.close()
-                    } catch (e: IOException) {
-                        // Ignore
-                    }
-                    
-                    // Clean up client-specific monitoring
-                    bandwidthMonitor.removeClient(clientId)
-                    adaptiveQualityManager.removeClient(clientId)
-                    
-                    activeStreams.decrementAndGet()
-                    Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
-                }
-            }
-            
-            // Wrap the piped input stream to track when it's closed
-            val wrappedInputStream = object : java.io.InputStream() {
-                override fun read(): Int = pipedInputStream.read()
-                override fun read(b: ByteArray): Int = pipedInputStream.read(b)
-                override fun read(b: ByteArray, off: Int, len: Int): Int = pipedInputStream.read(b, off, len)
-                override fun available(): Int = pipedInputStream.available()
-                
-                override fun close() {
-                    pipedInputStream.close()
-                }
-            }
-            
-            return newChunkedResponse(Response.Status.OK, "multipart/x-mixed-replace; boundary=--jpgboundary", wrappedInputStream)
-        }
-        
-        private fun serveSwitch(): Response {
-            val newCamera = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
-                CameraSelector.DEFAULT_FRONT_CAMERA
-            } else {
-                CameraSelector.DEFAULT_BACK_CAMERA
-            }
-            
-            // Use the service method to ensure callbacks are triggered
-            switchCamera(newCamera)
-            
-            val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            val json = """{"status": "ok", "camera": "$cameraName"}"""
-            
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
-        }
-        
-        private fun serveStatus(): Response {
-            val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
-            // Get active connections, excluding this status request itself
-            val rawActiveConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
-            val activeConns = (rawActiveConns - 1).coerceAtLeast(0)
-            val maxConns = this@CameraService.maxConnections
-            val activeStreamCount = this@CameraService.activeStreams.get()
-            val sseCount = synchronized(sseClientsLock) { sseClients.size }
-            
-            // Get bandwidth and performance stats
-            val globalStats = bandwidthMonitor.getGlobalStats()
-            val memStats = performanceMetrics.getMemoryStats()
-            val pressure = performanceMetrics.isUnderPressure()
-            
-            val json = """
-                {
-                    "status": "running",
-                    "camera": "$cameraName",
-                    "url": "${getServerUrl()}",
-                    "resolution": "${selectedResolution?.let { sizeLabel(it) } ?: "auto"}",
-                    "cameraOrientation": "$cameraOrientation",
-                    "rotation": "$rotation",
-                    "showResolutionOverlay": $showResolutionOverlay,
-                    "flashlightAvailable": ${isFlashlightAvailable()},
-                    "flashlightOn": ${isFlashlightEnabled()},
-                    "activeConnections": $activeConns,
-                    "maxConnections": $maxConns,
-                    "connections": "$activeConns/$maxConns",
-                    "activeStreams": $activeStreamCount,
-                    "activeSSEClients": $sseCount,
-                    "adaptiveQualityEnabled": $adaptiveQualityEnabled,
-                    "bandwidth": {
-                        "totalBytesSent": ${globalStats.totalBytesSent},
-                        "totalFramesSent": ${globalStats.totalFramesSent},
-                        "averageThroughputMbps": ${String.format("%.2f", globalStats.averageThroughputMbps)},
-                        "uptimeSeconds": ${String.format("%.1f", globalStats.uptime)}
-                    },
-                    "performance": {
-                        "heapUsedMB": ${memStats.heapUsedMB},
-                        "heapMaxMB": ${memStats.heapMaxMB},
-                        "heapUsagePercent": ${String.format("%.1f", memStats.heapUsageRatio * 100)},
-                        "framesProcessed": ${globalStats.totalFramesSent},
-                        "frameDropRate": ${String.format("%.2f", performanceMetrics.getFrameDropRate() * 100)},
-                        "avgProcessingTimeMs": ${String.format("%.1f", performanceMetrics.getAverageProcessingTime())},
-                        "pressureLevel": "${pressure.overall}"
-                    },
-                    "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/connections", "/closeConnection", "/formats", "/setFormat", "/setCameraOrientation", "/setRotation", "/setResolutionOverlay", "/setMaxConnections", "/toggleFlashlight", "/restart", "/stats", "/enableAdaptiveQuality", "/disableAdaptiveQuality"]
-                }
-            """.trimIndent()
-            
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
-        }
-        
-        private fun serveConnections(): Response {
-            // Only show connections we can actually track accurately
-            val activeStreamCount = this@CameraService.activeStreams.get()
-            val sseCount = synchronized(sseClientsLock) { sseClients.size }
-            
-            val jsonArray = mutableListOf<String>()
-            
-            // Add active streaming connections
-            for (i in 1..activeStreamCount) {
-                jsonArray.add("""
-                {
-                    "id": ${System.currentTimeMillis() + i},
-                    "remoteAddr": "Stream Connection $i",
-                    "endpoint": "/stream",
-                    "startTime": ${System.currentTimeMillis()},
-                    "duration": 0,
-                    "active": true,
-                    "type": "stream"
-                }
-                """.trimIndent())
-            }
-            
-            // Add SSE clients with accurate tracking
-            synchronized(sseClientsLock) {
-                sseClients.forEachIndexed { index, client ->
-                    jsonArray.add("""
-                    {
-                        "id": ${client.id},
-                        "remoteAddr": "Real-time Events Connection ${index + 1}",
-                        "endpoint": "/events",
-                        "startTime": ${client.id},
-                        "duration": ${System.currentTimeMillis() - client.id},
-                        "active": ${client.active},
-                        "type": "sse"
-                    }
-                    """.trimIndent())
-                }
-            }
-            
-            val json = """{"connections": [${jsonArray.joinToString(",")}]}"""
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
-        }
-        
-        private fun serveCloseConnection(session: IHTTPSession): Response {
-            val params = session.parameters
-            val idStr = params["id"]?.firstOrNull()
-            
-            if (idStr == null) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Missing id parameter"}"""
-                )
-            }
-            
-            val id = idStr.toLongOrNull()
-            if (id == null) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Invalid id parameter"}"""
-                )
-            }
-            
-            // Try to close SSE client with this ID
-            var closed = false
-            synchronized(sseClientsLock) {
-                val client = sseClients.find { it.id == id }
-                if (client != null) {
-                    client.active = false
-                    sseClients.remove(client)
-                    closed = true
-                }
-            }
-            
-            return if (closed) {
-                newFixedLengthResponse(
-                    Response.Status.OK,
-                    "application/json",
-                    """{"status":"ok","message":"Connection closed","id":$id}"""
-                )
-            } else {
-                newFixedLengthResponse(
-                    Response.Status.OK,
-                    "application/json",
-                    """{"status":"info","message":"Connection not found or cannot be closed. Only SSE connections can be manually closed.","id":$id}"""
-                )
-            }
-        }
-        
-        private fun serveSetMaxConnections(session: IHTTPSession): Response {
-            val params = session.parameters
-            val valueStr = params["value"]?.firstOrNull()
-            
-            if (valueStr == null) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Missing value parameter"}"""
-                )
-            }
-            
-            val newMax = valueStr.toIntOrNull()
-            if (newMax == null) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Invalid value parameter"}"""
-                )
-            }
-            
-            if (newMax < HTTP_MIN_MAX_POOL_SIZE || newMax > HTTP_ABSOLUTE_MAX_POOL_SIZE) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Max connections must be between $HTTP_MIN_MAX_POOL_SIZE and $HTTP_ABSOLUTE_MAX_POOL_SIZE"}"""
-                )
-            }
-            
-            val changed = setMaxConnections(newMax)
-            return if (changed) {
-                newFixedLengthResponse(
-                    Response.Status.OK,
-                    "application/json",
-                    """{"status":"ok","message":"Max connections set to $newMax. Server restart required for changes to take effect.","maxConnections":$newMax,"requiresRestart":true}"""
-                )
-            } else {
-                newFixedLengthResponse(
-                    Response.Status.OK,
-                    "application/json",
-                    """{"status":"ok","message":"Max connections already set to $newMax","maxConnections":$newMax,"requiresRestart":false}"""
-                )
-            }
-        }
-        
-        /**
-         * Server-Sent Events (SSE) endpoint for real-time updates
-         * Clients can connect to /events to receive live connection count updates
-         */
-        private fun serveSSE(): Response {
-            val clientId = System.currentTimeMillis()
-            Log.d(TAG, "SSE client $clientId connected")
-            
-            // Use PipedInputStream/PipedOutputStream to avoid blocking HTTP handler thread
-            val pipedOutputStream = java.io.PipedOutputStream()
-            val pipedInputStream = java.io.PipedInputStream(pipedOutputStream, 64 * 1024) // 64KB buffer
-            
-            // Create a blocking queue for this client's messages
-            val messageQueue = java.util.concurrent.LinkedBlockingQueue<String>()
-            
-            val client = SSEClient(clientId, object : java.io.OutputStream() {
-                override fun write(b: Int) {
-                    // Not used - we use the queue instead
-                }
-                
-                override fun write(b: ByteArray) {
-                    messageQueue.offer(String(b))
-                }
-            })
-            
-            // Register the SSE client
-            synchronized(sseClientsLock) {
-                sseClients.add(client)
-            }
-            
-            // Send initial connection count
-            val activeConns = this@CameraService.asyncRunner?.getActiveConnections() ?: 0
-            val maxConns = this@CameraService.maxConnections
-            val initialMessage = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
-            messageQueue.offer(initialMessage)
-            
-            // Send initial camera state to newly connected client
-            val stateJson = buildCameraStateJson()
-            val initialStateMessage = "event: state\ndata: $stateJson\n\n"
-            messageQueue.offer(initialStateMessage)
-            
-            // Submit SSE work to dedicated executor (doesn't block HTTP thread)
-            streamingExecutor.submit {
-                try {
-                    while (client.active && !Thread.currentThread().isInterrupted) {
-                        // Try to get a message from the queue (with timeout)
-                        val message = messageQueue.poll(30, TimeUnit.SECONDS)
-                        
-                        if (message != null) {
-                            try {
-                                pipedOutputStream.write(message.toByteArray())
-                                pipedOutputStream.flush()
-                            } catch (e: IOException) {
-                                // Client disconnected
-                                client.active = false
-                                Log.d(TAG, "SSE client $clientId disconnected (write error)")
-                            }
-                        } else if (client.active) {
-                            // Send keepalive comment every 30 seconds
-                            try {
-                                pipedOutputStream.write(": keepalive\n\n".toByteArray())
-                                pipedOutputStream.flush()
-                            } catch (e: IOException) {
-                                // Client disconnected
-                                client.active = false
-                                Log.d(TAG, "SSE client $clientId disconnected (keepalive error)")
-                            }
-                        }
-                    }
-                } catch (e: InterruptedException) {
-                    Log.d(TAG, "SSE client $clientId interrupted")
-                } catch (e: Exception) {
-                    Log.e(TAG, "SSE error for client $clientId", e)
-                } finally {
-                    try {
-                        pipedOutputStream.close()
-                    } catch (e: IOException) {
-                        // Ignore
-                    }
-                    synchronized(sseClientsLock) {
-                        sseClients.remove(client)
-                    }
-                    Log.d(TAG, "SSE client $clientId closed. Remaining SSE clients: ${sseClients.size}")
-                }
-            }
-            
-            // Wrap the piped input stream to track when it's closed
-            val wrappedInputStream = object : java.io.InputStream() {
-                override fun read(): Int = pipedInputStream.read()
-                override fun read(b: ByteArray): Int = pipedInputStream.read(b)
-                override fun read(b: ByteArray, off: Int, len: Int): Int = pipedInputStream.read(b, off, len)
-                override fun available(): Int = pipedInputStream.available()
-                
-                override fun close() {
-                    client.active = false
-                    pipedInputStream.close()
-                }
-            }
-            
-            val response = newChunkedResponse(Response.Status.OK, "text/event-stream", wrappedInputStream)
-            response.addHeader("Cache-Control", "no-cache")
-            response.addHeader("Connection", "keep-alive")
-            response.addHeader("X-Accel-Buffering", "no") // Disable nginx buffering
-            return response
-        }
-        
-        private fun serveFormats(): Response {
-            val formats = getSupportedResolutions(currentCamera)
-            val jsonFormats = formats.joinToString(",") {
-                val label = sizeLabel(it)
-                """{"value":"$label","label":"$label"}"""
-            }
-            val selected = selectedResolution?.let { "\"${sizeLabel(it)}\"" } ?: "null"
-            val json = """
-                {
-                    "formats": [$jsonFormats],
-                    "selected": $selected
-                }
-            """.trimIndent()
-            return newFixedLengthResponse(Response.Status.OK, "application/json", json)
-        }
-        
-        private fun serveSetFormat(session: IHTTPSession): Response {
-            val params = session.parameters
-            val value = params["value"]?.firstOrNull()
-            if (value.isNullOrBlank()) {
-                // Set resolution and trigger rebind atomically
-                setResolutionAndRebind(null)
-                val message = """{"status":"ok","message":"Resolution reset to auto"}"""
-                return newFixedLengthResponse(Response.Status.OK, "application/json", message)
-            }
-            if (value.length > 32) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Format value too long"}"""
-                )
-            }
-            val parts = value.lowercase(Locale.getDefault()).split(RESOLUTION_DELIMITER)
-            val width = parts.getOrNull(0)?.toIntOrNull()
-            val height = parts.getOrNull(1)?.toIntOrNull()
-            if (parts.size != 2 || width == null || height == null || width <= 0 || height <= 0) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Invalid format. Use format: WIDTHxHEIGHT (e.g., 1920x1080)"}"""
-                )
-            }
-            val desired = Size(width, height)
-            val supported = getSupportedResolutions(currentCamera)
-            
-            // Check if exact resolution is supported
-            val exactMatch = supported.any { it.width == desired.width && it.height == desired.height }
-            
-            return if (exactMatch) {
-                // Set resolution and trigger rebind atomically
-                setResolutionAndRebind(desired)
-                Log.d(TAG, "Resolution set via HTTP to ${sizeLabel(desired)}")
-                newFixedLengthResponse(
-                    Response.Status.OK,
-                    "application/json",
-                    """{"status":"ok","message":"Resolution set to ${sizeLabel(desired)}"}"""
-                )
-            } else {
-                // Find closest resolution and suggest it
-                val targetPixels = width * height
-                val closest = supported.minByOrNull { size ->
-                    Math.abs((size.width * size.height) - targetPixels)
-                }
-                
-                val suggestion = if (closest != null) {
-                    " Closest available: ${sizeLabel(closest)}"
-                } else {
-                    ""
-                }
-                
-                val availableFormats = supported.take(5).joinToString(", ") { sizeLabel(it) }
-                val moreText = if (supported.size > 5) " and ${supported.size - 5} more" else ""
-                
-                newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Resolution ${sizeLabel(desired)} not supported for current camera.$suggestion Available: $availableFormats$moreText"}"""
-                )
-            }
-        }
-        
-        private fun serveSetRotation(session: IHTTPSession): Response {
-            val params = session.parameters
-            val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
-            
-            val newRotation = when (value) {
-                "0", null -> 0
-                "90" -> 90
-                "180" -> 180
-                "270" -> 270
-                else -> {
-                    return newFixedLengthResponse(
-                        Response.Status.BAD_REQUEST,
-                        "application/json",
-                        """{"status":"error","message":"Invalid rotation value. Use 0, 90, 180, or 270"}"""
-                    )
-                }
-            }
-            
-            // Use service method to ensure callbacks are triggered
-            setRotation(newRotation)
-            val message = "Rotation set to ${newRotation}°"
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"$message","rotation":"$newRotation"}"""
-            )
-        }
-        
-        private fun serveSetCameraOrientation(session: IHTTPSession): Response {
-            val params = session.parameters
-            val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
-            
-            val newOrientation = when (value) {
-                "landscape", null -> "landscape"
-                "portrait" -> "portrait"
-                else -> {
-                    return newFixedLengthResponse(
-                        Response.Status.BAD_REQUEST,
-                        "application/json",
-                        """{"status":"error","message":"Invalid orientation. Use portrait or landscape"}"""
-                    )
-                }
-            }
-            
-            // Use service method to ensure callbacks are triggered
-            setCameraOrientation(newOrientation)
-            val message = "Camera orientation set to $newOrientation"
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"$message","cameraOrientation":"$newOrientation"}"""
-            )
-        }
-        
-        private fun serveSetResolutionOverlay(session: IHTTPSession): Response {
-            val params = session.parameters
-            val value = params["value"]?.firstOrNull()?.lowercase(Locale.getDefault())
-            
-            val showOverlay = when (value) {
-                "true", "1", "yes" -> true
-                "false", "0", "no", null -> false
-                else -> {
-                    return newFixedLengthResponse(
-                        Response.Status.BAD_REQUEST,
-                        "application/json",
-                        """{"status":"error","message":"Invalid value. Use true or false"}"""
-                    )
-                }
-            }
-            
-            // Use service method to ensure callbacks are triggered
-            setShowResolutionOverlay(showOverlay)
-            val message = "Resolution overlay ${if (showOverlay) "enabled" else "disabled"}"
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"$message","showResolutionOverlay":$showOverlay}"""
-            )
-        }
-        
-        private fun serveToggleFlashlight(): Response {
-            if (!isFlashlightAvailable()) {
-                return newFixedLengthResponse(
-                    Response.Status.BAD_REQUEST,
-                    "application/json",
-                    """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}"""
-                )
-            }
-            
-            val newState = toggleFlashlight()
-            val message = "Flashlight ${if (newState) "enabled" else "disabled"}"
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"$message","flashlight":$newState}"""
-            )
-        }
-        
-        /**
-         * Serve server restart endpoint.
-         * Restarts the HTTP server remotely, useful for applying configuration changes
-         * or recovering from server issues without physical access to the device.
-         */
-        private fun serveRestartServer(): Response {
-            // Call restartServer which already runs in background coroutine
-            restartServer()
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"Server restart initiated. Please wait 2-3 seconds before reconnecting."}"""
-            )
-        }
-        
-        /**
-         * Serve detailed performance and bandwidth statistics.
-         */
-        private fun serveDetailedStats(): Response {
-            val bandwidthStats = bandwidthMonitor.getDetailedStats()
-            val performanceStats = performanceMetrics.getDetailedStats()
-            val adaptiveStats = adaptiveQualityManager.getDetailedStats()
-            
-            val combinedStats = """
-                $bandwidthStats
-                
-                $performanceStats
-                
-                $adaptiveStats
-            """.trimIndent()
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "text/plain",
-                combinedStats
-            )
-        }
-        
-        /**
-         * Enable adaptive quality mode.
-         */
-        private fun serveEnableAdaptiveQuality(): Response {
-            adaptiveQualityEnabled = true
-            Log.d(TAG, "Adaptive quality enabled via HTTP")
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"Adaptive quality enabled","adaptiveQualityEnabled":true}"""
-            )
-        }
-        
-        /**
-         * Disable adaptive quality mode (revert to fixed quality).
-         */
-        private fun serveDisableAdaptiveQuality(): Response {
-            adaptiveQualityEnabled = false
-            Log.d(TAG, "Adaptive quality disabled via HTTP")
-            
-            return newFixedLengthResponse(
-                Response.Status.OK,
-                "application/json",
-                """{"status":"ok","message":"Adaptive quality disabled. Using fixed quality settings.","adaptiveQualityEnabled":false}"""
-            )
-        }
+            $adaptiveStats
+        """.trimIndent()
+    }
+    
+    override fun setAdaptiveQualityEnabled(enabled: Boolean) {
+        adaptiveQualityEnabled = enabled
+        Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
+    }
+    
+    /**
+     * Broadcast connection count update to all SSE clients via HttpServer
+     */
+    private fun broadcastConnectionCount() {
+        httpServer?.broadcastConnectionCount()
+    }
+    
+    /**
+     * Broadcast camera state changes to all SSE clients via HttpServer
+     */
+    private fun broadcastCameraState() {
+        httpServer?.broadcastCameraState()
     }
 }
