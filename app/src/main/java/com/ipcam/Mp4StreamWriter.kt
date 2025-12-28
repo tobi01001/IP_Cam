@@ -109,8 +109,9 @@ class Mp4StreamWriter(
         
         if (isCodecStarted) {
             try {
-                mediaCodec?.signalEndOfInputStream()
-                // Drain remaining frames
+                // Note: We don't call signalEndOfInputStream() when using a Preview surface
+                // because the camera provides the surface input, not us directly.
+                // Just drain any remaining frames
                 drainEncoder(true)
             } catch (e: Exception) {
                 Log.e(TAG, "Error stopping encoder", e)

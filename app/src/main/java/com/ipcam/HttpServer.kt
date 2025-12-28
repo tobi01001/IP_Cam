@@ -295,14 +295,24 @@ class HttpServer(
                         <button onclick="applyRotation()">Apply Rotation</button>
                     </div>
                     <div class="row">
+                        <label for="streamingModeSelect">Streaming Mode:</label>
+                        <select id="streamingModeSelect">
+                            <option value="mjpeg">MJPEG (Low Latency ~100ms)</option>
+                            <option value="mp4">MP4/H.264 (Better Bandwidth, ~1-2s latency)</option>
+                        </select>
+                        <button onclick="applyStreamingMode()">Apply Streaming Mode</button>
+                    </div>
+                    <div class="row">
                         <label>
                             <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
                             Show Resolution Overlay (Bottom Right)
                         </label>
                     </div>
                     <div class="note" id="formatStatus"></div>
+                    <div class="note" id="streamingModeStatus"></div>
                     <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
                     <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
+                    <p class="note"><strong>Streaming Mode:</strong> MJPEG offers lowest latency, MP4/H.264 uses 30-50% less bandwidth but has 1-2 second latency. Mode change requires camera rebind.</p>
                     <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                     <h2>Active Connections</h2>
                     <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
@@ -548,6 +558,22 @@ class HttpServer(
                             });
                     }
 
+                    function loadStreamingMode() {
+                        fetch('/streamingMode')
+                            .then(response => response.json())
+                            .then(data => {
+                                const select = document.getElementById('streamingModeSelect');
+                                const mode = data.streamingMode || 'mjpeg';
+                                select.value = mode;
+                                document.getElementById('streamingModeStatus').textContent = 
+                                    'Current mode: ' + mode.toUpperCase();
+                            })
+                            .catch(() => {
+                                document.getElementById('streamingModeStatus').textContent = 
+                                    'Failed to load streaming mode';
+                            });
+                    }
+
                     function applyFormat() {
                         const value = document.getElementById('formatSelect').value;
                         const url = value ? '/setFormat?value=' + encodeURIComponent(value) : '/setFormat';
@@ -587,6 +613,29 @@ class HttpServer(
                             })
                             .catch(() => {
                                 document.getElementById('formatStatus').textContent = 'Failed to set rotation';
+                            });
+                    }
+
+                    function applyStreamingMode() {
+                        const value = document.getElementById('streamingModeSelect').value;
+                        const url = '/setStreamingMode?value=' + encodeURIComponent(value);
+                        const statusElement = document.getElementById('streamingModeStatus');
+                        
+                        statusElement.textContent = 'Changing streaming mode to ' + value.toUpperCase() + '...';
+                        
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                statusElement.textContent = data.message + ' Reloading stream in 2 seconds...';
+                                // Wait 2 seconds for camera to rebind, then reload stream
+                                setTimeout(() => {
+                                    reloadStream();
+                                    statusElement.textContent = 'Streaming mode changed to ' + value.toUpperCase();
+                                }, 2000);
+                            })
+                            .catch((error) => {
+                                console.error('Streaming mode change error:', error);
+                                statusElement.textContent = 'Failed to change streaming mode. Error: ' + error;
                             });
                     }
 
@@ -762,6 +811,7 @@ class HttpServer(
                     }
 
                     loadFormats();
+                    loadStreamingMode();
                     refreshConnections();
                     updateFlashlightButton();
                     

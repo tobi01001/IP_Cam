@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var resolutionSpinner: Spinner
     private lateinit var cameraOrientationSpinner: Spinner
     private lateinit var rotationSpinner: Spinner
+    private lateinit var streamingModeSpinner: Spinner
     private lateinit var switchCameraButton: Button
     private lateinit var flashlightButton: Button
     private lateinit var startStopButton: Button
@@ -170,6 +171,7 @@ class MainActivity : AppCompatActivity() {
         resolutionSpinner = findViewById(R.id.resolutionSpinner)
         cameraOrientationSpinner = findViewById(R.id.cameraOrientationSpinner)
         rotationSpinner = findViewById(R.id.rotationSpinner)
+        streamingModeSpinner = findViewById(R.id.streamingModeSpinner)
         switchCameraButton = findViewById(R.id.switchCameraButton)
         flashlightButton = findViewById(R.id.flashlightButton)
         startStopButton = findViewById(R.id.startStopButton)
@@ -181,6 +183,7 @@ class MainActivity : AppCompatActivity() {
         setupResolutionSpinner()
         setupCameraOrientationSpinner()
         setupRotationSpinner()
+        setupStreamingModeSpinner()
         setupAutoStartCheckBox()
         setupMaxConnectionsSpinner()
         
@@ -405,6 +408,61 @@ class MainActivity : AppCompatActivity() {
         
         // Set initial rotation options
         loadRotationOptions()
+    }
+    
+    private fun setupStreamingModeSpinner() {
+        val streamingModes = arrayOf(
+            getString(R.string.streaming_mode_mjpeg),
+            getString(R.string.streaming_mode_mp4)
+        )
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, streamingModes)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        streamingModeSpinner.adapter = adapter
+        
+        streamingModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
+                if (cameraService != null) {
+                    val newMode = when (position) {
+                        0 -> StreamingMode.MJPEG
+                        1 -> StreamingMode.MP4
+                        else -> StreamingMode.MJPEG
+                    }
+                    
+                    // Apply new streaming mode
+                    cameraService?.setStreamingMode(newMode)
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Streaming mode changed to ${newMode.toString().uppercase()}. Camera will rebind.",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+        
+        // Set initial selection based on current mode
+        updateStreamingModeSelection()
+    }
+    
+    private fun updateStreamingModeSelection() {
+        isUpdatingSpinners = true
+        try {
+            val currentMode = cameraService?.getStreamingMode() ?: StreamingMode.MJPEG
+            val position = when (currentMode) {
+                StreamingMode.MJPEG -> 0
+                StreamingMode.MP4 -> 1
+            }
+            streamingModeSpinner.setSelection(position)
+        } finally {
+            isUpdatingSpinners = false
+        }
     }
     
     private fun setupCameraOrientationSpinner() {
