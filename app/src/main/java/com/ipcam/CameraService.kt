@@ -839,30 +839,30 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else "unknown"
         Log.d(TAG, "requestBindCamera() called by: $caller")
         
-        // Run camera operations on background thread to avoid blocking UI
-        serviceScope.launch(Dispatchers.IO) {
+        // Run camera operations on main thread, but use coroutine with delay to avoid blocking UI
+        serviceScope.launch(Dispatchers.Main) {
             try {
                 // Stop camera first to ensure clean state
+                // Must be on main thread for CameraX operations
                 Log.d(TAG, "Stopping camera before rebinding...")
                 stopCamera()
                 
                 // Brief delay to ensure resources are released
+                // This delay is non-blocking (coroutine suspends, doesn't block thread)
                 delay(100)
                 
-                // Switch to main thread for camera binding (CameraX requires main thread)
-                withContext(Dispatchers.Main) {
-                    try {
-                        Log.d(TAG, "Delay complete, rebinding camera now...")
-                        bindCamera()
-                        // Callback is now invoked directly in bindCamera() after binding succeeds
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error in bindCamera() from coroutine", e)
-                    } finally {
-                        // Clear the flag after binding completes or fails
-                        synchronized(bindingLock) {
-                            isBindingInProgress = false
-                            Log.d(TAG, "isBindingInProgress flag cleared")
-                        }
+                // Rebind camera (already on main thread)
+                try {
+                    Log.d(TAG, "Delay complete, rebinding camera now...")
+                    bindCamera()
+                    // Callback is now invoked directly in bindCamera() after binding succeeds
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error in bindCamera() from coroutine", e)
+                } finally {
+                    // Clear the flag after binding completes or fails
+                    synchronized(bindingLock) {
+                        isBindingInProgress = false
+                        Log.d(TAG, "isBindingInProgress flag cleared")
                     }
                 }
             } catch (e: Exception) {
