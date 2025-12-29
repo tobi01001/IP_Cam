@@ -183,8 +183,8 @@ object Mp4BoxWriter {
         trafContent.writeInt64(baseMediaDecodeTime)
         
         // Calculate sizes for proper data_offset
-        // trun box will be 20 bytes
-        val trunSize = 20
+        // trun box: 4 (size) + 4 (type) + 4 (version+flags) + 4 (sample_count) + 4 (data_offset) + 4 (sample_size) = 24 bytes
+        val trunSize = 24
         val trafHeaderSize = 8 // traf box header
         val tfhdSize = 16
         val tfdtSize = 20
@@ -200,7 +200,7 @@ object Mp4BoxWriter {
         val dataOffset = moofSize + mdatHeaderSize
         
         // trun (track fragment run)
-        trafContent.writeInt32(20)
+        trafContent.writeInt32(24) // Correct size: 24 bytes total
         trafContent.writeBoxType("trun")
         trafContent.writeInt32(TRUN_FLAGS) // flags: data-offset-present, sample-size-present
         trafContent.writeInt32(1) // sample_count

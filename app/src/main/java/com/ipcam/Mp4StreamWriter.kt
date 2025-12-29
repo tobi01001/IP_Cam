@@ -352,10 +352,10 @@ class Mp4StreamWriter(
         mdiaContent.writeInt32(0) // version and flags
         mdiaContent.writeInt32(0) // creation time
         mdiaContent.writeInt32(0) // modification time
-        mdiaContent.writeInt32(frameRate) // timescale
-        mdiaContent.writeInt32(0) // duration
-        mdiaContent.writeInt32(0x55c40000) // language: 'und' (undetermined)
-        mdiaContent.writeInt32(0) // quality
+        mdiaContent.writeInt32(frameRate) // timescale (30 fps)
+        mdiaContent.writeInt32(0) // duration (unknown for live stream)
+        mdiaContent.write(byteArrayOf(0x55, 0xC4.toByte())) // language: 'und' (undetermined) - packed as 3×5 bits
+        mdiaContent.write(byteArrayOf(0x00, 0x00)) // pre_defined
         
         // hdlr box (handler reference)
         mdiaContent.writeInt32(45)
