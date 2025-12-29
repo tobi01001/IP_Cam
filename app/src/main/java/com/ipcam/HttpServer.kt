@@ -1488,9 +1488,13 @@ class HttpServer(
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveMp4Stream() {
         val currentMode = cameraService.getStreamingMode()
         
+        Log.d(TAG, "MP4 stream endpoint accessed. Current mode: $currentMode")
+        
         if (currentMode != StreamingMode.MP4) {
+            val errorMsg = "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable."
+            Log.w(TAG, "MP4 stream rejected: $errorMsg")
             call.respondText(
-                "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable.",
+                errorMsg,
                 ContentType.Text.Plain,
                 HttpStatusCode.BadRequest
             )
