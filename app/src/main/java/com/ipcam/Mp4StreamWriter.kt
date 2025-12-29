@@ -516,10 +516,16 @@ class Mp4StreamWriter(
         val format = mediaCodec?.outputFormat ?: return null
         
         // Get CSD (Codec Specific Data) which contains SPS/PPS for H.264
-        val csd0 = format.getByteBuffer("csd-0") ?: return null
+        val csd0 = format.getByteBuffer("csd-0")
+        val csd1 = format.getByteBuffer("csd-1")
         
-        // csd-0 contains both SPS and PPS in start code format
-        // We need to parse it and convert to avcC format
+        if (csd0 == null) {
+            Log.e(TAG, "No csd-0 buffer found in codec output format")
+            return null
+        }
+        
+        // csd-0 typically contains SPS, csd-1 typically contains PPS
+        // But sometimes both are in csd-0, so we need to check both
         
         // Read csd-0 data
         val csd0Data = ByteArray(csd0.remaining())
@@ -532,6 +538,7 @@ class Mp4StreamWriter(
         val sps = mutableListOf<Byte>()
         val pps = mutableListOf<Byte>()
         
+        // Parse csd-0
         var i = 0
         while (i < csd0Data.size) {
             // Find start code
@@ -577,9 +584,69 @@ class Mp4StreamWriter(
             }
         }
         
+        // Parse csd-1 if present (often contains PPS)
+        if (csd1 != null) {
+            val csd1Data = ByteArray(csd1.remaining())
+            csd1.position(0)
+            csd1.get(csd1Data)
+            
+            Log.d(TAG, "Parsing codec config from csd-1 (${csd1Data.size} bytes)")
+            
+            i = 0
+            while (i < csd1Data.size) {
+                // Find start code
+                if (i + 3 < csd1Data.size && 
+                    csd1Data[i] == 0.toByte() && 
+                    csd1Data[i + 1] == 0.toByte() && 
+                    csd1Data[i + 2] == 0.toByte() && 
+                    csd1Data[i + 3] == 1.toByte()) {
+                    
+                    i += 4 // Skip start code
+                    
+                    if (i >= csd1Data.size) break
+                    
+                    val nalType = csd1Data[i].toInt() and 0x1F
+                    
+                    // Find next start code or end of data
+                    var nalEnd = i
+                    while (nalEnd + 3 < csd1Data.size) {
+                        if (csd1Data[nalEnd] == 0.toByte() && 
+                            csd1Data[nalEnd + 1] == 0.toByte() && 
+                            csd1Data[nalEnd + 2] == 0.toByte() && 
+                            csd1Data[nalEnd + 3] == 1.toByte()) {
+                            break
+                        }
+                        nalEnd++
+                    }
+                    
+                    if (nalEnd == i) {
+                        nalEnd = csd1Data.size
+                    }
+                    
+                    // Extract NAL unit
+                    val nalData = csd1Data.sliceArray(i until nalEnd)
+                    
+                    when (nalType) {
+                        7 -> sps.addAll(nalData.toList()) // SPS
+                        8 -> pps.addAll(nalData.toList()) // PPS
+                    }
+                    
+                    i = nalEnd
+                } else {
+                    i++
+                }
+            }
+        }
+        
         if (sps.isEmpty()) {
             Log.e(TAG, "No SPS found in codec config")
             return null
+        }
+        
+        if (pps.isEmpty()) {
+            Log.e(TAG, "No PPS found in codec config - this will cause playback failure!")
+            // PPS is critical for H.264 decoding, but we'll continue and see if it works
+            // Some very old devices might not provide PPS in csd buffers
         }
         
         Log.d(TAG, "Parsed SPS (${sps.size} bytes) and PPS (${pps.size} bytes)")
