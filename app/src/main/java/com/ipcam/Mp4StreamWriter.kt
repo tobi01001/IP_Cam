@@ -238,48 +238,381 @@ class Mp4StreamWriter(
      * Generate fMP4 initialization segment
      * This should be sent once at the start of the stream
      */
-    fun generateInitSegment(): ByteArray {
-        // For a production implementation, use a proper MP4 muxer library
-        // This is a simplified version for demonstration
+    fun generateInitSegment(): ByteArray? {
         val output = ByteArrayOutputStream()
+        
+        // Get codec configuration (SPS/PPS) from MediaCodec
+        val codecConfig = getCodecConfig()
+        if (codecConfig == null) {
+            Log.e(TAG, "Cannot generate init segment: codec config not available yet")
+            return null
+        }
         
         // Write ftyp box
         output.write(FTYP_HEADER)
         
-        // In a real implementation, you'd also write:
-        // - moov box with track information
-        // - codec configuration (SPS/PPS from MediaFormat)
+        // Create moov box with proper track information
+        // This is critical for MP4 playback
+        try {
+            val moovBox = createMoovBox(codecConfig)
+            output.write(moovBox)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to create moov box", e)
+            return null
+        }
         
         return output.toByteArray()
     }
     
     /**
-     * Get codec configuration data (SPS/PPS)
+     * Create moov box with track information for H.264 video
+     */
+    private fun createMoovBox(codecConfig: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream()
+        val moovContent = ByteArrayOutputStream()
+        
+        // mvhd box (movie header) - simplified
+        val mvhdSize = 108
+        moovContent.writeInt32(mvhdSize)
+        moovContent.writeBoxType("mvhd")
+        moovContent.writeInt32(0) // version and flags
+        moovContent.writeInt32(0) // creation time
+        moovContent.writeInt32(0) // modification time
+        moovContent.writeInt32(frameRate) // timescale
+        moovContent.writeInt32(0) // duration (unknown for live stream)
+        moovContent.writeInt32(0x00010000) // rate (1.0 in 16.16 fixed point)
+        moovContent.write(byteArrayOf(0x01, 0x00)) // volume (1.0 in 8.8 fixed point)
+        moovContent.write(ByteArray(10)) // reserved
+        // Unity matrix
+        moovContent.writeInt32(0x00010000) // a
+        moovContent.writeInt32(0) // b
+        moovContent.writeInt32(0) // u
+        moovContent.writeInt32(0) // c
+        moovContent.writeInt32(0x00010000) // d
+        moovContent.writeInt32(0) // v
+        moovContent.writeInt32(0) // x
+        moovContent.writeInt32(0) // y
+        moovContent.writeInt32(0x40000000) // w (1.0 in 2.30 fixed point)
+        moovContent.write(ByteArray(24)) // pre_defined
+        moovContent.writeInt32(2) // next_track_ID
+        
+        // trak box (track)
+        val trakContent = ByteArrayOutputStream()
+        
+        // tkhd box (track header)
+        trakContent.writeInt32(92)
+        trakContent.writeBoxType("tkhd")
+        trakContent.writeInt32(0x00000007) // version 0, flags: track enabled, in movie, in preview
+        trakContent.writeInt32(0) // creation time
+        trakContent.writeInt32(0) // modification time
+        trakContent.writeInt32(1) // track ID
+        trakContent.writeInt32(0) // reserved
+        trakContent.writeInt32(0) // duration
+        trakContent.write(ByteArray(8)) // reserved
+        trakContent.writeInt32(0) // layer
+        trakContent.writeInt32(0) // alternate group
+        trakContent.writeInt32(0) // volume (0 for video)
+        trakContent.writeInt32(0) // reserved
+        // Unity matrix
+        trakContent.writeInt32(0x00010000)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0x00010000)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0)
+        trakContent.writeInt32(0x40000000)
+        trakContent.writeInt32(resolution.width shl 16) // width in 16.16 fixed point
+        trakContent.writeInt32(resolution.height shl 16) // height in 16.16 fixed point
+        
+        // mdia box (media)
+        val mdiaContent = ByteArrayOutputStream()
+        
+        // mdhd box (media header)
+        mdiaContent.writeInt32(32)
+        mdiaContent.writeBoxType("mdhd")
+        mdiaContent.writeInt32(0) // version and flags
+        mdiaContent.writeInt32(0) // creation time
+        mdiaContent.writeInt32(0) // modification time
+        mdiaContent.writeInt32(frameRate) // timescale
+        mdiaContent.writeInt32(0) // duration
+        mdiaContent.writeInt32(0x55c40000) // language: 'und' (undetermined)
+        mdiaContent.writeInt32(0) // quality
+        
+        // hdlr box (handler reference)
+        mdiaContent.writeInt32(45)
+        mdiaContent.writeBoxType("hdlr")
+        mdiaContent.writeInt32(0) // version and flags
+        mdiaContent.writeInt32(0) // pre_defined
+        mdiaContent.writeBoxType("vide") // handler type: video
+        mdiaContent.write(ByteArray(12)) // reserved
+        mdiaContent.write("VideoHandler".toByteArray(Charsets.US_ASCII))
+        mdiaContent.write(0) // null terminator
+        
+        // minf box (media information)
+        val minfContent = ByteArrayOutputStream()
+        
+        // vmhd box (video media header)
+        minfContent.writeInt32(20)
+        minfContent.writeBoxType("vmhd")
+        minfContent.writeInt32(0x00000001) // version 0, flags 1
+        minfContent.writeInt32(0) // graphicsmode and opcolor
+        minfContent.writeInt32(0) // opcolor continued
+        
+        // dinf box (data information)
+        val dinfContent = ByteArrayOutputStream()
+        // dref box (data reference)
+        dinfContent.writeInt32(28)
+        dinfContent.writeBoxType("dref")
+        dinfContent.writeInt32(0) // version and flags
+        dinfContent.writeInt32(1) // entry count
+        // url entry
+        dinfContent.writeInt32(12)
+        dinfContent.writeBoxType("url ")
+        dinfContent.writeInt32(0x00000001) // version 0, flags: self-contained
+        
+        val dinfBytes = dinfContent.toByteArray()
+        minfContent.writeInt32(8 + dinfBytes.size)
+        minfContent.writeBoxType("dinf")
+        minfContent.write(dinfBytes)
+        
+        // stbl box (sample table)
+        val stblContent = ByteArrayOutputStream()
+        
+        // stsd box (sample description)
+        val stsdContent = ByteArrayOutputStream()
+        stsdContent.writeInt32(0) // version and flags
+        stsdContent.writeInt32(1) // entry count
+        
+        // avc1 sample entry
+        val avc1Content = ByteArrayOutputStream()
+        avc1Content.write(ByteArray(6)) // reserved
+        avc1Content.writeInt32(1) // data reference index
+        avc1Content.writeInt32(0) // pre_defined
+        avc1Content.writeInt32(0) // reserved
+        avc1Content.write(ByteArray(12)) // pre_defined
+        avc1Content.writeInt32(resolution.width) // width
+        avc1Content.writeInt32(resolution.height) // height
+        avc1Content.writeInt32(0x00480000) // horizresolution 72 dpi
+        avc1Content.writeInt32(0x00480000) // vertresolution 72 dpi
+        avc1Content.writeInt32(0) // reserved
+        avc1Content.writeInt32(1) // frame count
+        avc1Content.write(ByteArray(32)) // compressor name (32 bytes)
+        avc1Content.writeInt32(0x0018) // depth (24-bit)
+        avc1Content.writeInt32(0xFFFF) // pre_defined
+        
+        // avcC box (AVC configuration) - contains SPS/PPS
+        avc1Content.writeInt32(8 + codecConfig.size)
+        avc1Content.writeBoxType("avcC")
+        avc1Content.write(codecConfig)
+        
+        val avc1Bytes = avc1Content.toByteArray()
+        stsdContent.writeInt32(8 + avc1Bytes.size)
+        stsdContent.writeBoxType("avc1")
+        stsdContent.write(avc1Bytes)
+        
+        val stsdBytes = stsdContent.toByteArray()
+        stblContent.writeInt32(8 + stsdBytes.size)
+        stblContent.writeBoxType("stsd")
+        stblContent.write(stsdBytes)
+        
+        // stts box (time to sample)
+        stblContent.writeInt32(16)
+        stblContent.writeBoxType("stts")
+        stblContent.writeInt32(0) // version and flags
+        stblContent.writeInt32(0) // entry count
+        
+        // stsc box (sample to chunk)
+        stblContent.writeInt32(16)
+        stblContent.writeBoxType("stsc")
+        stblContent.writeInt32(0) // version and flags
+        stblContent.writeInt32(0) // entry count
+        
+        // stsz box (sample size)
+        stblContent.writeInt32(20)
+        stblContent.writeBoxType("stsz")
+        stblContent.writeInt32(0) // version and flags
+        stblContent.writeInt32(0) // sample size
+        stblContent.writeInt32(0) // sample count
+        
+        // stco box (chunk offset)
+        stblContent.writeInt32(16)
+        stblContent.writeBoxType("stco")
+        stblContent.writeInt32(0) // version and flags
+        stblContent.writeInt32(0) // entry count
+        
+        val stblBytes = stblContent.toByteArray()
+        minfContent.writeInt32(8 + stblBytes.size)
+        minfContent.writeBoxType("stbl")
+        minfContent.write(stblBytes)
+        
+        val minfBytes = minfContent.toByteArray()
+        mdiaContent.writeInt32(8 + minfBytes.size)
+        mdiaContent.writeBoxType("minf")
+        mdiaContent.write(minfBytes)
+        
+        val mdiaBytes = mdiaContent.toByteArray()
+        trakContent.writeInt32(8 + mdiaBytes.size)
+        trakContent.writeBoxType("mdia")
+        trakContent.write(mdiaBytes)
+        
+        val trakBytes = trakContent.toByteArray()
+        moovContent.writeInt32(8 + trakBytes.size)
+        moovContent.writeBoxType("trak")
+        moovContent.write(trakBytes)
+        
+        // mvex box (movie extends for fragmented MP4)
+        val mvexContent = ByteArrayOutputStream()
+        
+        // trex box (track extends)
+        mvexContent.writeInt32(32)
+        mvexContent.writeBoxType("trex")
+        mvexContent.writeInt32(0) // version and flags
+        mvexContent.writeInt32(1) // track_ID
+        mvexContent.writeInt32(1) // default_sample_description_index
+        mvexContent.writeInt32(0) // default_sample_duration
+        mvexContent.writeInt32(0) // default_sample_size
+        mvexContent.writeInt32(0) // default_sample_flags
+        
+        val mvexBytes = mvexContent.toByteArray()
+        moovContent.writeInt32(8 + mvexBytes.size)
+        moovContent.writeBoxType("mvex")
+        moovContent.write(mvexBytes)
+        
+        // Write final moov box
+        val moovBytes = moovContent.toByteArray()
+        out.writeInt32(8 + moovBytes.size)
+        out.writeBoxType("moov")
+        out.write(moovBytes)
+        
+        return out.toByteArray()
+    }
+    
+    // Helper methods for writing box data
+    private fun ByteArrayOutputStream.writeInt32(value: Int) {
+        write((value shr 24) and 0xFF)
+        write((value shr 16) and 0xFF)
+        write((value shr 8) and 0xFF)
+        write(value and 0xFF)
+    }
+    
+    private fun ByteArrayOutputStream.writeBoxType(type: String) {
+        write(type.toByteArray(Charsets.US_ASCII))
+    }
+    
+    /**
+     * Get codec configuration data (SPS/PPS) in avcC format
      * This is needed for the MP4 initialization segment
      */
     fun getCodecConfig(): ByteArray? {
         val format = mediaCodec?.outputFormat ?: return null
         
         // Get CSD (Codec Specific Data) which contains SPS/PPS for H.264
-        val csd0 = format.getByteBuffer("csd-0")
-        val csd1 = format.getByteBuffer("csd-1")
+        val csd0 = format.getByteBuffer("csd-0") ?: return null
         
-        if (csd0 == null && csd1 == null) {
+        // csd-0 contains both SPS and PPS in start code format
+        // We need to parse it and convert to avcC format
+        
+        // Read csd-0 data
+        val csd0Data = ByteArray(csd0.remaining())
+        csd0.position(0) // Reset position
+        csd0.get(csd0Data)
+        
+        // Parse SPS and PPS from start codes (0x00 0x00 0x00 0x01)
+        val sps = mutableListOf<Byte>()
+        val pps = mutableListOf<Byte>()
+        
+        var i = 0
+        while (i < csd0Data.size) {
+            // Find start code
+            if (i + 3 < csd0Data.size && 
+                csd0Data[i] == 0.toByte() && 
+                csd0Data[i + 1] == 0.toByte() && 
+                csd0Data[i + 2] == 0.toByte() && 
+                csd0Data[i + 3] == 1.toByte()) {
+                
+                i += 4 // Skip start code
+                
+                if (i >= csd0Data.size) break
+                
+                val nalType = csd0Data[i].toInt() and 0x1F
+                
+                // Find next start code or end of data
+                var nalEnd = i
+                while (nalEnd + 3 < csd0Data.size) {
+                    if (csd0Data[nalEnd] == 0.toByte() && 
+                        csd0Data[nalEnd + 1] == 0.toByte() && 
+                        csd0Data[nalEnd + 2] == 0.toByte() && 
+                        csd0Data[nalEnd + 3] == 1.toByte()) {
+                        break
+                    }
+                    nalEnd++
+                }
+                
+                if (nalEnd == i) {
+                    nalEnd = csd0Data.size
+                }
+                
+                // Extract NAL unit
+                val nalData = csd0Data.sliceArray(i until nalEnd)
+                
+                when (nalType) {
+                    7 -> sps.addAll(nalData.toList()) // SPS
+                    8 -> pps.addAll(nalData.toList()) // PPS
+                }
+                
+                i = nalEnd
+            } else {
+                i++
+            }
+        }
+        
+        if (sps.isEmpty()) {
+            Log.e(TAG, "No SPS found in codec config")
             return null
         }
         
+        // Build avcC configuration
         val output = ByteArrayOutputStream()
         
-        csd0?.let {
-            val data = ByteArray(it.remaining())
-            it.get(data)
-            output.write(data)
+        // configurationVersion
+        output.write(1)
+        
+        // AVCProfileIndication, profile_compatibility, AVCLevelIndication
+        if (sps.size >= 3) {
+            output.write(sps[0].toInt())
+            output.write(sps[1].toInt())
+            output.write(sps[2].toInt())
+        } else {
+            output.write(0x42) // Baseline profile
+            output.write(0x00)
+            output.write(0x1E) // Level 3.0
         }
         
-        csd1?.let {
-            val data = ByteArray(it.remaining())
-            it.get(data)
-            output.write(data)
+        // lengthSizeMinusOne (4 bytes length)
+        output.write(0xFF)
+        
+        // numOfSequenceParameterSets
+        output.write(0xE1) // 0xE0 | 1
+        
+        // SPS length
+        output.write((sps.size shr 8) and 0xFF)
+        output.write(sps.size and 0xFF)
+        
+        // SPS data
+        output.write(sps.toByteArray())
+        
+        // numOfPictureParameterSets
+        output.write(if (pps.isEmpty()) 0 else 1)
+        
+        if (pps.isNotEmpty()) {
+            // PPS length
+            output.write((pps.size shr 8) and 0xFF)
+            output.write(pps.size and 0xFF)
+            
+            // PPS data
+            output.write(pps.toByteArray())
         }
         
         return output.toByteArray()
