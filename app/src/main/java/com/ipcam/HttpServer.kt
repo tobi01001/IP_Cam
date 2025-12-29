@@ -1488,9 +1488,13 @@ class HttpServer(
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveMp4Stream() {
         val currentMode = cameraService.getStreamingMode()
         
+        Log.d(TAG, "MP4 stream endpoint accessed. Current mode: $currentMode")
+        
         if (currentMode != StreamingMode.MP4) {
+            val errorMsg = "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable."
+            Log.w(TAG, "MP4 stream rejected: $errorMsg")
             call.respondText(
-                "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable.",
+                errorMsg,
                 ContentType.Text.Plain,
                 HttpStatusCode.BadRequest
             )
@@ -1503,20 +1507,29 @@ class HttpServer(
         
         call.respondBytesWriter(ContentType.parse("video/mp4")) {
             try {
-                // Send fMP4 initialization segment (ftyp + moov boxes)
-                val ftypBox = Mp4BoxWriter.createFtypBox()
-                writeFully(ftypBox, 0, ftypBox.size)
+                // Get and send fMP4 initialization segment (ftyp + moov boxes)
+                // Wait a bit for encoder to be ready and have codec config
+                var attempts = 0
+                var initSegment: ByteArray? = null
+                while (attempts < 10 && initSegment == null) {
+                    initSegment = cameraService.getMp4InitSegment()
+                    if (initSegment == null) {
+                        Log.d(TAG, "Waiting for MP4 init segment... attempt ${attempts + 1}")
+                        delay(100)
+                        attempts++
+                    }
+                }
                 
-                // Get actual resolution from camera service
-                val resolution = cameraService.getSelectedResolution() ?: Size(1920, 1080)
+                if (initSegment == null) {
+                    Log.e(TAG, "Failed to get MP4 init segment after $attempts attempts")
+                    return@respondBytesWriter
+                }
                 
-                // Get codec config and create moov box
-                val codecConfig = cameraService.getMp4InitSegment()
-                val moovBox = Mp4BoxWriter.createMoovBox(resolution.width, resolution.height, codecConfig)
-                writeFully(moovBox, 0, moovBox.size)
+                // Send initialization segment
+                writeFully(initSegment, 0, initSegment.size)
                 flush()
                 
-                Log.d(TAG, "MP4 init segment sent to client $clientId (${resolution.width}x${resolution.height})")
+                Log.d(TAG, "MP4 init segment sent to client $clientId (${initSegment.size} bytes)")
                 
                 // Stream media segments (moof + mdat boxes)
                 var sequenceNumber = 1

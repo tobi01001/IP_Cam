@@ -620,87 +620,138 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Bind camera for MP4 streaming using Preview with MediaCodec surface
+     * Initializes encoder on background thread to avoid ANR
      */
     private fun bindCameraForMp4(targetResolution: Size) {
-        // Initialize MP4 encoder
-        try {
-            Log.d(TAG, "Initializing MP4 encoder with resolution ${targetResolution.width}x${targetResolution.height}")
-            
-            synchronized(mp4StreamLock) {
-                mp4StreamWriter = Mp4StreamWriter(
+        Log.d(TAG, "[MP4] Starting MP4 camera binding process for resolution ${targetResolution.width}x${targetResolution.height}")
+        
+        // Initialize encoder on background thread to avoid blocking main thread (ANR)
+        serviceScope.launch(Dispatchers.IO) {
+            var encoder: Mp4StreamWriter? = null
+            try {
+                Log.d(TAG, "[MP4] Initializing MP4 encoder on background thread...")
+                
+                // Create and initialize encoder (can take 100-500ms)
+                encoder = Mp4StreamWriter(
                     resolution = targetResolution,
                     bitrate = MP4_ENCODER_BITRATE,
                     frameRate = MP4_ENCODER_FRAME_RATE,
                     iFrameInterval = MP4_ENCODER_I_FRAME_INTERVAL
                 )
-                mp4StreamWriter?.initialize()
-                mp4StreamWriter?.start()
-            }
-            
-            // Create Preview use case with encoder's input surface for encoding
-            val preview = Preview.Builder().build()
-            preview.setSurfaceProvider { request ->
-                val surface = mp4StreamWriter?.getInputSurface()
-                if (surface != null) {
-                    Log.d(TAG, "Providing encoder input surface to camera")
-                    request.provideSurface(surface, cameraExecutor) { }
-                } else {
-                    Log.e(TAG, "MP4 encoder input surface is null!")
+                
+                Log.d(TAG, "[MP4] Calling encoder.initialize()...")
+                encoder.initialize()
+                
+                Log.d(TAG, "[MP4] Calling encoder.start()...")
+                encoder.start()
+                
+                // Store encoder reference
+                synchronized(mp4StreamLock) {
+                    mp4StreamWriter = encoder
                 }
-            }
-            
-            // Also create ImageAnalysis use case for app preview ONLY
-            // This ensures the MainActivity can still display the camera feed
-            // BUT we use a lightweight processor that doesn't do JPEG compression
-            val builder = ImageAnalysis.Builder()
-                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                // Use default YUV format - imageProxyToBitmap() expects YUV planes
-            
-            // Use lower resolution for preview to reduce CPU load
-            Log.d(TAG, "Setting up lightweight ImageAnalysis for app preview (MP4 mode)")
-            val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
-                .setResolutionFilter { supportedSizes, _ ->
-                    // Use a smaller resolution for preview (e.g., 720p max)
-                    val maxPreviewPixels = 1280 * 720
-                    val suitable = supportedSizes.filter { size ->
-                        val pixels = size.width * size.height
-                        pixels <= maxPreviewPixels
-                    }.sortedByDescending { it.width * it.height }
-                    
-                    if (suitable.isNotEmpty()) {
-                        Log.d(TAG, "Using ${suitable.first().width}x${suitable.first().height} for app preview in MP4 mode")
-                        listOf(suitable.first())
-                    } else {
-                        // Fallback to smallest available
-                        val smallest = supportedSizes.minByOrNull { it.width * it.height }
-                        smallest?.let { listOf(it) } ?: supportedSizes
+                
+                Log.d(TAG, "[MP4] Encoder initialized and started successfully. Surface available: ${encoder.getInputSurface() != null}")
+                
+                // Switch to main thread for camera binding (CameraX requirement)
+                withContext(Dispatchers.Main) {
+                    try {
+                        // Double-check we're still in MP4 mode
+                        if (streamingMode != StreamingMode.MP4) {
+                            Log.w(TAG, "[MP4] Mode changed during init, aborting MP4 binding")
+                            synchronized(mp4StreamLock) {
+                                encoder?.stop()
+                                encoder?.release()
+                                mp4StreamWriter = null
+                            }
+                            return@withContext
+                        }
+                        
+                        Log.d(TAG, "[MP4] Creating Preview use case...")
+                        // Create Preview use case with encoder's input surface
+                        val preview = Preview.Builder().build()
+                        preview.setSurfaceProvider { request ->
+                            val surface = synchronized(mp4StreamLock) { mp4StreamWriter?.getInputSurface() }
+                            if (surface != null) {
+                                Log.d(TAG, "[MP4] Providing encoder input surface to camera preview")
+                                request.provideSurface(surface, cameraExecutor) { 
+                                    Log.d(TAG, "[MP4] Surface provision result received")
+                                }
+                            } else {
+                                Log.e(TAG, "[MP4] FATAL: Encoder input surface is null!")
+                            }
+                        }
+                        
+                        Log.d(TAG, "[MP4] Creating ImageAnalysis for app preview...")
+                        // Create ImageAnalysis for app preview
+                        val builder = ImageAnalysis.Builder()
+                            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                        
+                        val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                            .setResolutionFilter { supportedSizes, _ ->
+                                val maxPreviewPixels = 1280 * 720
+                                val suitable = supportedSizes.filter { size ->
+                                    val pixels = size.width * size.height
+                                    pixels <= maxPreviewPixels
+                                }.sortedByDescending { it.width * it.height }
+                                
+                                if (suitable.isNotEmpty()) {
+                                    Log.d(TAG, "[MP4] App preview resolution: ${suitable.first().width}x${suitable.first().height}")
+                                    listOf(suitable.first())
+                                } else {
+                                    val smallest = supportedSizes.minByOrNull { it.width * it.height }
+                                    smallest?.let { listOf(it) } ?: supportedSizes
+                                }
+                            }
+                            .build()
+                        builder.setResolutionSelector(previewResolutionSelector)
+                        
+                        imageAnalysis = builder.build()
+                            .also {
+                                it.setAnalyzer(cameraExecutor) { image ->
+                                    processImageForPreviewOnly(image)
+                                }
+                            }
+                        
+                        Log.d(TAG, "[MP4] Binding camera to lifecycle...")
+                        // Bind both Preview (for encoding) and ImageAnalysis (for app preview)
+                        camera = cameraProvider?.bindToLifecycle(this@CameraService, currentCamera, preview, imageAnalysis)
+                        
+                        if (camera != null) {
+                            Log.d(TAG, "[MP4] Camera bound successfully!")
+                            
+                            // Start processing encoder output
+                            startMp4EncoderProcessing()
+                            
+                            Log.d(TAG, "[MP4] MP4 mode initialization complete")
+                        } else {
+                            Log.e(TAG, "[MP4] FATAL: Camera binding returned null!")
+                        }
+                        
+                    } catch (e: Exception) {
+                        Log.e(TAG, "[MP4] FATAL: Failed to bind camera", e)
+                        e.printStackTrace()
+                        // Fallback to MJPEG
+                        streamingMode = StreamingMode.MJPEG
+                        saveSettings()
+                        synchronized(mp4StreamLock) {
+                            encoder?.stop()
+                            encoder?.release()
+                            mp4StreamWriter = null
+                        }
+                        bindCameraForMjpeg(targetResolution)
                     }
                 }
-                .build()
-            builder.setResolutionSelector(previewResolutionSelector)
-            
-            imageAnalysis = builder.build()
-                .also {
-                    it.setAnalyzer(cameraExecutor) { image ->
-                        // Lightweight processing for app preview only - no JPEG compression
-                        processImageForPreviewOnly(image)
-                    }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "[MP4] FATAL: Failed to initialize encoder", e)
+                e.printStackTrace()
+                // Fallback to MJPEG
+                withContext(Dispatchers.Main) {
+                    streamingMode = StreamingMode.MJPEG
+                    saveSettings()
+                    bindCameraForMjpeg(targetResolution)
                 }
-            
-            // Bind both Preview (for encoding) and ImageAnalysis (for app preview) to lifecycle
-            Log.d(TAG, "Binding camera to lifecycle with Preview for MP4 encoding and lightweight ImageAnalysis for app preview...")
-            camera = cameraProvider?.bindToLifecycle(this, currentCamera, preview, imageAnalysis)
-            
-            // Start processing encoder output in background
-            startMp4EncoderProcessing()
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize MP4 encoder", e)
-            // Fallback to MJPEG on error
-            Log.w(TAG, "Falling back to MJPEG mode due to MP4 encoder initialization failure")
-            streamingMode = StreamingMode.MJPEG
-            saveSettings()
-            bindCameraForMjpeg(targetResolution)
+            }
         }
     }
     
@@ -709,6 +760,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Does NOT do JPEG compression or heavy processing - just updates the preview bitmap
      */
     private fun processImageForPreviewOnly(image: ImageProxy) {
+        // Log first few frames to confirm processing is working
+        val timestamp = System.currentTimeMillis()
+        if (timestamp % 3000 < 100) {  // Log approximately every 3 seconds
+            Log.d(TAG, "[MP4] Processing preview frame: ${image.width}x${image.height}, format=${image.format}")
+        }
+        
         try {
             // Simple conversion to bitmap for preview
             val bitmap = imageProxyToBitmap(image)
@@ -732,7 +789,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error in lightweight preview processing", e)
+            Log.e(TAG, "[MP4] Error in lightweight preview processing", e)
         } finally {
             image.close()
         }
@@ -766,16 +823,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      */
     private fun startMp4EncoderProcessing() {
         serviceScope.launch {
-            Log.d(TAG, "Started MP4 encoder processing coroutine")
+            Log.d(TAG, "[MP4] Started MP4 encoder processing coroutine")
+            var frameCount = 0
+            var lastLogTime = System.currentTimeMillis()
+            
             try {
                 while (isActive && mp4StreamWriter?.isRunning() == true) {
                     mp4StreamWriter?.processEncoderOutput()
+                    
+                    // Check if frames are being produced
+                    if (mp4StreamWriter?.hasEncodedFrames() == true) {
+                        frameCount++
+                        // Log every 30 frames (about every 3 seconds at 10fps)
+                        val now = System.currentTimeMillis()
+                        if (now - lastLogTime > 3000) {
+                            Log.d(TAG, "[MP4] Encoder producing frames: $frameCount frames total, queue has frames: ${mp4StreamWriter?.hasEncodedFrames()}")
+                            lastLogTime = now
+                        }
+                    }
+                    
                     delay(MP4_ENCODER_PROCESSING_INTERVAL_MS)
                 }
+                Log.d(TAG, "[MP4] Encoder processing loop ended. isActive=$isActive, encoder running=${mp4StreamWriter?.isRunning()}")
             } catch (e: Exception) {
-                Log.e(TAG, "Error in MP4 encoder processing", e)
+                Log.e(TAG, "[MP4] FATAL: Error in MP4 encoder processing", e)
+                e.printStackTrace()
             } finally {
-                Log.d(TAG, "MP4 encoder processing coroutine ended")
+                Log.d(TAG, "[MP4] MP4 encoder processing coroutine ended. Total frames processed: $frameCount")
             }
         }
     }
@@ -789,22 +863,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
             
-            // Stop and release MP4 encoder if active
-            synchronized(mp4StreamLock) {
-                mp4StreamWriter?.let {
-                    Log.d(TAG, "Stopping MP4 encoder...")
-                    it.stop()
-                    it.release()
-                    mp4StreamWriter = null
-                    Log.d(TAG, "MP4 encoder stopped and released")
-                }
-            }
-            
             // Unbind all use cases from lifecycle
             cameraProvider?.unbindAll()
             
             // Clear camera reference
             camera = null
+            
+            // Stop and release MP4 encoder if active - do async to avoid blocking main thread
+            val encoderToStop = synchronized(mp4StreamLock) { mp4StreamWriter }
+            if (encoderToStop != null) {
+                Log.d(TAG, "Stopping MP4 encoder (async)...")
+                // Stop on background thread to avoid blocking
+                serviceScope.launch(Dispatchers.IO) {
+                    try {
+                        encoderToStop.stop()
+                        // Small delay to let processing coroutine exit
+                        delay(100)
+                        encoderToStop.release()
+                        Log.d(TAG, "MP4 encoder stopped and released")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping MP4 encoder", e)
+                    }
+                }
+                // Clear reference immediately
+                synchronized(mp4StreamLock) {
+                    mp4StreamWriter = null
+                }
+            }
             
             Log.d(TAG, "Camera stopped successfully")
         } catch (e: Exception) {
