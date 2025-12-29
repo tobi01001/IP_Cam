@@ -185,9 +185,13 @@ class Mp4StreamWriter(
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.get(data, 0, bufferInfo.size)
                         
+                        // Convert from Annex B (start codes) to AVCC (length-prefixed) format
+                        // This is CRITICAL for MP4 playback
+                        val avccData = convertAnnexBToAvcc(data)
+                        
                         // Add to queue for streaming
                         // Keep a rolling buffer: if queue is full, remove oldest frame
-                        val frame = EncodedFrame(data, isKeyFrame, bufferInfo.presentationTimeUs)
+                        val frame = EncodedFrame(avccData, isKeyFrame, bufferInfo.presentationTimeUs)
                         if (!encodedDataQueue.offer(frame)) {
                             // Queue is full - remove oldest frame and add new one
                             encodedDataQueue.poll() // Remove oldest
@@ -248,6 +252,8 @@ class Mp4StreamWriter(
             return null
         }
         
+        Log.d(TAG, "Generating init segment with codec config size: ${codecConfig.size} bytes")
+        
         // Write ftyp box
         output.write(FTYP_HEADER)
         
@@ -256,6 +262,7 @@ class Mp4StreamWriter(
         try {
             val moovBox = createMoovBox(codecConfig)
             output.write(moovBox)
+            Log.d(TAG, "Init segment generated successfully: ftyp=${FTYP_HEADER.size}B + moov=${moovBox.size}B = ${output.size()}B total")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to create moov box", e)
             return null
@@ -519,6 +526,8 @@ class Mp4StreamWriter(
         csd0.position(0) // Reset position
         csd0.get(csd0Data)
         
+        Log.d(TAG, "Parsing codec config from csd-0 (${csd0Data.size} bytes)")
+        
         // Parse SPS and PPS from start codes (0x00 0x00 0x00 0x01)
         val sps = mutableListOf<Byte>()
         val pps = mutableListOf<Byte>()
@@ -573,6 +582,8 @@ class Mp4StreamWriter(
             return null
         }
         
+        Log.d(TAG, "Parsed SPS (${sps.size} bytes) and PPS (${pps.size} bytes)")
+        
         // Build avcC configuration
         val output = ByteArrayOutputStream()
         
@@ -613,6 +624,83 @@ class Mp4StreamWriter(
             
             // PPS data
             output.write(pps.toByteArray())
+        }
+        
+        return output.toByteArray()
+    }
+    
+    /**
+     * Convert H.264 data from Annex B format (start codes) to AVCC format (length-prefixed)
+     * MP4 containers require AVCC format, but MediaCodec outputs Annex B format
+     */
+    private fun convertAnnexBToAvcc(annexBData: ByteArray): ByteArray {
+        val output = ByteArrayOutputStream()
+        var i = 0
+        
+        while (i < annexBData.size) {
+            // Find start code (0x00 0x00 0x00 0x01 or 0x00 0x00 0x01)
+            var startCodeLength = 0
+            
+            if (i + 3 < annexBData.size &&
+                annexBData[i] == 0.toByte() &&
+                annexBData[i + 1] == 0.toByte() &&
+                annexBData[i + 2] == 0.toByte() &&
+                annexBData[i + 3] == 1.toByte()) {
+                startCodeLength = 4
+            } else if (i + 2 < annexBData.size &&
+                annexBData[i] == 0.toByte() &&
+                annexBData[i + 1] == 0.toByte() &&
+                annexBData[i + 2] == 1.toByte()) {
+                startCodeLength = 3
+            }
+            
+            if (startCodeLength > 0) {
+                // Found start code, skip it
+                i += startCodeLength
+                
+                // Find next start code to determine NAL unit size
+                var nalEnd = i
+                while (nalEnd < annexBData.size) {
+                    // Check for 4-byte start code
+                    if (nalEnd + 3 < annexBData.size &&
+                        annexBData[nalEnd] == 0.toByte() &&
+                        annexBData[nalEnd + 1] == 0.toByte() &&
+                        annexBData[nalEnd + 2] == 0.toByte() &&
+                        annexBData[nalEnd + 3] == 1.toByte()) {
+                        break
+                    }
+                    // Check for 3-byte start code
+                    if (nalEnd + 2 < annexBData.size &&
+                        annexBData[nalEnd] == 0.toByte() &&
+                        annexBData[nalEnd + 1] == 0.toByte() &&
+                        annexBData[nalEnd + 2] == 1.toByte()) {
+                        break
+                    }
+                    nalEnd++
+                }
+                
+                // Calculate NAL unit size
+                val nalSize = nalEnd - i
+                
+                if (nalSize > 0) {
+                    // Write 4-byte length prefix (big-endian)
+                    output.write((nalSize shr 24) and 0xFF)
+                    output.write((nalSize shr 16) and 0xFF)
+                    output.write((nalSize shr 8) and 0xFF)
+                    output.write(nalSize and 0xFF)
+                    
+                    // Write NAL unit data
+                    output.write(annexBData, i, nalSize)
+                }
+                
+                i = nalEnd
+            } else {
+                // No start code found, this shouldn't happen in valid Annex B data
+                // Just copy the rest as-is
+                Log.w(TAG, "No start code found at position $i, copying remaining ${annexBData.size - i} bytes")
+                output.write(annexBData, i, annexBData.size - i)
+                break
+            }
         }
         
         return output.toByteArray()
