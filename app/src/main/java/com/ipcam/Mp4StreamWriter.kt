@@ -32,6 +32,10 @@ class Mp4StreamWriter(
     private var isCodecStarted = false
     private var frameDropCount = 0 // Track dropped frames for logging
     
+    // Cache the output format when it becomes available (contains SPS/PPS)
+    @Volatile private var cachedOutputFormat: MediaFormat? = null
+    @Volatile private var formatChangeReceived = AtomicBoolean(false)
+    
     companion object {
         private const val TAG = "Mp4StreamWriter"
         private const val MIME_TYPE = "video/avc" // H.264
@@ -109,6 +113,10 @@ class Mp4StreamWriter(
         // Set flag first to stop processing loop
         isRunning.set(false)
         
+        // Clear cached format
+        cachedOutputFormat = null
+        formatChangeReceived.set(false)
+        
         // Give processing coroutine time to exit cleanly
         // The encoder processing coroutine checks isRunning() and will stop
         // Don't call drainEncoder here - it conflicts with the processing coroutine
@@ -169,7 +177,9 @@ class Mp4StreamWriter(
                 }
                 outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val newFormat = codec.outputFormat
-                    Log.d(TAG, "Encoder output format changed: $newFormat")
+                    cachedOutputFormat = newFormat
+                    formatChangeReceived.set(true)
+                    Log.d(TAG, "Encoder output format changed and cached: $newFormat")
                 }
                 outputBufferIndex < 0 -> {
                     Log.w(TAG, "Unexpected result from dequeueOutputBuffer: $outputBufferIndex")
@@ -513,7 +523,13 @@ class Mp4StreamWriter(
      * This is needed for the MP4 initialization segment
      */
     fun getCodecConfig(): ByteArray? {
-        val format = mediaCodec?.outputFormat ?: return null
+        // Use cached output format if available (preferred)
+        val format = cachedOutputFormat ?: mediaCodec?.outputFormat
+        
+        if (format == null) {
+            Log.w(TAG, "No output format available yet - codec may not have started encoding")
+            return null
+        }
         
         // Get CSD (Codec Specific Data) which contains SPS/PPS for H.264
         val csd0 = format.getByteBuffer("csd-0")
@@ -777,4 +793,10 @@ class Mp4StreamWriter(
      * Check if encoder is running
      */
     fun isRunning(): Boolean = isRunning.get()
+    
+    /**
+     * Check if codec format (SPS/PPS) is available
+     * This is needed before generating the init segment
+     */
+    fun isFormatAvailable(): Boolean = formatChangeReceived.get()
 }

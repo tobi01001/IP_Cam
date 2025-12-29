@@ -1507,21 +1507,25 @@ class HttpServer(
         
         call.respondBytesWriter(ContentType.parse("video/mp4")) {
             try {
-                // Get and send fMP4 initialization segment (ftyp + moov boxes)
-                // Wait a bit for encoder to be ready and have codec config
+                // Wait for encoder to be ready and have codec config (SPS/PPS)
+                // The encoder needs to process at least one frame before codec config is available
+                Log.d(TAG, "[MP4] Client $clientId: Waiting for encoder to be ready...")
                 var attempts = 0
                 var initSegment: ByteArray? = null
-                while (attempts < 10 && initSegment == null) {
+                while (attempts < 30 && initSegment == null) {
                     initSegment = cameraService.getMp4InitSegment()
                     if (initSegment == null) {
-                        Log.d(TAG, "Waiting for MP4 init segment... attempt ${attempts + 1}")
-                        delay(100)
+                        if (attempts % 5 == 0) {  // Log every 5th attempt to reduce spam
+                            Log.d(TAG, "[MP4] Client $clientId: Waiting for MP4 init segment... attempt ${attempts + 1}/30")
+                        }
+                        delay(200)  // Wait 200ms between attempts (total wait: up to 6 seconds)
                         attempts++
                     }
                 }
                 
                 if (initSegment == null) {
-                    Log.e(TAG, "Failed to get MP4 init segment after $attempts attempts")
+                    Log.e(TAG, "[MP4] Client $clientId: Failed to get MP4 init segment after $attempts attempts (${attempts * 200}ms)")
+                    Log.e(TAG, "[MP4] Client $clientId: Encoder may not have started or codec config not available")
                     return@respondBytesWriter
                 }
                 
@@ -1529,13 +1533,16 @@ class HttpServer(
                 writeFully(initSegment, 0, initSegment.size)
                 flush()
                 
-                Log.d(TAG, "MP4 init segment sent to client $clientId (${initSegment.size} bytes)")
+                Log.d(TAG, "[MP4] Client $clientId: Init segment sent successfully (${initSegment.size} bytes)")
                 
                 // Stream media segments (moof + mdat boxes)
                 var sequenceNumber = 1
                 var baseMediaDecodeTime = 0L
                 val timescale = 30L // 30 fps timescale (matches encoder frame rate)
                 val frameDuration = timescale // Duration of one frame in timescale units (1 frame at 30fps = 1 timescale unit)
+                
+                var framesStreamed = 0
+                var lastLogTime = System.currentTimeMillis()
                 
                 while (isActive) {
                     // Get next encoded frame from camera service
@@ -1563,10 +1570,19 @@ class HttpServer(
                         
                         // Update timing for next fragment
                         sequenceNumber++
-                        baseMediaDecodeTime += frameDuration // Increment by one frame duration
+                        baseMediaDecodeTime += frameDuration
+                        framesStreamed++
                         
+                        // Log keyframes and periodic updates
                         if (frame.isKeyFrame) {
-                            Log.d(TAG, "Sent keyframe to MP4 client $clientId, seq=$sequenceNumber")
+                            Log.d(TAG, "[MP4] Client $clientId: Sent keyframe, seq=$sequenceNumber, total frames=$framesStreamed")
+                        }
+                        
+                        // Log streaming progress every 3 seconds
+                        val now = System.currentTimeMillis()
+                        if (now - lastLogTime > 3000) {
+                            Log.d(TAG, "[MP4] Client $clientId: Streaming progress - $framesStreamed frames sent")
+                            lastLogTime = now
                         }
                     } else {
                         // No frame available, wait a bit
@@ -1580,12 +1596,14 @@ class HttpServer(
                     }
                 }
                 
+                Log.d(TAG, "[MP4] Client $clientId: Stream ended after $framesStreamed frames")
+                
             } catch (e: Exception) {
-                Log.e(TAG, "Error streaming MP4 to client $clientId", e)
+                Log.e(TAG, "[MP4] Client $clientId: Error streaming MP4", e)
             } finally {
                 cameraService.removeClient(clientId)
                 activeStreams.decrementAndGet()
-                Log.d(TAG, "MP4 stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
+                Log.d(TAG, "[MP4] Client $clientId: Connection closed. Active streams: ${activeStreams.get()}")
             }
         }
     }

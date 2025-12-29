@@ -826,18 +826,25 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "[MP4] Started MP4 encoder processing coroutine")
             var frameCount = 0
             var lastLogTime = System.currentTimeMillis()
+            var formatAvailable = false
             
             try {
                 while (isActive && mp4StreamWriter?.isRunning() == true) {
                     mp4StreamWriter?.processEncoderOutput()
                     
+                    // Check if codec format became available (happens after first frame)
+                    if (!formatAvailable && mp4StreamWriter?.isFormatAvailable() == true) {
+                        formatAvailable = true
+                        Log.d(TAG, "[MP4] Codec format (SPS/PPS) is now available - init segment can be generated")
+                    }
+                    
                     // Check if frames are being produced
                     if (mp4StreamWriter?.hasEncodedFrames() == true) {
                         frameCount++
-                        // Log every 30 frames (about every 3 seconds at 10fps)
+                        // Log every 90 frames (about every 3 seconds at 30fps)
                         val now = System.currentTimeMillis()
                         if (now - lastLogTime > 3000) {
-                            Log.d(TAG, "[MP4] Encoder producing frames: $frameCount frames total, queue has frames: ${mp4StreamWriter?.hasEncodedFrames()}")
+                            Log.d(TAG, "[MP4] Encoder producing frames: $frameCount frames total, queue has frames: true, format available: $formatAvailable")
                             lastLogTime = now
                         }
                     }
@@ -849,7 +856,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Log.e(TAG, "[MP4] FATAL: Error in MP4 encoder processing", e)
                 e.printStackTrace()
             } finally {
-                Log.d(TAG, "[MP4] MP4 encoder processing coroutine ended. Total frames processed: $frameCount")
+                Log.d(TAG, "[MP4] MP4 encoder processing coroutine ended. Total frames processed: $frameCount, format was available: $formatAvailable")
             }
         }
     }
