@@ -1950,6 +1950,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
+    override fun getMp4CodecConfig(): ByteArray? {
+        synchronized(mp4StreamLock) {
+            return mp4StreamWriter?.getCodecConfig()
+        }
+    }
+    
     override fun getMp4InitSegment(): ByteArray? {
         synchronized(mp4StreamLock) {
             return mp4StreamWriter?.generateInitSegment()

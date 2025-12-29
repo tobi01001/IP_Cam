@@ -53,5 +53,6 @@ interface CameraServiceInterface {
     
     // MP4 frame access
     fun getMp4EncodedFrame(): Mp4StreamWriter.EncodedFrame?
+    fun getMp4CodecConfig(): ByteArray?
     fun getMp4InitSegment(): ByteArray?
 }

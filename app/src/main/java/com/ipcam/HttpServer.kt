@@ -1491,7 +1491,7 @@ class HttpServer(
     /**
      * Serve raw H.264 stream (Annex B format with start codes)
      * Hardware accelerated, low bandwidth, good quality
-     * Compatible with VLC, ffplay, and most players
+     * Sends SPS/PPS first, then video frames
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveH264Stream() {
         val currentMode = cameraService.getStreamingMode()
@@ -1513,10 +1513,38 @@ class HttpServer(
         activeStreams.incrementAndGet()
         Log.d(TAG, "[H264] Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
         
-        // Stream raw H.264 (video/h264 or application/octet-stream)
-        call.respondBytesWriter(ContentType.parse("video/h264")) {
+        // Use application/octet-stream for raw H.264 - more compatible
+        call.respondBytesWriter(ContentType.Application.OctetStream) {
             try {
                 Log.d(TAG, "[H264] Client $clientId: Starting H.264 stream...")
+                
+                // Wait for SPS/PPS to be available
+                Log.d(TAG, "[H264] Client $clientId: Waiting for SPS/PPS (codec config)...")
+                var attempts = 0
+                var spsppsSent = false
+                
+                while (attempts < 30 && !spsppsSent) {
+                    val codecConfig = cameraService.getMp4CodecConfig()
+                    if (codecConfig != null && codecConfig.isNotEmpty()) {
+                        // Send SPS/PPS at start of stream
+                        // This helps players detect and decode H.264
+                        writeFully(codecConfig, 0, codecConfig.size)
+                        flush()
+                        spsppsSent = true
+                        Log.d(TAG, "[H264] Client $clientId: Sent SPS/PPS (${codecConfig.size} bytes)")
+                    } else {
+                        if (attempts % 5 == 0) {
+                            Log.d(TAG, "[H264] Client $clientId: Waiting for codec config... attempt ${attempts + 1}/30")
+                        }
+                        delay(200)
+                        attempts++
+                    }
+                }
+                
+                if (!spsppsSent) {
+                    Log.e(TAG, "[H264] Client $clientId: Failed to get SPS/PPS after ${attempts * 200}ms")
+                    return@respondBytesWriter
+                }
                 
                 var framesStreamed = 0
                 var lastLogTime = System.currentTimeMillis()
