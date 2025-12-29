@@ -195,13 +195,13 @@ class Mp4StreamWriter(
                         outputBuffer.position(bufferInfo.offset)
                         outputBuffer.get(data, 0, bufferInfo.size)
                         
-                        // Convert from Annex B (start codes) to AVCC (length-prefixed) format
-                        // This is CRITICAL for MP4 playback
-                        val avccData = convertAnnexBToAvcc(data)
+                        // Keep Annex B format (start codes) for raw H.264 streaming
+                        // MediaCodec already outputs in Annex B format
+                        // Don't convert to AVCC - raw H.264 players expect Annex B
                         
                         // Add to queue for streaming
                         // Keep a rolling buffer: if queue is full, remove oldest frame
-                        val frame = EncodedFrame(avccData, isKeyFrame, bufferInfo.presentationTimeUs)
+                        val frame = EncodedFrame(data, isKeyFrame, bufferInfo.presentationTimeUs)
                         if (!encodedDataQueue.offer(frame)) {
                             // Queue is full - remove oldest frame and add new one
                             encodedDataQueue.poll() // Remove oldest

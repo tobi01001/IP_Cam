@@ -88,6 +88,10 @@ class HttpServer(
                 // MJPEG stream
                 get("/stream") { serveStream() }
                 
+                // H.264 stream (hardware accelerated, low bandwidth)
+                get("/stream.mp4") { serveH264Stream() }
+                get("/stream.h264") { serveH264Stream() }
+                
                 // Camera control
                 get("/switch") { serveSwitch() }
                 get("/toggleFlashlight") { serveToggleFlashlight() }
@@ -117,7 +121,6 @@ class HttpServer(
                 // Streaming mode control
                 get("/streamingMode") { serveGetStreamingMode() }
                 get("/setStreamingMode") { serveSetStreamingMode() }
-                get("/stream.mp4") { serveMp4Stream() }
             }
         }
         
@@ -1485,14 +1488,19 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveMp4Stream() {
+    /**
+     * Serve raw H.264 stream (Annex B format with start codes)
+     * Hardware accelerated, low bandwidth, good quality
+     * Compatible with VLC, ffplay, and most players
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveH264Stream() {
         val currentMode = cameraService.getStreamingMode()
         
-        Log.d(TAG, "MP4 stream endpoint accessed. Current mode: $currentMode")
+        Log.d(TAG, "[H264] Stream endpoint accessed. Current mode: $currentMode")
         
         if (currentMode != StreamingMode.MP4) {
-            val errorMsg = "MP4 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable."
-            Log.w(TAG, "MP4 stream rejected: $errorMsg")
+            val errorMsg = "H.264 streaming not active. Current mode: $currentMode. Use /setStreamingMode?value=mp4 to enable."
+            Log.w(TAG, "[H264] Stream rejected: $errorMsg")
             call.respondText(
                 errorMsg,
                 ContentType.Text.Plain,
@@ -1503,43 +1511,12 @@ class HttpServer(
         
         val clientId = clientIdCounter.incrementAndGet()
         activeStreams.incrementAndGet()
-        Log.d(TAG, "MP4 stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
+        Log.d(TAG, "[H264] Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
         
-        call.respondBytesWriter(ContentType.parse("video/mp4")) {
+        // Stream raw H.264 (video/h264 or application/octet-stream)
+        call.respondBytesWriter(ContentType.parse("video/h264")) {
             try {
-                // Wait for encoder to be ready and have codec config (SPS/PPS)
-                // The encoder needs to process at least one frame before codec config is available
-                Log.d(TAG, "[MP4] Client $clientId: Waiting for encoder to be ready...")
-                var attempts = 0
-                var initSegment: ByteArray? = null
-                while (attempts < 30 && initSegment == null) {
-                    initSegment = cameraService.getMp4InitSegment()
-                    if (initSegment == null) {
-                        if (attempts % 5 == 0) {  // Log every 5th attempt to reduce spam
-                            Log.d(TAG, "[MP4] Client $clientId: Waiting for MP4 init segment... attempt ${attempts + 1}/30")
-                        }
-                        delay(200)  // Wait 200ms between attempts (total wait: up to 6 seconds)
-                        attempts++
-                    }
-                }
-                
-                if (initSegment == null) {
-                    Log.e(TAG, "[MP4] Client $clientId: Failed to get MP4 init segment after $attempts attempts (${attempts * 200}ms)")
-                    Log.e(TAG, "[MP4] Client $clientId: Encoder may not have started or codec config not available")
-                    return@respondBytesWriter
-                }
-                
-                // Send initialization segment
-                writeFully(initSegment, 0, initSegment.size)
-                flush()
-                
-                Log.d(TAG, "[MP4] Client $clientId: Init segment sent successfully (${initSegment.size} bytes)")
-                
-                // Stream media segments (moof + mdat boxes)
-                var sequenceNumber = 1
-                var baseMediaDecodeTime = 0L
-                val timescale = 30L // 30 fps timescale (matches encoder frame rate)
-                val frameDuration = timescale // Duration of one frame in timescale units (1 frame at 30fps = 1 timescale unit)
+                Log.d(TAG, "[H264] Client $clientId: Starting H.264 stream...")
                 
                 var framesStreamed = 0
                 var lastLogTime = System.currentTimeMillis()
@@ -1549,39 +1526,24 @@ class HttpServer(
                     val frame = cameraService.getMp4EncodedFrame()
                     
                     if (frame != null) {
-                        // Create moof box (movie fragment)
-                        val moofBox = Mp4BoxWriter.createMoofBox(
-                            sequenceNumber = sequenceNumber,
-                            baseMediaDecodeTime = baseMediaDecodeTime,
-                            sampleSize = frame.data.size
-                        )
-                        
-                        // Create mdat box (media data)
-                        val mdatBox = Mp4BoxWriter.createMdatBox(frame.data)
-                        
-                        // Write moof + mdat (one fragment)
-                        writeFully(moofBox, 0, moofBox.size)
-                        writeFully(mdatBox, 0, mdatBox.size)
+                        // Stream raw H.264 frame data (already in Annex B format with start codes)
+                        writeFully(frame.data, 0, frame.data.size)
                         flush()
                         
                         // Track bandwidth
-                        val totalBytes = moofBox.size + mdatBox.size
-                        cameraService.recordBytesSent(clientId, totalBytes.toLong())
+                        cameraService.recordBytesSent(clientId, frame.data.size.toLong())
                         
-                        // Update timing for next fragment
-                        sequenceNumber++
-                        baseMediaDecodeTime += frameDuration
                         framesStreamed++
                         
                         // Log keyframes and periodic updates
                         if (frame.isKeyFrame) {
-                            Log.d(TAG, "[MP4] Client $clientId: Sent keyframe, seq=$sequenceNumber, total frames=$framesStreamed")
+                            Log.d(TAG, "[H264] Client $clientId: Sent keyframe, total frames=$framesStreamed")
                         }
                         
                         // Log streaming progress every 3 seconds
                         val now = System.currentTimeMillis()
                         if (now - lastLogTime > 3000) {
-                            Log.d(TAG, "[MP4] Client $clientId: Streaming progress - $framesStreamed frames sent")
+                            Log.d(TAG, "[H264] Client $clientId: Streaming progress - $framesStreamed frames sent")
                             lastLogTime = now
                         }
                     } else {
@@ -1589,21 +1551,19 @@ class HttpServer(
                         delay(10)
                     }
                     
-                    // Check for backpressure - if client is too slow, drop frames
-                    // This prevents memory buildup from slow clients
                     if (!isActive) {
                         break
                     }
                 }
                 
-                Log.d(TAG, "[MP4] Client $clientId: Stream ended after $framesStreamed frames")
+                Log.d(TAG, "[H264] Client $clientId: Stream ended after $framesStreamed frames")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "[MP4] Client $clientId: Error streaming MP4", e)
+                Log.e(TAG, "[H264] Client $clientId: Error streaming H.264", e)
             } finally {
                 cameraService.removeClient(clientId)
                 activeStreams.decrementAndGet()
-                Log.d(TAG, "[MP4] Client $clientId: Connection closed. Active streams: ${activeStreams.get()}")
+                Log.d(TAG, "[H264] Client $clientId: Connection closed. Active streams: ${activeStreams.get()}")
             }
         }
     }
