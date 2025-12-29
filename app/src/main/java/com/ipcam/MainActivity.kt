@@ -453,14 +453,17 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun updateStreamingModeSelection() {
-        // Note: isUpdatingSpinners should be managed by the caller
-        // to coordinate with other UI updates
-        val currentMode = cameraService?.getStreamingMode() ?: StreamingMode.MJPEG
-        val position = when (currentMode) {
-            StreamingMode.MJPEG -> 0
-            StreamingMode.MP4 -> 1
+        isUpdatingSpinners = true
+        try {
+            val currentMode = cameraService?.getStreamingMode() ?: StreamingMode.MJPEG
+            val position = when (currentMode) {
+                StreamingMode.MJPEG -> 0
+                StreamingMode.MP4 -> 1
+            }
+            streamingModeSpinner.setSelection(position)
+        } finally {
+            isUpdatingSpinners = false
         }
-        streamingModeSpinner.setSelection(position)
     }
     
     private fun setupCameraOrientationSpinner() {
