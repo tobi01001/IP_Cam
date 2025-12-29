@@ -404,20 +404,20 @@ class Mp4StreamWriter(
         
         // avc1 sample entry
         val avc1Content = ByteArrayOutputStream()
-        avc1Content.write(ByteArray(6)) // reserved
-        avc1Content.writeInt32(1) // data reference index
-        avc1Content.writeInt32(0) // pre_defined
-        avc1Content.writeInt32(0) // reserved
-        avc1Content.write(ByteArray(12)) // pre_defined
-        avc1Content.writeInt32(resolution.width) // width
-        avc1Content.writeInt32(resolution.height) // height
-        avc1Content.writeInt32(0x00480000) // horizresolution 72 dpi
-        avc1Content.writeInt32(0x00480000) // vertresolution 72 dpi
-        avc1Content.writeInt32(0) // reserved
-        avc1Content.writeInt32(1) // frame count
-        avc1Content.write(ByteArray(32)) // compressor name (32 bytes)
-        avc1Content.writeInt32(0x0018) // depth (24-bit)
-        avc1Content.writeInt32(0xFFFF) // pre_defined
+        avc1Content.write(ByteArray(6)) // reserved (from SampleEntry)
+        avc1Content.writeInt16(1) // data_reference_index (from SampleEntry)
+        avc1Content.writeInt16(0) // pre_defined (VisualSampleEntry)
+        avc1Content.writeInt16(0) // reserved (VisualSampleEntry)
+        avc1Content.write(ByteArray(12)) // pre_defined[3] (3 x 4 bytes = 12 bytes)
+        avc1Content.writeInt16(resolution.width) // width (uint16)
+        avc1Content.writeInt16(resolution.height) // height (uint16)
+        avc1Content.writeInt32(0x00480000) // horizresolution 72 dpi (32-bit fixed point)
+        avc1Content.writeInt32(0x00480000) // vertresolution 72 dpi (32-bit fixed point)
+        avc1Content.writeInt32(0) // reserved (4 bytes)
+        avc1Content.writeInt16(1) // frame_count (uint16)
+        avc1Content.write(ByteArray(32)) // compressor name (32 bytes, pascal string)
+        avc1Content.writeInt16(0x0018) // depth (uint16, 0x0018 = 24-bit color)
+        avc1Content.writeInt16(0xFFFF.toShort().toInt()) // pre_defined (int16, -1)
         
         // avcC box (AVC configuration) - contains SPS/PPS
         avc1Content.writeInt32(8 + codecConfig.size)
@@ -510,6 +510,11 @@ class Mp4StreamWriter(
     private fun ByteArrayOutputStream.writeInt32(value: Int) {
         write((value shr 24) and 0xFF)
         write((value shr 16) and 0xFF)
+        write((value shr 8) and 0xFF)
+        write(value and 0xFF)
+    }
+    
+    private fun ByteArrayOutputStream.writeInt16(value: Int) {
         write((value shr 8) and 0xFF)
         write(value and 0xFF)
     }
