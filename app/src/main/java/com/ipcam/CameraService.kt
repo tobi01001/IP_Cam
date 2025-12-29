@@ -863,22 +863,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
             
-            // Stop and release MP4 encoder if active
-            synchronized(mp4StreamLock) {
-                mp4StreamWriter?.let {
-                    Log.d(TAG, "Stopping MP4 encoder...")
-                    it.stop()
-                    it.release()
-                    mp4StreamWriter = null
-                    Log.d(TAG, "MP4 encoder stopped and released")
-                }
-            }
-            
             // Unbind all use cases from lifecycle
             cameraProvider?.unbindAll()
             
             // Clear camera reference
             camera = null
+            
+            // Stop and release MP4 encoder if active - do async to avoid blocking main thread
+            val encoderToStop = synchronized(mp4StreamLock) { mp4StreamWriter }
+            if (encoderToStop != null) {
+                Log.d(TAG, "Stopping MP4 encoder (async)...")
+                // Stop on background thread to avoid blocking
+                serviceScope.launch(Dispatchers.IO) {
+                    try {
+                        encoderToStop.stop()
+                        // Small delay to let processing coroutine exit
+                        delay(100)
+                        encoderToStop.release()
+                        Log.d(TAG, "MP4 encoder stopped and released")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping MP4 encoder", e)
+                    }
+                }
+                // Clear reference immediately
+                synchronized(mp4StreamLock) {
+                    mp4StreamWriter = null
+                }
+            }
             
             Log.d(TAG, "Camera stopped successfully")
         } catch (e: Exception) {

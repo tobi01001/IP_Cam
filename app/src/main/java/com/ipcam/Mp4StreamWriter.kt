@@ -106,27 +106,25 @@ class Mp4StreamWriter(
             return
         }
         
+        // Set flag first to stop processing loop
         isRunning.set(false)
         
-        if (isCodecStarted) {
-            try {
-                // Note: We don't call signalEndOfInputStream() when using a Preview surface
-                // because the camera provides the surface input, not us directly.
-                // Just drain any remaining frames
-                drainEncoder(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "Error stopping encoder", e)
-            }
-        }
+        // Give processing coroutine time to exit cleanly
+        // The encoder processing coroutine checks isRunning() and will stop
+        // Don't call drainEncoder here - it conflicts with the processing coroutine
         
-        Log.d(TAG, "MP4 encoder stopped")
+        Log.d(TAG, "MP4 encoder stopped (waiting for processing loop to exit)")
     }
     
     /**
      * Release all resources
      */
     fun release() {
+        // Stop first (sets isRunning = false)
         stop()
+        
+        // Wait a bit for processing coroutine to exit
+        Thread.sleep(50)
         
         inputSurface?.release()
         inputSurface = null

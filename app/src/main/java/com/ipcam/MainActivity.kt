@@ -424,7 +424,10 @@ class MainActivity : AppCompatActivity() {
         streamingModeSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
                 // Skip if we're programmatically updating the spinner
-                if (isUpdatingSpinners) return
+                if (isUpdatingSpinners) {
+                    Log.d("MainActivity", "Streaming mode spinner changed (programmatic), skipping")
+                    return
+                }
                 
                 if (cameraService != null) {
                     val newMode = when (position) {
@@ -432,6 +435,8 @@ class MainActivity : AppCompatActivity() {
                         1 -> StreamingMode.MP4
                         else -> StreamingMode.MJPEG
                     }
+                    
+                    Log.d("MainActivity", "User selected streaming mode: $newMode")
                     
                     // Apply new streaming mode
                     cameraService?.setStreamingMode(newMode)
@@ -453,17 +458,14 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun updateStreamingModeSelection() {
-        isUpdatingSpinners = true
-        try {
-            val currentMode = cameraService?.getStreamingMode() ?: StreamingMode.MJPEG
-            val position = when (currentMode) {
-                StreamingMode.MJPEG -> 0
-                StreamingMode.MP4 -> 1
-            }
-            streamingModeSpinner.setSelection(position)
-        } finally {
-            isUpdatingSpinners = false
+        // Don't manage isUpdatingSpinners here - let the caller handle it
+        // This is called from the callback which already manages the flag
+        val currentMode = cameraService?.getStreamingMode() ?: StreamingMode.MJPEG
+        val position = when (currentMode) {
+            StreamingMode.MJPEG -> 0
+            StreamingMode.MP4 -> 1
         }
+        streamingModeSpinner.setSelection(position)
     }
     
     private fun setupCameraOrientationSpinner() {
