@@ -62,6 +62,10 @@ class HLSEncoderManager(
     private var yDataBuffer: ByteArray? = null
     private var uvDataBuffer: ByteArray? = null
     
+    // Muxer format - determined at runtime based on device support
+    // REQ-HW-004: MPEG-TS preferred, MP4 fallback
+    @Volatile private var muxerOutputFormat: Int = -1
+    
     companion object {
         private const val TAG = "HLSEncoderManager"
         private const val TIMEOUT_US = 10_000L // 10ms timeout for encoder operations
@@ -482,7 +486,7 @@ class HLSEncoderManager(
     
     /**
      * Start a new segment file
-     * REQ-HW-004: Segment creation with MPEG-TS format
+     * REQ-HW-004: Segment creation with MPEG-TS format (with MP4 fallback)
      */
     private fun startNewSegment() {
         val segmentDir = File(cacheDir, "hls_segments")
@@ -490,22 +494,15 @@ class HLSEncoderManager(
         val segmentFile = File(segmentDir, "segment${currentIndex}.ts")
         
         try {
-            // Use MPEG-TS format for HLS compatibility
-            // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS = 8 (added in API 26)
-            // For API 24-25, use MP4 format which is also HLS-compatible
-            @Suppress("DEPRECATION")
-            val outputFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                // Use numeric constant for MPEG-TS on API 26+
-                // This avoids compile-time issues while maintaining runtime correctness
-                8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
-            } else {
-                // MP4 fallback for API 24-25
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+            // Determine output format on first segment creation
+            if (muxerOutputFormat == -1) {
+                muxerOutputFormat = detectMuxerFormat()
+                Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
             }
             
             muxer = MediaMuxer(
                 segmentFile.absolutePath,
-                outputFormat
+                muxerOutputFormat
             )
             
             // Add video track (output format may not be available immediately)
@@ -529,6 +526,46 @@ class HLSEncoderManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error starting new segment", e)
             lastError = "Segment creation failed: ${e.message}"
+        }
+    }
+    
+    /**
+     * Detect supported muxer format
+     * Tries MPEG-TS first (best for HLS), falls back to MP4
+     * REQ-HW-004: Format detection and fallback
+     */
+    private fun detectMuxerFormat(): Int {
+        // Try MPEG-TS first (API 26+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                // Test if MPEG-TS format is supported by creating a temporary muxer
+                val testFile = File(cacheDir, "test_format.ts")
+                val testMuxer = MediaMuxer(
+                    testFile.absolutePath,
+                    8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
+                )
+                testMuxer.release()
+                testFile.delete()
+                Log.d(TAG, "MPEG-TS format supported")
+                return 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
+            } catch (e: Exception) {
+                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to MP4", e)
+            }
+        }
+        
+        // Fallback to MP4 (universally supported)
+        Log.d(TAG, "Using MP4 format for HLS segments")
+        return MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
+    }
+    
+    /**
+     * Get human-readable name for muxer format
+     */
+    private fun getMuxerFormatName(format: Int): String {
+        return when (format) {
+            8 -> "MPEG-TS"
+            MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4 -> "MP4"
+            else -> "Unknown($format)"
         }
     }
     
@@ -662,6 +699,9 @@ class HLSEncoderManager(
         uvRowBuffer = null
         yDataBuffer = null
         uvDataBuffer = null
+        
+        // Reset muxer format for next session
+        muxerOutputFormat = -1
     }
     
     /**
