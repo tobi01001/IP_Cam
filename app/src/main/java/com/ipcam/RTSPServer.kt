@@ -443,24 +443,28 @@ class RTSPServer(
         writer.flush()
     }
     
-    private fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
+    private suspend fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
         // Wait briefly for SPS/PPS to be available (encoder needs to start first)
         var retries = 0
-        while ((sps == null || pps == null) && retries < 50) {
-            Thread.sleep(100)
+        while ((sps == null || pps == null) && retries < 100) {
+            kotlinx.coroutines.delay(50)
             retries++
         }
         
         if (sps == null || pps == null) {
-            Log.w(TAG, "SPS/PPS not available yet, sending error")
+            Log.w(TAG, "SPS/PPS not available after waiting, sending error")
             writer.write("RTSP/1.0 500 Internal Server Error\r\n")
             writer.write("CSeq: $cseq\r\n")
+            writer.write("Content-Type: text/plain\r\n")
             writer.write("\r\n")
+            writer.write("Encoder not ready. Please wait for camera to start streaming.\r\n")
             writer.flush()
             return
         }
+        
+        Log.d(TAG, "SPS/PPS available, generating SDP")
         
         // Generate SDP (Session Description Protocol)
         val spsBase64 = android.util.Base64.encodeToString(sps!!, android.util.Base64.NO_WRAP)
@@ -605,7 +609,10 @@ class RTSPServer(
      * Encode frame from camera
      */
     fun encodeFrame(image: ImageProxy): Boolean {
-        if (!isEncoding.get() || encoder == null) return false
+        if (!isEncoding.get() || encoder == null) {
+            Log.d(TAG, "Encoder not ready: isEncoding=${isEncoding.get()}, encoder=${encoder != null}")
+            return false
+        }
         
         try {
             // Validate dimensions
@@ -615,6 +622,11 @@ class RTSPServer(
                     lastError = "Resolution mismatch: ${image.width}x${image.height}"
                 }
                 return false
+            }
+            
+            // Log first successful frame
+            if (frameCount.get() == 0L) {
+                Log.i(TAG, "Encoding first frame: ${image.width}x${image.height}")
             }
             
             // Get input buffer

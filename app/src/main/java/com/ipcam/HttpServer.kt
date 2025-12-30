@@ -993,8 +993,6 @@ class HttpServer(
                     window.addEventListener('load', function() {
                         checkRTSPStatus();
                     });
-                    
-                    });
                 </script>
             </body>
             </html>
