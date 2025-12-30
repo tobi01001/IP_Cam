@@ -296,13 +296,21 @@ class HLSEncoderManager(
         val uBuffer = uPlane.buffer
         val vBuffer = vPlane.buffer
         
-        val uvSize = uBuffer.remaining()
+        // Use the minimum of both buffer sizes to prevent overflow
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+        val uvSize = minOf(uSize, vSize)
         val uvBytes = ByteArray(uvSize * 2)
         var uvIndex = 0
         
+        // Interleave U and V with bounds checking
         for (i in 0 until uvSize) {
-            if (uBuffer.hasRemaining()) uvBytes[uvIndex++] = uBuffer.get()
-            if (vBuffer.hasRemaining()) uvBytes[uvIndex++] = vBuffer.get()
+            if (uBuffer.hasRemaining() && uvIndex < uvBytes.size) {
+                uvBytes[uvIndex++] = uBuffer.get()
+            }
+            if (vBuffer.hasRemaining() && uvIndex < uvBytes.size) {
+                uvBytes[uvIndex++] = vBuffer.get()
+            }
         }
         
         buffer.put(uvBytes, 0, uvIndex)
@@ -320,12 +328,16 @@ class HLSEncoderManager(
         
         try {
             // Use MPEG-TS format for HLS compatibility
-            // MUXER_OUTPUT_MPEG_2_TS = 8 (added in API 26)
-            // For API 24-25, we'll use MP4 format which is also compatible with HLS
+            // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS = 8 (added in API 26)
+            // For API 24-25, use MP4 format which is also HLS-compatible
+            @Suppress("DEPRECATION")
             val outputFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                // Use numeric constant for MPEG-TS on API 26+
+                // This avoids compile-time issues while maintaining runtime correctness
                 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
             } else {
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4 // MP4 fallback for API 24-25
+                // MP4 fallback for API 24-25
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
             }
             
             muxer = MediaMuxer(
@@ -333,11 +345,14 @@ class HLSEncoderManager(
                 outputFormat
             )
             
-            // Add video track
+            // Add video track (output format may not be available immediately)
+            // This will be retried in drainEncoder if format changes
             val format = encoder?.outputFormat
             if (format != null) {
                 videoTrackIndex = muxer?.addTrack(format) ?: -1
                 muxer?.start()
+            } else {
+                Log.w(TAG, "Encoder output format not yet available, will add track on first frame")
             }
             
             synchronized(segmentFiles) {

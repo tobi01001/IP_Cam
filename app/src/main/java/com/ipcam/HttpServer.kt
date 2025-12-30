@@ -1427,9 +1427,10 @@ class HttpServer(
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
         val segmentName = call.parameters["segmentName"] ?: ""
         
-        if (!segmentName.endsWith(".ts")) {
+        // Validate segment name format to prevent directory traversal
+        if (!segmentName.matches(Regex("^segment\\d+\\.ts$"))) {
             call.respondText(
-                """{"status":"error","message":"Invalid segment name. Must end with .ts"}""",
+                """{"status":"error","message":"Invalid segment name format"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.BadRequest
             )
@@ -1443,8 +1444,9 @@ class HttpServer(
             call.response.header("Access-Control-Allow-Origin", "*")
             call.respondFile(segmentFile)
         } else {
+            // Generic error message to avoid information disclosure
             call.respondText(
-                """{"status":"error","message":"Segment not found: $segmentName"}""",
+                """{"status":"error","message":"Segment not found"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.NotFound
             )
@@ -1460,8 +1462,11 @@ class HttpServer(
         
         if (success) {
             val metrics = cameraService.getHLSMetrics()
+            // Escape encoder name to prevent JSON injection
+            val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
+            val bitrateInfo = metrics?.let { "${it.targetBitrate/1000000} Mbps @ ${it.targetFps} fps" } ?: "unknown"
             call.respondText(
-                """{"status":"ok","message":"HLS streaming enabled","hlsEnabled":true,"encoder":"${metrics?.encoderName}","isHardware":${metrics?.isHardware},"resolution":"${metrics?.let { "${it.targetBitrate/1000000} Mbps @ ${it.targetFps} fps" }}"}""",
+                """{"status":"ok","message":"HLS streaming enabled","hlsEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"resolution":"$bitrateInfo"}""",
                 ContentType.Application.Json
             )
         } else {
