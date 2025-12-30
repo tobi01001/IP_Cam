@@ -39,6 +39,8 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 - **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
 - **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
 - **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (HLS/RTSP)
+- **[HLS Troubleshooting Guide](HLS_TROUBLESHOOTING.md)** - Comprehensive guide for troubleshooting HLS streaming issues, including fixes for green artifacts and MP4 fallback compatibility
+
 
 ## Requirements
 - Android 7.0 (API level 24) or higher
@@ -105,10 +107,12 @@ Simply open the displayed URL in any web browser on the same network to access t
 ##### HLS Streaming (Optional - Bandwidth Efficient)
 **Note:** HLS streaming provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) at the cost of higher latency (6-12 seconds). Suitable for recording, remote viewing over limited bandwidth, and integration with modern NVR systems. MJPEG remains the primary streaming method for low-latency applications.
 
+**⚠️ Known Issue Fixed:** Green artifacts in preview and playback issues have been fixed. See [HLS Troubleshooting Guide](HLS_TROUBLESHOOTING.md) for details.
+
 - **`GET /enableHLS`** - Enable HLS streaming (returns JSON with encoder info)
 - **`GET /disableHLS`** - Disable HLS streaming (returns JSON)
 - **`GET /hls/stream.m3u8`** - HLS master playlist (M3U8 format)
-- **`GET /hls/segment{N}.ts`** - HLS video segments (MPEG-TS format)
+- **`GET /hls/segment{N}.ts`** or **`GET /hls/segment{N}.m4s`** - HLS video segments (MPEG-TS or MP4 format, depending on device support)
 
 **HLS Features:**
 - Hardware-accelerated H.264 encoding for efficiency
@@ -116,6 +120,7 @@ Simply open the displayed URL in any web browser on the same network to access t
 - 2-second segments with 10-segment sliding window
 - 6-12 seconds latency (not suitable for real-time monitoring)
 - Compatible with Safari (native), Chrome/Firefox (via hls.js), VLC, modern surveillance systems
+- Automatic format detection: MPEG-TS (API 26+) or MP4 fallback (API 24-25)
 
 #### Example Usage
 
