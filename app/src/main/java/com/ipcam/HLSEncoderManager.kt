@@ -39,6 +39,7 @@ class HLSEncoderManager(
     private var encoder: MediaCodec? = null
     private var muxer: MediaMuxer? = null
     private var videoTrackIndex: Int = -1
+    private var muxerStarted: Boolean = false  // Track if muxer.start() was called
     private val segmentIndex = AtomicInteger(0)
     private val segmentStartTime = AtomicLong(0)
     private val segmentFiles = mutableListOf<File>()
@@ -523,15 +524,12 @@ class HLSEncoderManager(
                 muxerOutputFormat
             )
             
-            // Add video track (output format may not be available immediately)
-            // This will be retried in drainEncoder if format changes
-            val format = encoder?.outputFormat
-            if (format != null) {
-                videoTrackIndex = muxer?.addTrack(format) ?: -1
-                muxer?.start()
-            } else {
-                Log.w(TAG, "Encoder output format not yet available, will add track on first frame")
-            }
+            // Don't add track yet - encoder output format not available until first frame
+            // Track will be added in drainEncoder() when INFO_OUTPUT_FORMAT_CHANGED is received
+            videoTrackIndex = -1
+            muxerStarted = false
+            
+            Log.w(TAG, "Created muxer for segment ${segmentFile.name}, waiting for encoder format to add track")
             
             synchronized(segmentFiles) {
                 segmentFiles.add(segmentFile)
@@ -595,9 +593,14 @@ class HLSEncoderManager(
         try {
             drainEncoder(true)
             
-            muxer?.stop()
+            if (muxerStarted) {
+                muxer?.stop()
+                Log.d(TAG, "Muxer stopped")
+            }
             muxer?.release()
             muxer = null
+            videoTrackIndex = -1
+            muxerStarted = false
             
             // Cleanup old segments (keep only last maxSegments)
             // REQ-HW-004: Maintain sliding window
@@ -642,10 +645,16 @@ class HLSEncoderManager(
                     if (muxer != null && videoTrackIndex == -1 && newFormat != null) {
                         try {
                             videoTrackIndex = muxer?.addTrack(newFormat) ?: -1
-                            muxer?.start()
-                            Log.i(TAG, "Video track added to muxer, index: $videoTrackIndex")
+                            if (videoTrackIndex != -1) {
+                                // CRITICAL: Start muxer immediately after adding track
+                                muxer?.start()
+                                muxerStarted = true
+                                Log.i(TAG, "Video track added to muxer (index: $videoTrackIndex) and muxer started successfully")
+                            } else {
+                                Log.e(TAG, "Failed to add track - returned index -1")
+                            }
                         } catch (e: Exception) {
-                            Log.e(TAG, "Error adding track to muxer", e)
+                            Log.e(TAG, "Error adding track to muxer and starting", e)
                             lastError = "Failed to add video track: ${e.message}"
                         }
                     }
@@ -653,15 +662,19 @@ class HLSEncoderManager(
                 outputBufferIndex >= 0 -> {
                     val encodedData = encoder?.getOutputBuffer(outputBufferIndex)
                     
-                    if (encodedData != null && bufferInfo.size > 0 && muxer != null && videoTrackIndex != -1) {
-                        // Write to muxer only if track has been added
+                    if (encodedData != null && bufferInfo.size > 0 && muxer != null && muxerStarted && videoTrackIndex != -1) {
+                        // Write to muxer only if track has been added AND muxer is started
                         try {
                             muxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
                         } catch (e: Exception) {
                             Log.e(TAG, "Error writing sample to muxer", e)
                         }
-                    } else if (encodedData != null && bufferInfo.size > 0 && videoTrackIndex == -1) {
-                        Log.w(TAG, "Dropping frame - video track not yet added to muxer")
+                    } else if (encodedData != null && bufferInfo.size > 0) {
+                        if (!muxerStarted) {
+                            Log.w(TAG, "Dropping frame - muxer not started yet (videoTrackIndex=$videoTrackIndex)")
+                        } else if (videoTrackIndex == -1) {
+                            Log.w(TAG, "Dropping frame - video track not yet added to muxer")
+                        }
                     }
                     
                     encoder?.releaseOutputBuffer(outputBufferIndex, false)
