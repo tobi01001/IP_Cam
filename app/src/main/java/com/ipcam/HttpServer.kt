@@ -1514,16 +1514,23 @@ class HttpServer(
     }
     
     /**
-     * Serve HLS segment file (TS)
+     * Serve HLS segment file (TS or M4S)
+     * REQ-HW-005: /hls/segment{N}.ts or /hls/segment{N}.m4s endpoint
+     */
+    /**
+     * Serve HLS segment file (TS only)
      * REQ-HW-005: /hls/segment{N}.ts endpoint
+     * 
+     * MP4 fallback has been removed - only MPEG-TS segments are supported
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
         val segmentName = call.parameters["segmentName"] ?: ""
         
         // Validate segment name format to prevent directory traversal
+        // Only accept .ts (MPEG-TS) extension
         if (!segmentName.matches(Regex("^segment\\d+\\.ts$"))) {
             call.respondText(
-                """{"status":"error","message":"Invalid segment name format"}""",
+                """{"status":"error","message":"Invalid segment name format. Expected segment{N}.ts"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.BadRequest
             )
@@ -1533,8 +1540,10 @@ class HttpServer(
         val segmentFile = cameraService.getHLSSegment(segmentName)
         
         if (segmentFile != null && segmentFile.exists()) {
+            call.response.header("Content-Type", "video/mp2t")
             call.response.header("Cache-Control", "public, max-age=60")
             call.response.header("Access-Control-Allow-Origin", "*")
+            
             call.respondFile(segmentFile)
         } else {
             // Generic error message to avoid information disclosure

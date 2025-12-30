@@ -42,7 +42,8 @@ class HLSEncoderManager(
     private var muxerStarted: Boolean = false  // Track if muxer.start() was called
     private val segmentIndex = AtomicInteger(0)
     private val segmentStartTime = AtomicLong(0)
-    private val segmentFiles = mutableListOf<File>()
+    private val segmentFiles = mutableListOf<File>()  // Only finalized segments available to clients
+    private var currentSegmentFile: File? = null  // Current segment being written (not yet available)
     private val maxSegments = 10
     
     private val isEncoding = AtomicBoolean(false)
@@ -388,6 +389,10 @@ class HLSEncoderManager(
      * REQ-HW-008: Performance optimization - reuse buffers to reduce GC pressure
      * 
      * Handles proper stride and padding for YUV planes
+     * 
+     * CRITICAL: This method creates COPIES of the ImageProxy buffer data to avoid
+     * corrupting the shared buffers used by the MJPEG pipeline. We must NOT call
+     * rewind() or position() on the original buffers as they are shared.
      */
     private fun fillInputBuffer(buffer: ByteBuffer, image: ImageProxy) {
         try {
@@ -403,9 +408,12 @@ class HLSEncoderManager(
             val uPlane = planes[1]
             val vPlane = planes[2]
             
-            val yBuffer = yPlane.buffer
-            val uBuffer = uPlane.buffer
-            val vBuffer = vPlane.buffer
+            // CRITICAL: Create DUPLICATE buffers to avoid corrupting shared ImageProxy buffers
+            // The original buffers are shared with MJPEG pipeline - modifying their position
+            // causes green artifacts in both preview and MJPEG stream
+            val yBuffer = yPlane.buffer.duplicate()
+            val uBuffer = uPlane.buffer.duplicate()
+            val vBuffer = vPlane.buffer.duplicate()
             
             val yRowStride = yPlane.rowStride
             val yPixelStride = yPlane.pixelStride
@@ -421,6 +429,7 @@ class HLSEncoderManager(
             }
             
             // Copy Y plane with stride handling
+            // Now safe to call rewind() since we're working with duplicates
             yBuffer.rewind()
             if (yRowStride == width && yPixelStride == 1) {
                 // Contiguous memory, direct copy
@@ -454,6 +463,7 @@ class HLSEncoderManager(
                 uvRowBuffer = ByteArray(uvRowStride)
             }
             
+            // Now safe to call rewind() since we're working with duplicates
             uBuffer.rewind()
             vBuffer.rewind()
             
@@ -505,20 +515,31 @@ class HLSEncoderManager(
     
     /**
      * Start a new segment file
-     * REQ-HW-004: Segment creation with MPEG-TS format (with MP4 fallback)
+     * REQ-HW-004: Segment creation with MPEG-TS format
+     * 
+     * @throws IllegalStateException if MPEG-TS format is not supported
      */
     private fun startNewSegment() {
         val segmentDir = File(cacheDir, "hls_segments")
         val currentIndex = segmentIndex.getAndIncrement()
+        
+        // Determine output format on first segment creation if not already done
+        // This will throw IllegalStateException if MPEG-TS is not supported
+        if (muxerOutputFormat == -1) {
+            try {
+                muxerOutputFormat = detectMuxerFormat()
+                Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Cannot start HLS streaming: ${e.message}")
+                lastError = e.message
+                throw e  // Propagate to caller
+            }
+        }
+        
+        // Use .ts extension for MPEG-TS (MP4 fallback removed)
         val segmentFile = File(segmentDir, "segment${currentIndex}.ts")
         
         try {
-            // Determine output format on first segment creation
-            if (muxerOutputFormat == -1) {
-                muxerOutputFormat = detectMuxerFormat()
-                Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
-            }
-            
             muxer = MediaMuxer(
                 segmentFile.absolutePath,
                 muxerOutputFormat
@@ -529,29 +550,39 @@ class HLSEncoderManager(
             videoTrackIndex = -1
             muxerStarted = false
             
-            Log.w(TAG, "Created muxer for segment ${segmentFile.name}, waiting for encoder format to add track")
+            // Track current segment being written
+            currentSegmentFile = segmentFile
             
+            // MPEG-TS: Add to available list immediately (progressive writing)
             synchronized(segmentFiles) {
                 segmentFiles.add(segmentFile)
             }
+            Log.d(TAG, "Started new MPEG-TS segment: ${segmentFile.name} (immediately available)")
             
             segmentStartTime.set(System.currentTimeMillis())
-            
-            Log.d(TAG, "Started new segment: ${segmentFile.name}")
             
         } catch (e: Exception) {
             Log.e(TAG, "Error starting new segment", e)
             lastError = "Segment creation failed: ${e.message}"
+            currentSegmentFile = null
+            throw e
         }
     }
     
     /**
      * Detect supported muxer format
-     * Tries MPEG-TS first (best for HLS), falls back to MP4
-     * REQ-HW-004: Format detection and fallback
+     * HLS requires MPEG-TS format for proper streaming compatibility
+     * REQ-HW-004: Format detection
+     * 
+     * CRITICAL: Standard MP4 is NOT compatible with HLS streaming.
+     * Android MediaMuxer creates standard MP4 (moov at end), not fragmented MP4 (fMP4).
+     * HLS players expect either MPEG-TS or fMP4, so standard MP4 will not work.
+     * 
+     * @return MUXER_OUTPUT_MPEG_2_TS format code
+     * @throws IllegalStateException if MPEG-TS is not supported
      */
     private fun detectMuxerFormat(): Int {
-        // Try MPEG-TS first (API 26+)
+        // MPEG-TS is REQUIRED for HLS (API 26+)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {
                 // Test if MPEG-TS format is supported by creating a temporary muxer
@@ -562,16 +593,23 @@ class HLSEncoderManager(
                 )
                 testMuxer.release()
                 testFile.delete()
-                Log.d(TAG, "MPEG-TS format supported")
+                Log.i(TAG, "MPEG-TS format supported - HLS streaming is available")
                 return 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
             } catch (e: Exception) {
-                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to MP4", e)
+                Log.e(TAG, "MPEG-TS format test failed despite API 26+", e)
+                throw IllegalStateException(
+                    "HLS streaming requires MPEG-TS format support, which is not available on this device. " +
+                    "MPEG-TS format test failed: ${e.message}"
+                )
             }
+        } else {
+            Log.e(TAG, "Device API ${android.os.Build.VERSION.SDK_INT} does not support MPEG-TS (requires API 26+)")
+            throw IllegalStateException(
+                "HLS streaming requires Android 8.0+ (API 26+) for MPEG-TS format support. " +
+                "Current device is API ${android.os.Build.VERSION.SDK_INT}. " +
+                "Please use MJPEG streaming instead (http://DEVICE_IP:8080/stream)"
+            )
         }
-        
-        // Fallback to MP4 (universally supported)
-        Log.d(TAG, "Using MP4 format for HLS segments")
-        return MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
     }
     
     /**
@@ -601,6 +639,7 @@ class HLSEncoderManager(
             muxer = null
             videoTrackIndex = -1
             muxerStarted = false
+            currentSegmentFile = null
             
             // Cleanup old segments (keep only last maxSegments)
             // REQ-HW-004: Maintain sliding window
@@ -617,6 +656,7 @@ class HLSEncoderManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error finalizing segment", e)
             lastError = "Segment finalization failed: ${e.message}"
+            currentSegmentFile = null
         }
     }
     
@@ -757,6 +797,8 @@ class HLSEncoderManager(
     /**
      * Generate M3U8 playlist for HLS clients
      * REQ-HW-005: M3U8 playlist generation
+     * 
+     * Only MPEG-TS format is supported (MP4 fallback has been removed)
      */
     fun generatePlaylist(): String {
         val playlist = StringBuilder()
@@ -769,10 +811,18 @@ class HLSEncoderManager(
         playlist.append("#EXT-X-MEDIA-SEQUENCE:$mediaSequence\n")
         
         synchronized(segmentFiles) {
+            if (segmentFiles.isEmpty()) {
+                Log.w(TAG, "No segments available yet for playlist generation")
+            } else {
+                Log.d(TAG, "Generating MPEG-TS playlist with ${segmentFiles.size} available segments")
+            }
+            
             segmentFiles.forEach { file ->
                 if (file.exists()) {
                     playlist.append("#EXTINF:$segmentDurationSec.0,\n")
                     playlist.append("${file.name}\n")
+                } else {
+                    Log.w(TAG, "Segment file listed but doesn't exist: ${file.name}")
                 }
             }
         }
