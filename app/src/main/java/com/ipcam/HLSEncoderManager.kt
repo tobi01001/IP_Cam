@@ -42,7 +42,8 @@ class HLSEncoderManager(
     private var muxerStarted: Boolean = false  // Track if muxer.start() was called
     private val segmentIndex = AtomicInteger(0)
     private val segmentStartTime = AtomicLong(0)
-    private val segmentFiles = mutableListOf<File>()
+    private val segmentFiles = mutableListOf<File>()  // Only finalized segments available to clients
+    private var currentSegmentFile: File? = null  // Current segment being written (not yet available)
     private val maxSegments = 10
     
     private val isEncoding = AtomicBoolean(false)
@@ -515,6 +516,10 @@ class HLSEncoderManager(
     /**
      * Start a new segment file
      * REQ-HW-004: Segment creation with MPEG-TS format (with MP4 fallback)
+     * 
+     * CRITICAL: For MP4 format, segments are only finalized on muxer.stop().
+     * We track the current segment separately and only add it to the available
+     * list after finalization to prevent clients from accessing empty files.
      */
     private fun startNewSegment() {
         val segmentDir = File(cacheDir, "hls_segments")
@@ -526,7 +531,7 @@ class HLSEncoderManager(
             Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
         }
         
-        // Use correct file extension based on format: .ts for MPEG-TS, .m4s for fMP4
+        // Use correct file extension based on format: .ts for MPEG-TS, .m4s for MP4
         val extension = if (muxerOutputFormat == 8) "ts" else "m4s"
         val segmentFile = File(segmentDir, "segment${currentIndex}.${extension}")
         
@@ -541,19 +546,26 @@ class HLSEncoderManager(
             videoTrackIndex = -1
             muxerStarted = false
             
-            Log.w(TAG, "Created muxer for segment ${segmentFile.name}, waiting for encoder format to add track")
+            // Track current segment being written
+            currentSegmentFile = segmentFile
             
-            synchronized(segmentFiles) {
-                segmentFiles.add(segmentFile)
+            // For MPEG-TS, add to available list immediately (progressive writing)
+            // For MP4, wait until finalization (only writes on stop())
+            if (muxerOutputFormat == 8) {
+                synchronized(segmentFiles) {
+                    segmentFiles.add(segmentFile)
+                }
+                Log.d(TAG, "Started new MPEG-TS segment: ${segmentFile.name} (immediately available)")
+            } else {
+                Log.d(TAG, "Started new MP4 segment: ${segmentFile.name} (will be available after finalization)")
             }
             
             segmentStartTime.set(System.currentTimeMillis())
             
-            Log.d(TAG, "Started new segment: ${segmentFile.name}")
-            
         } catch (e: Exception) {
             Log.e(TAG, "Error starting new segment", e)
             lastError = "Segment creation failed: ${e.message}"
+            currentSegmentFile = null
         }
     }
     
@@ -561,6 +573,9 @@ class HLSEncoderManager(
      * Detect supported muxer format
      * Tries MPEG-TS first (best for HLS), falls back to fragmented MP4
      * REQ-HW-004: Format detection and fallback
+     * 
+     * IMPORTANT: MP4 format requires finalization (muxer.stop()) before segments are playable.
+     * This means there will be a delay (segment duration) before segments appear in playlist.
      */
     private fun detectMuxerFormat(): Int {
         // Try MPEG-TS first (API 26+)
@@ -574,20 +589,21 @@ class HLSEncoderManager(
                 )
                 testMuxer.release()
                 testFile.delete()
-                Log.i(TAG, "MPEG-TS format supported, using MPEG-TS for HLS segments")
+                Log.i(TAG, "MPEG-TS format supported, using MPEG-TS for HLS segments (progressive writing)")
                 return 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
             } catch (e: Exception) {
-                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to fragmented MP4", e)
+                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to MP4", e)
             }
         } else {
             Log.i(TAG, "Device API < 26, MPEG-TS not available")
         }
         
         // Fallback to regular MP4 (universally supported)
-        // Note: Fragmented MP4 (fMP4) would be better for HLS but requires MediaMuxer.OutputFormat.MUXER_OUTPUT_HEIF
-        // which is only for HEIF images. We'll use standard MP4 and document the limitation.
-        Log.w(TAG, "Using standard MP4 format for HLS segments - playback may be limited to devices/players that support MP4-in-HLS")
-        Log.w(TAG, "Recommended: Use a device with API 26+ for proper MPEG-TS support, or consider VLC which supports MP4 segments")
+        // Note: MP4 requires finalization (muxer.stop()) before data is complete and playable
+        Log.w(TAG, "Using standard MP4 format for HLS segments")
+        Log.w(TAG, "IMPORTANT: MP4 segments will only appear in playlist after finalization (segment duration elapsed)")
+        Log.w(TAG, "This means initial playback will be delayed by one segment duration (~2 seconds)")
+        Log.w(TAG, "For best HLS experience, use a device with Android 8.0+ (API 26+) for MPEG-TS support")
         return MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
     }
     
@@ -605,6 +621,9 @@ class HLSEncoderManager(
     /**
      * Finalize current segment and cleanup old segments
      * REQ-HW-004: Sliding window of 10 segments
+     * 
+     * CRITICAL: For MP4 format, this is where the segment becomes complete and playable.
+     * Only after muxer.stop() does the MP4 file have a valid moov atom and become seekable.
      */
     private fun finalizeSegment() {
         try {
@@ -618,6 +637,16 @@ class HLSEncoderManager(
             muxer = null
             videoTrackIndex = -1
             muxerStarted = false
+            
+            // For MP4 format, add the finalized segment to available list NOW
+            // (MPEG-TS was added immediately in startNewSegment)
+            if (muxerOutputFormat != 8 && currentSegmentFile != null) {
+                synchronized(segmentFiles) {
+                    segmentFiles.add(currentSegmentFile!!)
+                }
+                Log.i(TAG, "MP4 segment finalized and now available: ${currentSegmentFile!!.name}")
+            }
+            currentSegmentFile = null
             
             // Cleanup old segments (keep only last maxSegments)
             // REQ-HW-004: Maintain sliding window
@@ -634,6 +663,7 @@ class HLSEncoderManager(
         } catch (e: Exception) {
             Log.e(TAG, "Error finalizing segment", e)
             lastError = "Segment finalization failed: ${e.message}"
+            currentSegmentFile = null
         }
     }
     
@@ -798,10 +828,18 @@ class HLSEncoderManager(
         }
         
         synchronized(segmentFiles) {
+            if (segmentFiles.isEmpty()) {
+                Log.w(TAG, "No segments available yet for playlist generation")
+            } else {
+                Log.d(TAG, "Generating playlist with ${segmentFiles.size} available segments")
+            }
+            
             segmentFiles.forEach { file ->
                 if (file.exists()) {
                     playlist.append("#EXTINF:$segmentDurationSec.0,\n")
                     playlist.append("${file.name}\n")
+                } else {
+                    Log.w(TAG, "Segment file listed but doesn't exist: ${file.name}")
                 }
             }
         }
