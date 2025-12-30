@@ -392,6 +392,26 @@ class HttpServer(
                         <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                         Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
                     </div>
+                    <h2>HLS Streaming (Bandwidth Efficient)</h2>
+                    <p class="note"><em>HLS provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) with 6-12 second latency. Suitable for recording or limited bandwidth scenarios.</em></p>
+                    <div class="row">
+                        <button id="enableHLSBtn" onclick="enableHLS()">Enable HLS</button>
+                        <button id="disableHLSBtn" onclick="disableHLS()">Disable HLS</button>
+                        <button onclick="checkHLSStatus()">Check Status</button>
+                    </div>
+                    <div id="hlsStatus" class="note" style="margin-top: 10px;"></div>
+                    <div class="endpoint">
+                        <strong>HLS Playlist:</strong> <a href="/hls/stream.m3u8" target="_blank"><code>GET /hls/stream.m3u8</code></a><br>
+                        M3U8 playlist for HLS streaming. Works in VLC, Safari (native), Chrome/Firefox (with hls.js)
+                    </div>
+                    <div class="endpoint">
+                        <strong>Enable HLS:</strong> <a href="/enableHLS" target="_blank"><code>GET /enableHLS</code></a><br>
+                        Enable hardware-accelerated H.264 HLS streaming
+                    </div>
+                    <div class="endpoint">
+                        <strong>Disable HLS:</strong> <a href="/disableHLS" target="_blank"><code>GET /disableHLS</code></a><br>
+                        Disable HLS streaming to save resources
+                    </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
                         <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
@@ -901,6 +921,79 @@ class HttpServer(
                     // Clean up on page unload
                     window.addEventListener('beforeunload', function() {
                         eventSource.close();
+                    });
+                    
+                    // HLS Control Functions
+                    function enableHLS() {
+                        document.getElementById('hlsStatus').textContent = 'Enabling HLS...';
+                        fetch('/enableHLS')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ HLS Enabled</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Config: ' + data.resolution + '<br>' +
+                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed to enable HLS</strong><br>' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function disableHLS() {
+                        document.getElementById('hlsStatus').textContent = 'Disabling HLS...';
+                        fetch('/disableHLS')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: orange;">HLS Disabled</strong>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: red;">Error:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function checkHLSStatus() {
+                        document.getElementById('hlsStatus').textContent = 'Checking HLS status...';
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.hls && data.hls.enabled) {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ HLS Active</strong><br>' +
+                                        'Encoder: ' + data.hls.encoderName + ' (Hardware: ' + data.hls.isHardware + ')<br>' +
+                                        'Bitrate: ' + (data.hls.targetBitrate / 1000000) + ' Mbps @ ' + data.hls.targetFps + ' fps<br>' +
+                                        'Actual FPS: ' + data.hls.actualFps.toFixed(1) + '<br>' +
+                                        'Frames: ' + data.hls.framesEncoded + ' | Segments: ' + data.hls.activeSegments + '<br>' +
+                                        'Avg Encoding: ' + data.hls.avgEncodingTimeMs.toFixed(2) + ' ms<br>' +
+                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: orange;">HLS Not Enabled</strong><br>' +
+                                        'Use "Enable HLS" button to start hardware-accelerated streaming';
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    // Check HLS status on page load
+                    window.addEventListener('load', function() {
+                        checkHLSStatus();
                     });
                 </script>
             </body>

@@ -240,6 +240,28 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        
+        // Restore HLS encoder if it was enabled
+        if (hlsEnabled) {
+            Log.d(TAG, "HLS was enabled in settings, attempting to restore encoder...")
+            // Use a coroutine to avoid blocking onCreate
+            serviceScope.launch(Dispatchers.IO) {
+                try {
+                    // Wait for camera to be ready before starting HLS
+                    delay(2000) // Give camera time to initialize
+                    if (!enableHLSStreaming()) {
+                        Log.w(TAG, "Failed to restore HLS encoder, disabling HLS flag")
+                        hlsEnabled = false
+                        saveSettings()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error restoring HLS encoder", e)
+                    hlsEnabled = false
+                    saveSettings()
+                }
+            }
+        }
+        
         // Don't start server automatically in onCreate - wait for explicit start request
         startCamera()
         startWatchdog()
@@ -1676,9 +1698,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * REQ-OPT-001 through REQ-OPT-012: Hardware-encoded H.264/HLS streaming
      */
     override fun enableHLSStreaming(): Boolean {
-        if (hlsEnabled) {
-            Log.w(TAG, "HLS already enabled")
+        // Check if HLS is already enabled AND encoder is actually running
+        if (hlsEnabled && hlsEncoder != null && hlsEncoder?.isAlive() == true) {
+            Log.d(TAG, "HLS already enabled and encoder is running")
             return true
+        }
+        
+        // If flag is set but encoder is not running, clean up and restart
+        if (hlsEnabled) {
+            Log.w(TAG, "HLS flag was set but encoder not running, restarting...")
+            disableHLSStreaming()
         }
         
         try {
@@ -1713,13 +1742,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return true
             } else {
                 Log.e(TAG, "Failed to start HLS encoder")
+                hlsEnabled = false
                 hlsEncoder = null
+                saveSettings() // Ensure flag is cleared
                 return false
             }
             
         } catch (e: Exception) {
             Log.e(TAG, "Error enabling HLS streaming", e)
+            hlsEnabled = false
             hlsEncoder = null
+            saveSettings() // Ensure flag is cleared
             return false
         }
     }
