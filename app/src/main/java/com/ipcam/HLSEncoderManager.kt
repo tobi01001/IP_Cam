@@ -636,13 +636,32 @@ class HLSEncoderManager(
                 outputBufferIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                     val newFormat = encoder?.outputFormat
                     Log.d(TAG, "Encoder output format changed: $newFormat")
+                    
+                    // Add track to muxer if not already added
+                    // This is the critical step - muxer needs the track before it can write frames
+                    if (muxer != null && videoTrackIndex == -1 && newFormat != null) {
+                        try {
+                            videoTrackIndex = muxer?.addTrack(newFormat) ?: -1
+                            muxer?.start()
+                            Log.i(TAG, "Video track added to muxer, index: $videoTrackIndex")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error adding track to muxer", e)
+                            lastError = "Failed to add video track: ${e.message}"
+                        }
+                    }
                 }
                 outputBufferIndex >= 0 -> {
                     val encodedData = encoder?.getOutputBuffer(outputBufferIndex)
                     
-                    if (encodedData != null && bufferInfo.size > 0 && muxer != null) {
-                        // Write to muxer
-                        muxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                    if (encodedData != null && bufferInfo.size > 0 && muxer != null && videoTrackIndex != -1) {
+                        // Write to muxer only if track has been added
+                        try {
+                            muxer?.writeSampleData(videoTrackIndex, encodedData, bufferInfo)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error writing sample to muxer", e)
+                        }
+                    } else if (encodedData != null && bufferInfo.size > 0 && videoTrackIndex == -1) {
+                        Log.w(TAG, "Dropping frame - video track not yet added to muxer")
                     }
                     
                     encoder?.releaseOutputBuffer(outputBufferIndex, false)
