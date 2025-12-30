@@ -36,8 +36,8 @@ import java.util.concurrent.atomic.AtomicLong
  */
 class RTSPServer(
     private val port: Int = 8554, // Standard RTSP port
-    private val width: Int = 1920,
-    private val height: Int = 1080,
+    private var width: Int = 1920,
+    private var height: Int = 1080,
     private val fps: Int = 30,
     private val bitrate: Int = 2_000_000 // 2 Mbps
 ) {
@@ -226,11 +226,8 @@ class RTSPServer(
         }
         
         try {
-            // Initialize encoder
-            if (!initializeEncoder()) {
-                Log.e(TAG, "Failed to initialize encoder")
-                return false
-            }
+            // Mark encoding as enabled (encoder will be created on first frame)
+            isEncoding.set(true)
             
             // Start server socket
             serverSocket = ServerSocket(port)
@@ -242,8 +239,7 @@ class RTSPServer(
             }
             
             Log.i(TAG, "RTSP server started on port $port")
-            Log.i(TAG, "Encoder: $encoderName (hardware: $isHardwareEncoder)")
-            Log.i(TAG, "Configuration: ${width}x${height} @ ${fps}fps, ${bitrate}bps")
+            Log.i(TAG, "Encoder will be initialized on first frame")
             
             return true
             
@@ -295,6 +291,26 @@ class RTSPServer(
             lastError = "Encoder init failed: ${e.message}"
             return false
         }
+    }
+    
+    /**
+     * Recreate encoder with new dimensions
+     */
+    private fun recreateEncoder(newWidth: Int, newHeight: Int): Boolean {
+        Log.i(TAG, "Recreating encoder with dimensions: ${newWidth}x${newHeight}")
+        
+        // Update dimensions
+        width = newWidth
+        height = newHeight
+        
+        // Recreate buffers
+        yDataBuffer = null
+        uvDataBuffer = null
+        yRowBuffer = null
+        uvRowBuffer = null
+        
+        // Initialize new encoder
+        return initializeEncoder()
     }
     
     /**
@@ -609,19 +625,31 @@ class RTSPServer(
      * Encode frame from camera
      */
     fun encodeFrame(image: ImageProxy): Boolean {
-        if (!isEncoding.get() || encoder == null) {
-            Log.d(TAG, "Encoder not ready: isEncoding=${isEncoding.get()}, encoder=${encoder != null}")
+        if (!isEncoding.get()) {
+            Log.d(TAG, "Encoder not ready: isEncoding=${isEncoding.get()}")
             return false
         }
         
         try {
-            // Validate dimensions
-            if (image.width != width || image.height != height) {
-                if (lastError != "Resolution mismatch: ${image.width}x${image.height}") {
-                    Log.e(TAG, "Image resolution mismatch: ${image.width}x${image.height} vs ${width}x${height}")
-                    lastError = "Resolution mismatch: ${image.width}x${image.height}"
+            // Check if encoder needs to be (re)created due to resolution mismatch
+            if (encoder == null || image.width != width || image.height != height) {
+                if (encoder != null) {
+                    Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
+                    try {
+                        encoder?.stop()
+                        encoder?.release()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping old encoder", e)
+                    }
+                    encoder = null
+                    sps = null
+                    pps = null
                 }
-                return false
+                
+                // Recreate encoder with actual frame dimensions
+                if (!recreateEncoder(image.width, image.height)) {
+                    return false
+                }
             }
             
             // Log first successful frame
