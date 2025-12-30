@@ -711,8 +711,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Feed raw YUV to HLS encoder BEFORE bitmap conversion for efficiency
             // REQ-OPT-010: HLS and MJPEG streams available simultaneously
             if (hlsEnabled) {
-                // Lazy initialization of encoder with actual frame dimensions
-                if (hlsEncoder == null) {
+                // Check if encoder needs to be (re)created
+                val needsRecreation = hlsEncoder == null || 
+                    !hlsEncoder!!.matchesResolution(image.width, image.height)
+                
+                if (needsRecreation) {
+                    // Clean up existing encoder if resolution changed
+                    if (hlsEncoder != null) {
+                        Log.i(TAG, "Resolution changed, recreating HLS encoder for ${image.width}x${image.height}")
+                        try {
+                            hlsEncoder?.stop()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error stopping old encoder", e)
+                        }
+                        hlsEncoder = null
+                    }
+                    
                     try {
                         Log.i(TAG, "Creating HLS encoder with actual frame dimensions: ${image.width}x${image.height}")
                         

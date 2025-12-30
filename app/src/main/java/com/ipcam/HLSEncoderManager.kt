@@ -206,6 +206,14 @@ class HLSEncoderManager(
     }
     
     /**
+     * Check if encoder matches the given resolution
+     * REQ-HW-007: Resolution validation for encoder reuse
+     */
+    fun matchesResolution(frameWidth: Int, frameHeight: Int): Boolean {
+        return this.width == frameWidth && this.height == frameHeight
+    }
+    
+    /**
      * Select the best available encoder (hardware preferred)
      * REQ-HW-002: Hardware encoder detection and selection
      */
