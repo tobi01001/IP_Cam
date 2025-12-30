@@ -113,6 +113,13 @@ class HttpServer(
                 // Adaptive quality control
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
+                
+                // HLS streaming endpoints
+                // REQ-HW-005: HTTP endpoints for HLS
+                get("/hls/stream.m3u8") { serveHLSPlaylist() }
+                get("/hls/{segmentName}") { serveHLSSegment() }
+                get("/enableHLS") { serveEnableHLS() }
+                get("/disableHLS") { serveDisableHLS() }
             }
         }
         
@@ -977,6 +984,40 @@ class HttpServer(
         val activeStreamCount = activeStreams.get()
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
         
+        // HLS metrics
+        // REQ-HW-008: Performance monitoring
+        val hlsEnabled = cameraService.isHLSEnabled()
+        val hlsMetrics = if (hlsEnabled) cameraService.getHLSMetrics() else null
+        
+        val hlsJson = if (hlsEnabled && hlsMetrics != null) {
+            """
+                "hls": {
+                    "enabled": true,
+                    "encoderName": "${hlsMetrics.encoderName}",
+                    "isHardware": ${hlsMetrics.isHardware},
+                    "targetBitrate": ${hlsMetrics.targetBitrate},
+                    "targetFps": ${hlsMetrics.targetFps},
+                    "actualFps": ${String.format("%.1f", hlsMetrics.actualFps)},
+                    "framesEncoded": ${hlsMetrics.framesEncoded},
+                    "avgEncodingTimeMs": ${String.format("%.2f", hlsMetrics.avgEncodingTimeMs)},
+                    "activeSegments": ${hlsMetrics.activeSegments},
+                    "lastError": ${if (hlsMetrics.lastError != null) "\"${hlsMetrics.lastError}\"" else "null"}
+                },
+            """.trimIndent()
+        } else {
+            """
+                "hls": {
+                    "enabled": false
+                },
+            """.trimIndent()
+        }
+        
+        val endpoints = if (hlsEnabled) {
+            "[/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/hls/stream.m3u8\", \"/enableHLS\", \"/disableHLS\"]"
+        } else {
+            "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/enableHLS\"]"
+        }
+        
         val json = """
             {
                 "status": "running",
@@ -991,7 +1032,8 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats"]
+                $hlsJson
+                "endpoints": $endpoints
             }
         """.trimIndent()
         
@@ -1350,4 +1392,97 @@ class HttpServer(
             ContentType.Application.Json
         )
     }
+    
+    // ==================== HLS Streaming Endpoints ====================
+    // REQ-HW-005: HTTP endpoints for HLS streaming
+    
+    /**
+     * Serve HLS playlist (M3U8)
+     * REQ-HW-005: /hls/stream.m3u8 endpoint
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSPlaylist() {
+        val playlist = cameraService.getHLSPlaylist()
+        
+        if (playlist != null) {
+            call.response.header("Cache-Control", "no-cache")
+            call.response.header("Access-Control-Allow-Origin", "*")
+            call.respondText(
+                playlist,
+                ContentType.parse("application/vnd.apple.mpegurl"),
+                HttpStatusCode.OK
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"HLS not enabled. Use /enableHLS to enable HLS streaming."}""",
+                ContentType.Application.Json,
+                HttpStatusCode.ServiceUnavailable
+            )
+        }
+    }
+    
+    /**
+     * Serve HLS segment file (TS)
+     * REQ-HW-005: /hls/segment{N}.ts endpoint
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
+        val segmentName = call.parameters["segmentName"] ?: ""
+        
+        if (!segmentName.endsWith(".ts")) {
+            call.respondText(
+                """{"status":"error","message":"Invalid segment name. Must end with .ts"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val segmentFile = cameraService.getHLSSegment(segmentName)
+        
+        if (segmentFile != null && segmentFile.exists()) {
+            call.response.header("Cache-Control", "public, max-age=60")
+            call.response.header("Access-Control-Allow-Origin", "*")
+            call.respondFile(segmentFile)
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Segment not found: $segmentName"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.NotFound
+            )
+        }
+    }
+    
+    /**
+     * Enable HLS streaming
+     * REQ-OPT-011: HLS configurable via API
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableHLS() {
+        val success = cameraService.enableHLSStreaming()
+        
+        if (success) {
+            val metrics = cameraService.getHLSMetrics()
+            call.respondText(
+                """{"status":"ok","message":"HLS streaming enabled","hlsEnabled":true,"encoder":"${metrics?.encoderName}","isHardware":${metrics?.isHardware},"resolution":"${metrics?.let { "${it.targetBitrate/1000000} Mbps @ ${it.targetFps} fps" }}"}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to enable HLS streaming. Check logs for details.","hlsEnabled":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Disable HLS streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableHLS() {
+        cameraService.disableHLSStreaming()
+        call.respondText(
+            """{"status":"ok","message":"HLS streaming disabled","hlsEnabled":false}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    // ==================== End HLS Streaming Endpoints ====================
 }
