@@ -133,6 +133,19 @@ class HLSEncoderManager(
         }
         
         try {
+            // Try to create hardware encoder first
+            // REQ-HW-002: Prefer hardware encoder, fallback to software
+            encoder = selectBestEncoder()
+            
+            // Get supported color format from encoder
+            val colorFormat = getSupportedColorFormat()
+            if (colorFormat == -1) {
+                Log.e(TAG, "No supported color format found for encoder")
+                return false
+            }
+            
+            Log.d(TAG, "Using color format: $colorFormat")
+            
             // Create output format for H.264
             // REQ-HW-003: H.264 encoder configuration
             val format = MediaFormat.createVideoFormat(
@@ -141,11 +154,8 @@ class HLSEncoderManager(
                 height
             )
             
-            // Configure encoder settings
-            format.setInteger(
-                MediaFormat.KEY_COLOR_FORMAT,
-                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible
-            )
+            // Configure encoder settings with supported color format
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, colorFormat)
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // Keyframe every 1 second
@@ -153,10 +163,6 @@ class HLSEncoderManager(
             // Advanced encoder settings for better quality
             format.setInteger(MediaFormat.KEY_BITRATE_MODE, 
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR) // Variable bitrate
-            
-            // Try to create hardware encoder first
-            // REQ-HW-002: Prefer hardware encoder, fallback to software
-            encoder = selectBestEncoder()
             
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder?.start()
@@ -176,7 +182,7 @@ class HLSEncoderManager(
             startNewSegment()
             
             Log.i(TAG, "HLS encoder started: $encoderName (hardware: $isHardwareEncoder)")
-            Log.i(TAG, "Configuration: ${width}x${height} @ ${fps}fps, ${bitrate}bps")
+            Log.i(TAG, "Configuration: ${width}x${height} @ ${fps}fps, ${bitrate}bps, color format: $colorFormat")
             
             return true
             
@@ -218,6 +224,51 @@ class HLSEncoderManager(
     }
     
     /**
+     * Get supported color format from the encoder
+     * Returns the first supported format, preferring NV12/NV21
+     */
+    private fun getSupportedColorFormat(): Int {
+        try {
+            val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            for (codecInfo in codecList.codecInfos) {
+                if (!codecInfo.isEncoder) continue
+                if (!codecInfo.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+                if (codecInfo.name != encoderName) continue
+                
+                val capabilities = codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val colorFormats = capabilities.colorFormats
+                
+                // Prefer NV12 or NV21 (semi-planar YUV)
+                for (format in colorFormats) {
+                    when (format) {
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> {
+                            Log.d(TAG, "Using COLOR_FormatYUV420SemiPlanar (NV12)")
+                            return format
+                        }
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> {
+                            Log.d(TAG, "Using COLOR_FormatYUV420Planar (I420)")
+                            return format
+                        }
+                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> {
+                            Log.d(TAG, "Using COLOR_FormatYUV420Flexible")
+                            return format
+                        }
+                    }
+                }
+                
+                // Return first available format if no preferred format found
+                if (colorFormats.isNotEmpty()) {
+                    Log.d(TAG, "Using first available color format: ${colorFormats[0]}")
+                    return colorFormats[0]
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error getting supported color format", e)
+        }
+        return -1
+    }
+    
+    /**
      * Encode a single frame from camera
      * REQ-HW-003: Feed YUV frames to encoder
      */
@@ -227,24 +278,45 @@ class HLSEncoderManager(
         val startTime = System.currentTimeMillis()
         
         try {
+            // Validate encoder state
+            if (encoder == null) {
+                Log.e(TAG, "Encoder is null, cannot encode frame")
+                return false
+            }
+            
             // Get input buffer from encoder
             val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
             if (inputBufferIndex >= 0) {
                 val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
                 
-                inputBuffer?.let {
-                    fillInputBuffer(it, image)
-                    
-                    val presentationTimeUs = frameCount.get() * 1_000_000L / fps
-                    encoder?.queueInputBuffer(
-                        inputBufferIndex,
-                        0,
-                        it.limit(),
-                        presentationTimeUs,
-                        0
-                    )
-                    frameCount.incrementAndGet()
+                if (inputBuffer == null) {
+                    Log.e(TAG, "Input buffer is null for index $inputBufferIndex")
+                    return false
                 }
+                
+                // Validate buffer size
+                val requiredSize = width * height * 3 / 2  // YUV420 size
+                if (inputBuffer.capacity() < requiredSize) {
+                    Log.e(TAG, "Input buffer too small: ${inputBuffer.capacity()} < $requiredSize")
+                    return false
+                }
+                
+                fillInputBuffer(inputBuffer, image)
+                
+                val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                encoder?.queueInputBuffer(
+                    inputBufferIndex,
+                    0,
+                    inputBuffer.position(),  // Use actual data size
+                    presentationTimeUs,
+                    0
+                )
+                frameCount.incrementAndGet()
+            } else if (inputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                // Normal - encoder is busy
+                return true
+            } else {
+                Log.w(TAG, "Unexpected buffer index: $inputBufferIndex")
             }
             
             // Retrieve encoded output
@@ -267,6 +339,12 @@ class HLSEncoderManager(
             
             return true
             
+        } catch (e: IllegalStateException) {
+            Log.e(TAG, "Encoder illegal state", e)
+            lastError = "Encoder state error: ${e.message}"
+            // Try to recover by stopping encoder
+            isEncoding.set(false)
+            return false
         } catch (e: Exception) {
             Log.e(TAG, "Error encoding frame", e)
             lastError = "Frame encoding failed: ${e.message}"
@@ -277,44 +355,101 @@ class HLSEncoderManager(
     /**
      * Convert YUV_420_888 ImageProxy to NV12 format for encoder
      * REQ-HW-003: Color format conversion
+     * 
+     * Handles proper stride and padding for YUV planes
      */
     private fun fillInputBuffer(buffer: ByteBuffer, image: ImageProxy) {
-        buffer.clear()
-        
-        val yPlane = image.planes[0]
-        val uPlane = image.planes[1]
-        val vPlane = image.planes[2]
-        
-        // Copy Y plane
-        val yBuffer = yPlane.buffer
-        val ySize = yBuffer.remaining()
-        val yBytes = ByteArray(ySize)
-        yBuffer.get(yBytes)
-        buffer.put(yBytes)
-        
-        // Interleave U and V planes for NV12 format (UVUV...)
-        val uBuffer = uPlane.buffer
-        val vBuffer = vPlane.buffer
-        
-        // Use the minimum of both buffer sizes to prevent overflow
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-        val uvSize = minOf(uSize, vSize)
-        val uvBytes = ByteArray(uvSize * 2)
-        var uvIndex = 0
-        
-        // Interleave U and V with bounds checking
-        for (i in 0 until uvSize) {
-            if (uBuffer.hasRemaining() && uvIndex < uvBytes.size) {
-                uvBytes[uvIndex++] = uBuffer.get()
+        try {
+            buffer.clear()
+            
+            val planes = image.planes
+            if (planes.size < 3) {
+                Log.e(TAG, "Invalid image format: expected 3 planes, got ${planes.size}")
+                return
             }
-            if (vBuffer.hasRemaining() && uvIndex < uvBytes.size) {
-                uvBytes[uvIndex++] = vBuffer.get()
+            
+            val yPlane = planes[0]
+            val uPlane = planes[1]
+            val vPlane = planes[2]
+            
+            val yBuffer = yPlane.buffer
+            val uBuffer = uPlane.buffer
+            val vBuffer = vPlane.buffer
+            
+            val yRowStride = yPlane.rowStride
+            val yPixelStride = yPlane.pixelStride
+            val uvRowStride = uPlane.rowStride
+            val uvPixelStride = uPlane.pixelStride
+            
+            // Copy Y plane with stride handling
+            yBuffer.rewind()
+            if (yRowStride == width && yPixelStride == 1) {
+                // Contiguous memory, direct copy
+                val ySize = width * height
+                val yBytes = ByteArray(ySize)
+                yBuffer.get(yBytes, 0, ySize)
+                buffer.put(yBytes)
+            } else {
+                // Need to handle stride
+                val rowData = ByteArray(yRowStride)
+                for (row in 0 until height) {
+                    yBuffer.position(row * yRowStride)
+                    yBuffer.get(rowData, 0, minOf(yRowStride, yBuffer.remaining()))
+                    buffer.put(rowData, 0, width)
+                }
             }
+            
+            // Copy UV planes interleaved for NV12 format (UVUV...)
+            val uvHeight = height / 2
+            val uvWidth = width / 2
+            
+            uBuffer.rewind()
+            vBuffer.rewind()
+            
+            if (uvPixelStride == 2 && uvRowStride == width) {
+                // Already interleaved (NV12/NV21), can copy directly
+                val uvSize = uvWidth * uvHeight * 2
+                val uvBytes = ByteArray(uvSize)
+                uBuffer.get(uvBytes, 0, minOf(uvSize, uBuffer.remaining()))
+                buffer.put(uvBytes, 0, minOf(uvSize, uvBytes.size))
+            } else {
+                // Need to interleave U and V
+                val uvRowData = ByteArray(uvRowStride)
+                for (row in 0 until uvHeight) {
+                    uBuffer.position(row * uvRowStride)
+                    vBuffer.position(row * uvRowStride)
+                    
+                    val uRemaining = uBuffer.remaining()
+                    val vRemaining = vBuffer.remaining()
+                    
+                    if (uRemaining > 0 && vRemaining > 0) {
+                        uBuffer.get(uvRowData, 0, minOf(uvRowStride, uRemaining))
+                        vBuffer.position(row * uvRowStride) // Reset position
+                        
+                        // Interleave U and V values
+                        for (col in 0 until uvWidth) {
+                            val uIndex = col * uvPixelStride
+                            val vIndex = col * uvPixelStride
+                            
+                            if (uIndex < uvRowData.size && buffer.hasRemaining()) {
+                                buffer.put(uvRowData[uIndex])
+                            }
+                            
+                            vBuffer.position(row * uvRowStride + vIndex)
+                            if (vBuffer.hasRemaining() && buffer.hasRemaining()) {
+                                buffer.put(vBuffer.get())
+                            }
+                        }
+                    }
+                }
+            }
+            
+            buffer.flip()
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error filling input buffer", e)
+            lastError = "Buffer fill failed: ${e.message}"
         }
-        
-        buffer.put(uvBytes, 0, uvIndex)
-        buffer.flip()
     }
     
     /**
