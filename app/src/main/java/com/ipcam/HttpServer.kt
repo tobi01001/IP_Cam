@@ -1534,15 +1534,16 @@ class HttpServer(
         val segmentFile = cameraService.getHLSSegment(segmentName)
         
         if (segmentFile != null && segmentFile.exists()) {
-            call.response.header("Cache-Control", "public, max-age=60")
-            call.response.header("Access-Control-Allow-Origin", "*")
-            
             // Set correct Content-Type based on file extension
             val contentType = when {
                 segmentName.endsWith(".ts") -> ContentType.parse("video/mp2t")
                 segmentName.endsWith(".m4s") -> ContentType.parse("video/mp4")
                 else -> ContentType.Application.OctetStream
             }
+            
+            call.response.header("Content-Type", contentType.toString())
+            call.response.header("Cache-Control", "public, max-age=60")
+            call.response.header("Access-Control-Allow-Origin", "*")
             
             call.respondFile(segmentFile)
         } else {

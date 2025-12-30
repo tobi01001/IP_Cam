@@ -804,14 +804,19 @@ class HLSEncoderManager(
     /**
      * Generate M3U8 playlist for HLS clients
      * REQ-HW-005: M3U8 playlist generation
+     * 
+     * IMPORTANT: Android MediaMuxer creates standard MP4, not fragmented MP4 (fMP4).
+     * Using version 3 for maximum compatibility, even though MP4 segments are non-standard.
      */
     fun generatePlaylist(): String {
         val playlist = StringBuilder()
         playlist.append("#EXTM3U\n")
         
-        // Use version 3 for MPEG-TS, version 7 for fragmented MP4
-        // Version 7 indicates ISO Base Media File Format segments (fMP4)
-        val version = if (muxerOutputFormat == 8) 3 else 7
+        // CRITICAL: Use version 3 for both MPEG-TS and MP4
+        // Android MediaMuxer MUXER_OUTPUT_MPEG_4 creates STANDARD MP4, not fragmented MP4
+        // Version 7 requires fMP4 format which we don't have
+        // Version 3 is more permissive and some players accept standard MP4 segments
+        val version = 3
         playlist.append("#EXT-X-VERSION:$version\n")
         playlist.append("#EXT-X-TARGETDURATION:$segmentDurationSec\n")
         
@@ -819,12 +824,11 @@ class HLSEncoderManager(
         val mediaSequence = maxOf(0, currentIndex - maxSegments)
         playlist.append("#EXT-X-MEDIA-SEQUENCE:$mediaSequence\n")
         
-        // Add map tag for fragmented MP4 format (if using MP4)
-        // This helps players understand the initialization segment
+        // Log format-specific information
         if (muxerOutputFormat != 8) {
-            // Note: For proper fMP4 support, we'd need an initialization segment
-            // For now, we document that MP4 fallback has limited compatibility
-            Log.d(TAG, "Generating playlist with MP4 segments (limited HLS compatibility)")
+            Log.w(TAG, "Generating playlist with standard MP4 segments (not fMP4)")
+            Log.w(TAG, "Using HLS version 3 for maximum compatibility")
+            Log.w(TAG, "Note: Standard MP4 in HLS is non-standard and may not work with all players")
         }
         
         synchronized(segmentFiles) {
