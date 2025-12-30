@@ -7,7 +7,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 ## Features
 - **Live Camera Preview**: View what the camera sees directly in the app
 - **HTTP Web Server**: Access the camera through any web browser
-- **MJPEG Streaming**: Real-time video streaming compatible with surveillance systems
+- **MJPEG Streaming**: Real-time video streaming with low latency (~150-280ms) compatible with all surveillance systems
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
 - **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Camera Selection**: Switch between front and back cameras
@@ -30,7 +30,7 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 - **[Requirements Specification](REQUIREMENTS_SPECIFICATION.md)** - Complete technical requirements for implementing IP_Cam from scratch
 - **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
 - **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
-- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Frame processing pipeline and performance analysis
+- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (HLS/RTSP)
 
 ## Requirements
 - Android 7.0 (API level 24) or higher
@@ -469,14 +469,26 @@ The app requires the following permissions:
 ## Technical Details
 - **HTTP Server**: NanoHTTPD with bounded thread pool
 - **Camera API**: AndroidX CameraX
-- **Streaming Format**: MJPEG (Motion JPEG)
+- **Streaming Format**: MJPEG (Motion JPEG) - preserved as primary format for low latency and universal compatibility
 - **Image Format**: JPEG
 - **Default Port**: 8080
-- **Frame Rate**: ~10 fps
+- **Frame Rate**: ~10 fps (optimized for bandwidth efficiency)
 - **Max Concurrent Connections**: 32+ simultaneous clients
 - **Connection Types**: Separate tracking for HTTP requests, MJPEG streams, and SSE clients
 - **Orientation Detection**: OrientationEventListener for auto-rotation
 - **Rotation Support**: Auto-detection or manual override (0°, 90°, 180°, 270°)
+
+### Why MJPEG?
+
+IP_Cam uses **MJPEG (Motion JPEG)** as its primary streaming format for several important reasons:
+
+✅ **Low Latency** - 150-280ms end-to-end delay, perfect for live monitoring  
+✅ **Universal Compatibility** - Works with ALL surveillance systems (ZoneMinder, Shinobi, Blue Iris, MotionEye)  
+✅ **Simple Integration** - Standard HTTP protocol, works in any web browser  
+✅ **Reliable** - Each frame is independent, instant recovery from errors  
+✅ **Real-Time** - No buffering delays, immediate frame-by-frame transmission  
+
+For specialized use cases requiring lower bandwidth (at the cost of increased latency), hardware-encoded streaming with modern protocols (HLS/RTSP) can be added as an **optional feature** alongside MJPEG. See [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) for detailed requirements and implementation guidance.
 
 ### Architecture
 
