@@ -5,22 +5,30 @@ Android IP-Cam - turning an old phone into a camera
 IP_Cam is a simple Android application that turns your Android phone into an IP camera accessible over your local WiFi network. It provides a web server with a REST API and MJPEG streaming capabilities, making it compatible with popular surveillance systems like ZoneMinder and Shinobi.
 
 ## Features
-- **Live Camera Preview**: View what the camera sees directly in the app
-- **HTTP Web Server**: Access the camera through any web browser
+
+### Streaming
 - **MJPEG Streaming**: Real-time video streaming with low latency (~150-280ms) compatible with all surveillance systems
+- **HLS Streaming (Optional)**: Hardware-accelerated H.264 streaming with 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) at the cost of higher latency (6-12 seconds)
+- **Dual-Stream Architecture**: Both MJPEG and HLS can run simultaneously for different clients
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
-- **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
+
+### Camera & Control
+- **Live Camera Preview**: View what the camera sees directly in the app
 - **Camera Selection**: Switch between front and back cameras
 - **Flashlight/Torch Control**: Toggle flashlight for back camera (in-app and via HTTP API)
 - **Configurable Formats**: Choose supported resolutions from the web UI
 - **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
 - **Resolution Debugging**: Optional overlay showing actual bitmap dimensions
+
+### Reliability & Management
+- **HTTP Web Server**: Access the camera through any web browser (Ktor-based)
+- **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Persistent Service**: Foreground service with automatic restart and battery optimization
 - **Network Monitoring**: Automatically restarts server on network changes
 - **Settings Persistence**: All settings saved and restored across app restarts
 - **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
-- **Low Latency**: Optimized for fast streaming with JPEG compression
+- **Performance Monitoring**: Real-time bandwidth and quality metrics
 
 ## Target Device
 Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
@@ -81,9 +89,10 @@ Simply open the displayed URL in any web browser on the same network to access t
 
 #### API Endpoints
 
+##### MJPEG Streaming (Default - Low Latency)
 - **`GET /`** - Web interface with live stream
 - **`GET /snapshot`** - Capture and return a single JPEG image
-- **`GET /stream`** - MJPEG video stream
+- **`GET /stream`** - MJPEG video stream (~150-280ms latency, ~8 Mbps @ 10fps)
 - **`GET /switch`** - Switch between front and back camera (returns JSON)
 - **`GET /status`** - Get server status and camera information (returns JSON with connection info)
 - **`GET /formats`** - List supported resolutions for the active camera
@@ -93,7 +102,24 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
 - **`GET /toggleFlashlight`** - Toggle flashlight on/off for back camera (returns JSON with state)
 
+##### HLS Streaming (Optional - Bandwidth Efficient)
+**Note:** HLS streaming provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) at the cost of higher latency (6-12 seconds). Suitable for recording, remote viewing over limited bandwidth, and integration with modern NVR systems. MJPEG remains the primary streaming method for low-latency applications.
+
+- **`GET /enableHLS`** - Enable HLS streaming (returns JSON with encoder info)
+- **`GET /disableHLS`** - Disable HLS streaming (returns JSON)
+- **`GET /hls/stream.m3u8`** - HLS master playlist (M3U8 format)
+- **`GET /hls/segment{N}.ts`** - HLS video segments (MPEG-TS format)
+
+**HLS Features:**
+- Hardware-accelerated H.264 encoding for efficiency
+- 50-75% bandwidth reduction compared to MJPEG
+- 2-second segments with 10-segment sliding window
+- 6-12 seconds latency (not suitable for real-time monitoring)
+- Compatible with Safari (native), Chrome/Firefox (via hls.js), VLC, modern surveillance systems
+
 #### Example Usage
+
+##### MJPEG Streaming Examples
 
 **Capture a snapshot:**
 ```bash
@@ -129,6 +155,124 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 ```bash
 curl http://192.168.1.100:8080/toggleFlashlight
 ```
+
+##### HLS Streaming Examples
+
+**Enable HLS streaming:**
+```bash
+curl http://192.168.1.100:8080/enableHLS
+```
+
+**Disable HLS streaming:**
+```bash
+curl http://192.168.1.100:8080/disableHLS
+```
+
+**Play HLS stream in VLC:**
+```bash
+vlc http://192.168.1.100:8080/hls/stream.m3u8
+```
+
+**Play HLS stream in web browser (Safari - native support):**
+```html
+<video controls>
+    <source src="http://192.168.1.100:8080/hls/stream.m3u8" type="application/x-mpegURL">
+</video>
+```
+
+**Play HLS stream in Chrome/Firefox (using hls.js):**
+```html
+<video id="hlsPlayer" controls style="width: 100%; max-width: 1280px;"></video>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+    if (Hls.isSupported()) {
+        var video = document.getElementById('hlsPlayer');
+        var hls = new Hls();
+        hls.loadSource('http://192.168.1.100:8080/hls/stream.m3u8');
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            video.play();
+        });
+    }
+</script>
+```
+
+**Download HLS stream with FFmpeg:**
+```bash
+ffmpeg -i http://192.168.1.100:8080/hls/stream.m3u8 -c copy output.mp4
+```
+
+**Use in surveillance systems (ZoneMinder, Shinobi, Blue Iris):**
+- **MJPEG (recommended for low latency):** `http://192.168.1.100:8080/stream`
+- **HLS (for bandwidth efficiency):** `http://192.168.1.100:8080/hls/stream.m3u8`
+
+### Choosing Between MJPEG and HLS Streaming
+
+IP_Cam supports both MJPEG and HLS streaming protocols, each optimized for different use cases:
+
+#### MJPEG Streaming (Default - Recommended for Most Users)
+
+**Best For:**
+- Real-time monitoring and surveillance
+- Motion detection integration
+- Low-latency requirements (<300ms)
+- Maximum compatibility with all surveillance systems
+- Local network streaming with sufficient bandwidth
+
+**Advantages:**
+- ✅ Very low latency (~150-280ms)
+- ✅ Universal compatibility (works with all surveillance systems)
+- ✅ Simple implementation (works in any browser with `<img>` tag)
+- ✅ Instant recovery from disconnections
+- ✅ Frame-by-frame streaming (no buffering delays)
+
+**Considerations:**
+- ⚠️ Higher bandwidth usage (~8 Mbps per client @ 1080p 10fps)
+- ⚠️ Each frame is independently compressed (no inter-frame compression)
+
+#### HLS Streaming (Optional - For Bandwidth-Constrained Scenarios)
+
+**Best For:**
+- Remote viewing over limited bandwidth connections
+- Recording to disk (native MP4/TS format)
+- Multiple concurrent viewers on bandwidth-limited networks
+- Integration with modern web-based surveillance systems
+- Cellular or metered network connections
+
+**Advantages:**
+- ✅ 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps)
+- ✅ Hardware-accelerated H.264 encoding (efficient, low CPU usage)
+- ✅ Better video quality through inter-frame compression
+- ✅ Native support in modern browsers and surveillance systems
+- ✅ Scalable to more concurrent viewers
+
+**Considerations:**
+- ⚠️ Higher latency (6-12 seconds) - not suitable for real-time monitoring
+- ⚠️ More complex implementation (requires segment buffering)
+- ⚠️ Requires modern client support (hls.js for Chrome/Firefox)
+- ⚠️ Additional storage for segment cache (~5 MB)
+
+#### Comparison Table
+
+| Feature | MJPEG | HLS |
+|---------|-------|-----|
+| **Latency** | 150-280ms | 6-12 seconds |
+| **Bandwidth** | ~8 Mbps | ~2-4 Mbps |
+| **Compatibility** | Universal | Modern systems |
+| **Quality** | Good | Excellent |
+| **CPU Usage** | Medium | Low (hardware) |
+| **Best For** | Real-time monitoring | Recording/bandwidth-limited |
+
+#### Recommendation
+
+- **Start with MJPEG** - It works everywhere and provides the low latency needed for surveillance
+- **Add HLS when needed** - Enable HLS when you need to:
+  - Stream over limited bandwidth connections
+  - Support many concurrent viewers
+  - Record video in native MP4 format
+  - Reduce cellular data usage for remote viewing
+
+Both streams can run simultaneously, allowing different clients to choose the best option for their needs.
 
 ### Camera Orientation Control
 
