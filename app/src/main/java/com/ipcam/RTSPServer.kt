@@ -8,6 +8,9 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 import kotlinx.coroutines.*
 import java.io.*
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.nio.ByteBuffer
@@ -95,20 +98,34 @@ class RTSPServer(
         val socket: Socket,
         @Volatile var state: SessionState = SessionState.INIT
     ) {
-        val clientRtpPort: Int = 0
-        val clientRtcpPort: Int = 0
-        var rtpSocket: Socket? = null
+        var clientAddress: InetAddress? = null
+        var clientRtpPort: Int = 0
+        var clientRtcpPort: Int = 0
+        var rtpSocket: DatagramSocket? = null
+        var rtcpSocket: DatagramSocket? = null
+        var serverRtpPort: Int = 0
+        var serverRtcpPort: Int = 0
         var sequenceNumber = 0
         var timestamp: Long = 0
         val ssrc = (Math.random() * Int.MAX_VALUE).toInt()
         
         fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean) {
             try {
+                if (clientAddress == null || clientRtpPort == 0) {
+                    return
+                }
+                
                 val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame)
                 rtpSocket?.let { socket ->
-                    if (socket.isConnected && !socket.isClosed) {
+                    if (!socket.isClosed) {
                         rtpPackets.forEach { packet ->
-                            socket.outputStream.write(packet)
+                            val dgPacket = DatagramPacket(
+                                packet,
+                                packet.size,
+                                clientAddress,
+                                clientRtpPort
+                            )
+                            socket.send(dgPacket)
                         }
                     }
                 }
@@ -399,6 +416,7 @@ class RTSPServer(
                     "DESCRIBE" -> handleDescribe(writer, url, headers)
                     "SETUP" -> handleSetup(writer, session, headers)
                     "PLAY" -> handlePlay(writer, session, headers)
+                    "PAUSE" -> handlePause(writer, session, headers)
                     "TEARDOWN" -> handleTeardown(writer, session, headers)
                     else -> sendResponse(writer, "405 Method Not Allowed", headers["cseq"] ?: "0")
                 }
@@ -420,7 +438,7 @@ class RTSPServer(
         val cseq = headers["cseq"] ?: "0"
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
-        writer.write("Public: DESCRIBE, SETUP, PLAY, TEARDOWN\r\n")
+        writer.write("Public: DESCRIBE, SETUP, PLAY, PAUSE, TEARDOWN\r\n")
         writer.write("\r\n")
         writer.flush()
     }
@@ -428,9 +446,25 @@ class RTSPServer(
     private fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
+        // Wait briefly for SPS/PPS to be available (encoder needs to start first)
+        var retries = 0
+        while ((sps == null || pps == null) && retries < 50) {
+            Thread.sleep(100)
+            retries++
+        }
+        
+        if (sps == null || pps == null) {
+            Log.w(TAG, "SPS/PPS not available yet, sending error")
+            writer.write("RTSP/1.0 500 Internal Server Error\r\n")
+            writer.write("CSeq: $cseq\r\n")
+            writer.write("\r\n")
+            writer.flush()
+            return
+        }
+        
         // Generate SDP (Session Description Protocol)
-        val spsBase64 = sps?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) } ?: ""
-        val ppsBase64 = pps?.let { android.util.Base64.encodeToString(it, android.util.Base64.NO_WRAP) } ?: ""
+        val spsBase64 = android.util.Base64.encodeToString(sps!!, android.util.Base64.NO_WRAP)
+        val ppsBase64 = android.util.Base64.encodeToString(pps!!, android.util.Base64.NO_WRAP)
         
         val sdp = """
             v=0
@@ -463,15 +497,56 @@ class RTSPServer(
         
         // Parse transport header for client ports
         // Example: RTP/AVP;unicast;client_port=5000-5001
+        // or: RTP/AVP/TCP;unicast;interleaved=0-1
         
-        session.state = SessionState.READY
-        
-        writer.write("RTSP/1.0 200 OK\r\n")
-        writer.write("CSeq: $cseq\r\n")
-        writer.write("Session: ${session.sessionId}\r\n")
-        writer.write("Transport: $transport;server_port=5000-5001\r\n")
-        writer.write("\r\n")
-        writer.flush()
+        try {
+            if (transport.contains("TCP", ignoreCase = true) || transport.contains("interleaved")) {
+                // TCP interleaved mode - not fully supported yet, return error
+                writer.write("RTSP/1.0 461 Unsupported Transport\r\n")
+                writer.write("CSeq: $cseq\r\n")
+                writer.write("\r\n")
+                writer.flush()
+                return
+            }
+            
+            // Parse UDP client ports
+            val portPattern = Regex("client_port=(\\d+)-(\\d+)")
+            val match = portPattern.find(transport)
+            if (match != null) {
+                session.clientRtpPort = match.groupValues[1].toInt()
+                session.clientRtcpPort = match.groupValues[2].toInt()
+                session.clientAddress = session.socket.inetAddress
+                
+                // Allocate server RTP/RTCP ports
+                session.rtpSocket = DatagramSocket()
+                session.serverRtpPort = session.rtpSocket!!.localPort
+                session.rtcpSocket = DatagramSocket()
+                session.serverRtcpPort = session.rtcpSocket!!.localPort
+                
+                session.state = SessionState.READY
+                
+                val responseTransport = "RTP/AVP;unicast;client_port=${session.clientRtpPort}-${session.clientRtcpPort};" +
+                                      "server_port=${session.serverRtpPort}-${session.serverRtcpPort}"
+                
+                writer.write("RTSP/1.0 200 OK\r\n")
+                writer.write("CSeq: $cseq\r\n")
+                writer.write("Session: ${session.sessionId}\r\n")
+                writer.write("Transport: $responseTransport\r\n")
+                writer.write("\r\n")
+                writer.flush()
+            } else {
+                writer.write("RTSP/1.0 400 Bad Request\r\n")
+                writer.write("CSeq: $cseq\r\n")
+                writer.write("\r\n")
+                writer.flush()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in SETUP", e)
+            writer.write("RTSP/1.0 500 Internal Server Error\r\n")
+            writer.write("CSeq: $cseq\r\n")
+            writer.write("\r\n")
+            writer.flush()
+        }
     }
     
     private fun handlePlay(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
@@ -491,6 +566,26 @@ class RTSPServer(
         val cseq = headers["cseq"] ?: "0"
         
         session.state = SessionState.INIT
+        
+        // Close RTP/RTCP sockets
+        try {
+            session.rtpSocket?.close()
+            session.rtcpSocket?.close()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error closing session sockets", e)
+        }
+        
+        writer.write("RTSP/1.0 200 OK\r\n")
+        writer.write("CSeq: $cseq\r\n")
+        writer.write("Session: ${session.sessionId}\r\n")
+        writer.write("\r\n")
+        writer.flush()
+    }
+    
+    private fun handlePause(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
+        val cseq = headers["cseq"] ?: "0"
+        
+        session.state = SessionState.READY
         
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
@@ -687,11 +782,13 @@ class RTSPServer(
                                 val csd0 = format.getByteBuffer("csd-0")
                                 sps = ByteArray(csd0!!.remaining())
                                 csd0.get(sps!!)
+                                Log.i(TAG, "Extracted SPS: ${sps!!.size} bytes")
                             }
                             if (format.containsKey("csd-1")) {
                                 val csd1 = format.getByteBuffer("csd-1")
                                 pps = ByteArray(csd1!!.remaining())
                                 csd1.get(pps!!)
+                                Log.i(TAG, "Extracted PPS: ${pps!!.size} bytes")
                             }
                         }
                     } catch (e: Exception) {
