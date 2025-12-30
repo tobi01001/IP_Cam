@@ -55,6 +55,13 @@ class HLSEncoderManager(
     
     private val segmentLock = Any()
     
+    // Reusable buffers to avoid allocation on every frame
+    // REQ-HW-008: Performance optimization - reduce GC pressure
+    private var yRowBuffer: ByteArray? = null
+    private var uvRowBuffer: ByteArray? = null
+    private var yDataBuffer: ByteArray? = null
+    private var uvDataBuffer: ByteArray? = null
+    
     companion object {
         private const val TAG = "HLSEncoderManager"
         private const val TIMEOUT_US = 10_000L // 10ms timeout for encoder operations
@@ -355,6 +362,7 @@ class HLSEncoderManager(
     /**
      * Convert YUV_420_888 ImageProxy to NV12 format for encoder
      * REQ-HW-003: Color format conversion
+     * REQ-HW-008: Performance optimization - reuse buffers to reduce GC pressure
      * 
      * Handles proper stride and padding for YUV planes
      */
@@ -381,40 +389,58 @@ class HLSEncoderManager(
             val uvRowStride = uPlane.rowStride
             val uvPixelStride = uPlane.pixelStride
             
+            // Initialize reusable buffers on first use
+            if (yDataBuffer == null) {
+                yDataBuffer = ByteArray(width * height)
+            }
+            if (yRowBuffer == null || yRowBuffer!!.size < yRowStride) {
+                yRowBuffer = ByteArray(yRowStride)
+            }
+            
             // Copy Y plane with stride handling
             yBuffer.rewind()
             if (yRowStride == width && yPixelStride == 1) {
                 // Contiguous memory, direct copy
                 val ySize = width * height
-                val yBytes = ByteArray(ySize)
-                yBuffer.get(yBytes, 0, ySize)
-                buffer.put(yBytes)
+                yBuffer.get(yDataBuffer!!, 0, ySize)
+                buffer.put(yDataBuffer!!, 0, ySize)
             } else {
                 // Need to handle stride
-                val rowData = ByteArray(yRowStride)
+                var destOffset = 0
                 for (row in 0 until height) {
                     yBuffer.position(row * yRowStride)
-                    yBuffer.get(rowData, 0, minOf(yRowStride, yBuffer.remaining()))
-                    buffer.put(rowData, 0, width)
+                    val bytesToRead = minOf(yRowStride, yBuffer.remaining())
+                    yBuffer.get(yRowBuffer!!, 0, bytesToRead)
+                    // Copy only the actual width, ignoring stride padding
+                    System.arraycopy(yRowBuffer!!, 0, yDataBuffer!!, destOffset, width)
+                    destOffset += width
                 }
+                buffer.put(yDataBuffer!!, 0, width * height)
             }
             
             // Copy UV planes interleaved for NV12 format (UVUV...)
             val uvHeight = height / 2
             val uvWidth = width / 2
+            val uvSize = uvWidth * uvHeight * 2
+            
+            // Initialize UV buffers
+            if (uvDataBuffer == null) {
+                uvDataBuffer = ByteArray(uvSize)
+            }
+            if (uvRowBuffer == null || uvRowBuffer!!.size < uvRowStride) {
+                uvRowBuffer = ByteArray(uvRowStride)
+            }
             
             uBuffer.rewind()
             vBuffer.rewind()
             
             if (uvPixelStride == 2 && uvRowStride == width) {
                 // Already interleaved (NV12/NV21), can copy directly
-                val uvSize = uvWidth * uvHeight * 2
-                val uvBytes = ByteArray(uvSize)
-                uBuffer.get(uvBytes, 0, minOf(uvSize, uBuffer.remaining()))
-                buffer.put(uvBytes, 0, minOf(uvSize, uvBytes.size))
+                uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
+                buffer.put(uvDataBuffer!!, 0, uvSize)
             } else {
                 // Need to interleave U and V
-                val uvRowData = ByteArray(uvRowStride)
+                var uvDestOffset = 0
                 for (row in 0 until uvHeight) {
                     uBuffer.position(row * uvRowStride)
                     vBuffer.position(row * uvRowStride)
@@ -423,25 +449,27 @@ class HLSEncoderManager(
                     val vRemaining = vBuffer.remaining()
                     
                     if (uRemaining > 0 && vRemaining > 0) {
-                        uBuffer.get(uvRowData, 0, minOf(uvRowStride, uRemaining))
+                        val bytesToRead = minOf(uvRowStride, uRemaining)
+                        uBuffer.get(uvRowBuffer!!, 0, bytesToRead)
                         vBuffer.position(row * uvRowStride) // Reset position
                         
-                        // Interleave U and V values
+                        // Interleave U and V values into destination buffer
                         for (col in 0 until uvWidth) {
                             val uIndex = col * uvPixelStride
                             val vIndex = col * uvPixelStride
                             
-                            if (uIndex < uvRowData.size && buffer.hasRemaining()) {
-                                buffer.put(uvRowData[uIndex])
+                            if (uIndex < uvRowBuffer!!.size && uvDestOffset < uvDataBuffer!!.size) {
+                                uvDataBuffer!![uvDestOffset++] = uvRowBuffer!![uIndex]
                             }
                             
                             vBuffer.position(row * uvRowStride + vIndex)
-                            if (vBuffer.hasRemaining() && buffer.hasRemaining()) {
-                                buffer.put(vBuffer.get())
+                            if (vBuffer.hasRemaining() && uvDestOffset < uvDataBuffer!!.size) {
+                                uvDataBuffer!![uvDestOffset++] = vBuffer.get()
                             }
                         }
                     }
                 }
+                buffer.put(uvDataBuffer!!, 0, minOf(uvDestOffset, uvSize))
             }
             
             buffer.flip()
@@ -627,6 +655,13 @@ class HLSEncoderManager(
             // Ignore
         }
         encoder = null
+        
+        // Clear reusable buffers to free memory
+        // REQ-HW-008: Memory management
+        yRowBuffer = null
+        uvRowBuffer = null
+        yDataBuffer = null
+        uvDataBuffer = null
     }
     
     /**
