@@ -113,6 +113,13 @@ class HttpServer(
                 // Adaptive quality control
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
+                
+                // HLS streaming endpoints
+                // REQ-HW-005: HTTP endpoints for HLS
+                get("/hls/stream.m3u8") { serveHLSPlaylist() }
+                get("/hls/{segmentName}") { serveHLSSegment() }
+                get("/enableHLS") { serveEnableHLS() }
+                get("/disableHLS") { serveDisableHLS() }
             }
         }
         
@@ -384,6 +391,26 @@ class HttpServer(
                     <div class="endpoint">
                         <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                         Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
+                    </div>
+                    <h2>HLS Streaming (Bandwidth Efficient)</h2>
+                    <p class="note"><em>HLS provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) with 6-12 second latency. Suitable for recording or limited bandwidth scenarios.</em></p>
+                    <div class="row">
+                        <button id="enableHLSBtn" onclick="enableHLS()">Enable HLS</button>
+                        <button id="disableHLSBtn" onclick="disableHLS()">Disable HLS</button>
+                        <button onclick="checkHLSStatus()">Check Status</button>
+                    </div>
+                    <div id="hlsStatus" class="note" style="margin-top: 10px;"></div>
+                    <div class="endpoint">
+                        <strong>HLS Playlist:</strong> <a href="/hls/stream.m3u8" target="_blank"><code>GET /hls/stream.m3u8</code></a><br>
+                        M3U8 playlist for HLS streaming. Works in VLC, Safari (native), Chrome/Firefox (with hls.js)
+                    </div>
+                    <div class="endpoint">
+                        <strong>Enable HLS:</strong> <a href="/enableHLS" target="_blank"><code>GET /enableHLS</code></a><br>
+                        Enable hardware-accelerated H.264 HLS streaming
+                    </div>
+                    <div class="endpoint">
+                        <strong>Disable HLS:</strong> <a href="/disableHLS" target="_blank"><code>GET /disableHLS</code></a><br>
+                        Disable HLS streaming to save resources
                     </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
@@ -895,6 +922,79 @@ class HttpServer(
                     window.addEventListener('beforeunload', function() {
                         eventSource.close();
                     });
+                    
+                    // HLS Control Functions
+                    function enableHLS() {
+                        document.getElementById('hlsStatus').textContent = 'Enabling HLS...';
+                        fetch('/enableHLS')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ HLS Enabled</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Config: ' + data.resolution + '<br>' +
+                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed to enable HLS</strong><br>' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function disableHLS() {
+                        document.getElementById('hlsStatus').textContent = 'Disabling HLS...';
+                        fetch('/disableHLS')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: orange;">HLS Disabled</strong>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: red;">Error:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function checkHLSStatus() {
+                        document.getElementById('hlsStatus').textContent = 'Checking HLS status...';
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.hls && data.hls.enabled) {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ HLS Active</strong><br>' +
+                                        'Encoder: ' + data.hls.encoderName + ' (Hardware: ' + data.hls.isHardware + ')<br>' +
+                                        'Bitrate: ' + (data.hls.targetBitrate / 1000000) + ' Mbps @ ' + data.hls.targetFps + ' fps<br>' +
+                                        'Actual FPS: ' + data.hls.actualFps.toFixed(1) + '<br>' +
+                                        'Frames: ' + data.hls.framesEncoded + ' | Segments: ' + data.hls.activeSegments + '<br>' +
+                                        'Avg Encoding: ' + data.hls.avgEncodingTimeMs.toFixed(2) + ' ms<br>' +
+                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                } else {
+                                    document.getElementById('hlsStatus').innerHTML = 
+                                        '<strong style="color: orange;">HLS Not Enabled</strong><br>' +
+                                        'Use "Enable HLS" button to start hardware-accelerated streaming';
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('hlsStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    // Check HLS status on page load
+                    window.addEventListener('load', function() {
+                        checkHLSStatus();
+                    });
                 </script>
             </body>
             </html>
@@ -977,6 +1077,40 @@ class HttpServer(
         val activeStreamCount = activeStreams.get()
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
         
+        // HLS metrics
+        // REQ-HW-008: Performance monitoring
+        val hlsEnabled = cameraService.isHLSEnabled()
+        val hlsMetrics = if (hlsEnabled) cameraService.getHLSMetrics() else null
+        
+        val hlsJson = if (hlsEnabled && hlsMetrics != null) {
+            """
+                "hls": {
+                    "enabled": true,
+                    "encoderName": "${hlsMetrics.encoderName}",
+                    "isHardware": ${hlsMetrics.isHardware},
+                    "targetBitrate": ${hlsMetrics.targetBitrate},
+                    "targetFps": ${hlsMetrics.targetFps},
+                    "actualFps": ${String.format("%.1f", hlsMetrics.actualFps)},
+                    "framesEncoded": ${hlsMetrics.framesEncoded},
+                    "avgEncodingTimeMs": ${String.format("%.2f", hlsMetrics.avgEncodingTimeMs)},
+                    "activeSegments": ${hlsMetrics.activeSegments},
+                    "lastError": ${if (hlsMetrics.lastError != null) "\"${hlsMetrics.lastError}\"" else "null"}
+                },
+            """.trimIndent()
+        } else {
+            """
+                "hls": {
+                    "enabled": false
+                },
+            """.trimIndent()
+        }
+        
+        val endpoints = if (hlsEnabled) {
+            "[/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/hls/stream.m3u8\", \"/enableHLS\", \"/disableHLS\"]"
+        } else {
+            "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/enableHLS\"]"
+        }
+        
         val json = """
             {
                 "status": "running",
@@ -991,7 +1125,8 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats"]
+                $hlsJson
+                "endpoints": $endpoints
             }
         """.trimIndent()
         
@@ -1350,4 +1485,102 @@ class HttpServer(
             ContentType.Application.Json
         )
     }
+    
+    // ==================== HLS Streaming Endpoints ====================
+    // REQ-HW-005: HTTP endpoints for HLS streaming
+    
+    /**
+     * Serve HLS playlist (M3U8)
+     * REQ-HW-005: /hls/stream.m3u8 endpoint
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSPlaylist() {
+        val playlist = cameraService.getHLSPlaylist()
+        
+        if (playlist != null) {
+            call.response.header("Cache-Control", "no-cache")
+            call.response.header("Access-Control-Allow-Origin", "*")
+            call.respondText(
+                playlist,
+                ContentType.parse("application/vnd.apple.mpegurl"),
+                HttpStatusCode.OK
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"HLS not enabled. Use /enableHLS to enable HLS streaming."}""",
+                ContentType.Application.Json,
+                HttpStatusCode.ServiceUnavailable
+            )
+        }
+    }
+    
+    /**
+     * Serve HLS segment file (TS)
+     * REQ-HW-005: /hls/segment{N}.ts endpoint
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
+        val segmentName = call.parameters["segmentName"] ?: ""
+        
+        // Validate segment name format to prevent directory traversal
+        if (!segmentName.matches(Regex("^segment\\d+\\.ts$"))) {
+            call.respondText(
+                """{"status":"error","message":"Invalid segment name format"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val segmentFile = cameraService.getHLSSegment(segmentName)
+        
+        if (segmentFile != null && segmentFile.exists()) {
+            call.response.header("Cache-Control", "public, max-age=60")
+            call.response.header("Access-Control-Allow-Origin", "*")
+            call.respondFile(segmentFile)
+        } else {
+            // Generic error message to avoid information disclosure
+            call.respondText(
+                """{"status":"error","message":"Segment not found"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.NotFound
+            )
+        }
+    }
+    
+    /**
+     * Enable HLS streaming
+     * REQ-OPT-011: HLS configurable via API
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableHLS() {
+        val success = cameraService.enableHLSStreaming()
+        
+        if (success) {
+            val metrics = cameraService.getHLSMetrics()
+            // Escape encoder name to prevent JSON injection
+            val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
+            val bitrateInfo = metrics?.let { "${it.targetBitrate/1000000} Mbps @ ${it.targetFps} fps" } ?: "unknown"
+            call.respondText(
+                """{"status":"ok","message":"HLS streaming enabled","hlsEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"resolution":"$bitrateInfo"}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to enable HLS streaming. Check logs for details.","hlsEnabled":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Disable HLS streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableHLS() {
+        cameraService.disableHLSStreaming()
+        call.respondText(
+            """{"status":"ok","message":"HLS streaming disabled","hlsEnabled":false}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    // ==================== End HLS Streaming Endpoints ====================
 }

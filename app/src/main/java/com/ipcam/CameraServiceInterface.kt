@@ -2,6 +2,7 @@ package com.ipcam
 
 import android.util.Size
 import androidx.camera.core.CameraSelector
+import java.io.File
 
 /**
  * Interface for HttpServer to communicate with CameraService.
@@ -46,4 +47,13 @@ interface CameraServiceInterface {
     
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
+    
+    // HLS streaming operations
+    // REQ-HW-005: HLS endpoints integration
+    fun enableHLSStreaming(): Boolean
+    fun disableHLSStreaming()
+    fun isHLSEnabled(): Boolean
+    fun getHLSMetrics(): HLSEncoderManager.EncoderMetrics?
+    fun getHLSPlaylist(): String?
+    fun getHLSSegment(segmentName: String): File?
 }
