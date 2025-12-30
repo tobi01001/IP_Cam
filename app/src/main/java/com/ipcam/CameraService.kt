@@ -125,6 +125,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
     private val clientIdCounter = AtomicInteger(0) // For unique client IDs
     
+    // RTSP server for hardware-accelerated H.264 streaming
+    private var rtspServer: RTSPServer? = null
+    @Volatile private var rtspEnabled: Boolean = false
+    
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
     private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
@@ -676,9 +680,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val processingStart = System.currentTimeMillis()
         
         try {
-            // MJPEG Pipeline: bitmap → annotation → JPEG compression (always active)
+            // DUAL-STREAM ARCHITECTURE:
+            // 1. MJPEG Pipeline: bitmap → annotation → JPEG compression (always active)
+            // 2. RTSP Pipeline: raw YUV → H.264 encoding (optional, bandwidth-efficient)
             
-            // === MJPEG Pipeline ===
+            // === RTSP Pipeline (if enabled) ===
+            // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
+            if (rtspEnabled && rtspServer != null) {
+                try {
+                    rtspServer?.encodeFrame(image)
+                } catch (e: Exception) {
+                    Log.e(TAG, "RTSP encoding failed", e)
+                    // Continue with MJPEG even if RTSP fails
+                }
+            }
+            
+            // === MJPEG Pipeline (always active) ===
             val bitmap = imageProxyToBitmap(image)
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
@@ -1063,6 +1080,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
+        // Load RTSP settings
+        rtspEnabled = prefs.getBoolean("rtspEnabled", false)
+        
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
         val oldResHeight = prefs.getInt("resolutionHeight", -1)
@@ -1120,6 +1140,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putBoolean("showResolutionOverlay", showResolutionOverlay)
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
+            
+            // Save RTSP settings
+            putBoolean("rtspEnabled", rtspEnabled)
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1640,6 +1663,109 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         adaptiveQualityEnabled = enabled
         Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
     }
+    
+    // ==================== RTSP Streaming Control ====================
+    
+    /**
+     * Enable RTSP streaming
+     */
+    override fun enableRTSPStreaming(): Boolean {
+        if (rtspEnabled && rtspServer != null && rtspServer?.isAlive() == true) {
+            Log.d(TAG, "RTSP already enabled and server is running")
+            return true
+        }
+        
+        if (rtspEnabled) {
+            Log.w(TAG, "RTSP flag was set but server not running, restarting...")
+            disableRTSPStreaming()
+        }
+        
+        try {
+            // Check if hardware encoder is available
+            if (!RTSPServer.isHardwareEncoderAvailable()) {
+                Log.w(TAG, "Hardware encoder not available, RTSP may use software fallback")
+            }
+            
+            // Get current camera resolution for encoder
+            val resolution = selectedResolution ?: run {
+                // Use a default resolution if none is set
+                Log.d(TAG, "No resolution set, using 1920x1080 for RTSP")
+                Size(1920, 1080)
+            }
+            
+            // Create RTSP server with current resolution
+            rtspServer = RTSPServer(
+                port = 8554,
+                width = resolution.width,
+                height = resolution.height,
+                fps = 30,
+                bitrate = 2_000_000 // 2 Mbps
+            )
+            
+            if (rtspServer?.start() != true) {
+                Log.e(TAG, "Failed to start RTSP server")
+                rtspServer = null
+                rtspEnabled = false
+                saveSettings()
+                return false
+            }
+            
+            rtspEnabled = true
+            saveSettings()
+            Log.i(TAG, "RTSP streaming enabled on port 8554")
+            return true
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error enabling RTSP streaming", e)
+            rtspEnabled = false
+            rtspServer = null
+            saveSettings()
+            return false
+        }
+    }
+    
+    /**
+     * Disable RTSP streaming
+     */
+    override fun disableRTSPStreaming() {
+        if (!rtspEnabled) {
+            Log.w(TAG, "RTSP already disabled")
+            return
+        }
+        
+        try {
+            rtspEnabled = false
+            rtspServer?.stop()
+            rtspServer = null
+            saveSettings()
+            Log.i(TAG, "RTSP streaming disabled")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disabling RTSP streaming", e)
+        }
+    }
+    
+    /**
+     * Check if RTSP is enabled
+     */
+    override fun isRTSPEnabled(): Boolean = rtspEnabled
+    
+    /**
+     * Get RTSP server metrics
+     */
+    override fun getRTSPMetrics(): RTSPServer.ServerMetrics? {
+        return rtspServer?.getMetrics()
+    }
+    
+    /**
+     * Get RTSP URL
+     */
+    override fun getRTSPUrl(): String {
+        val ipAddress = getServerUrl().substringAfter("http://").substringBefore(":")
+        return "rtsp://$ipAddress:8554/stream"
+    }
+    
+    // ==================== End RTSP Streaming Control ====================
     
     /**
      * Broadcast connection count update to all SSE clients via HttpServer

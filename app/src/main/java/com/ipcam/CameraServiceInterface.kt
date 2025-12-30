@@ -47,4 +47,11 @@ interface CameraServiceInterface {
     
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
+    
+    // RTSP streaming operations
+    fun enableRTSPStreaming(): Boolean
+    fun disableRTSPStreaming()
+    fun isRTSPEnabled(): Boolean
+    fun getRTSPMetrics(): RTSPServer.ServerMetrics?
+    fun getRTSPUrl(): String
 }

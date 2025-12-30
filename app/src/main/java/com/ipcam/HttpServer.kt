@@ -113,6 +113,11 @@ class HttpServer(
                 // Adaptive quality control
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
+                
+                // RTSP streaming endpoints
+                get("/enableRTSP") { serveEnableRTSP() }
+                get("/disableRTSP") { serveDisableRTSP() }
+                get("/rtspStatus") { serveRTSPStatus() }
             }
         }
         
@@ -384,6 +389,26 @@ class HttpServer(
                     <div class="endpoint">
                         <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                         Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
+                    </div>
+                    <h2>RTSP Streaming (Hardware-Accelerated H.264)</h2>
+                    <p class="note"><em>RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency and 2-4 Mbps bandwidth. Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.</em></p>
+                    <div class="row">
+                        <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
+                        <button id="disableRTSPBtn" onclick="disableRTSP()">Disable RTSP</button>
+                        <button onclick="checkRTSPStatus()">Check Status</button>
+                    </div>
+                    <div id="rtspStatus" class="note" style="margin-top: 10px;"></div>
+                    <div class="endpoint">
+                        <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
+                        Enable hardware-accelerated RTSP streaming on port 8554
+                    </div>
+                    <div class="endpoint">
+                        <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
+                        Disable RTSP streaming to save resources
+                    </div>
+                    <div class="endpoint">
+                        <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
+                        Get RTSP server status and metrics (JSON)
                     </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
@@ -896,6 +921,79 @@ class HttpServer(
                         eventSource.close();
                     });
                     
+                    // RTSP Control Functions
+                    function enableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Enabling RTSP...';
+                        fetch('/enableRTSP')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Enabled</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port + '<br>' +
+                                        'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed to enable RTSP</strong><br>' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function disableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Disabling RTSP...';
+                        fetch('/disableRTSP')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Disabled</strong>';
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: red;">Error:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function checkRTSPStatus() {
+                        document.getElementById('rtspStatus').textContent = 'Checking RTSP status...';
+                        fetch('/rtspStatus')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.rtspEnabled) {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Active</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
+                                        'Frames Encoded: ' + data.framesEncoded + '<br>' +
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port;
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Not Enabled</strong><br>' +
+                                        'Use "Enable RTSP" button to start hardware-accelerated H.264 streaming';
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    // Check RTSP status on page load
+                    window.addEventListener('load', function() {
+                        checkRTSPStatus();
+                    });
+                    
                     });
                 </script>
             </body>
@@ -1354,4 +1452,65 @@ class HttpServer(
             ContentType.Application.Json
         )
     }
+    
+    // ==================== RTSP Streaming Endpoints ====================
+    
+    /**
+     * Enable RTSP streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableRTSP() {
+        val success = cameraService.enableRTSPStreaming()
+        
+        if (success) {
+            val metrics = cameraService.getRTSPMetrics()
+            val rtspUrl = cameraService.getRTSPUrl()
+            val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
+            
+            call.respondText(
+                """{"status":"ok","message":"RTSP streaming enabled","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"url":"$rtspUrl","port":8554}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to enable RTSP streaming. Check logs for details.","rtspEnabled":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Disable RTSP streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableRTSP() {
+        cameraService.disableRTSPStreaming()
+        call.respondText(
+            """{"status":"ok","message":"RTSP streaming disabled","rtspEnabled":false}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    /**
+     * Get RTSP status and metrics
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRTSPStatus() {
+        val rtspEnabled = cameraService.isRTSPEnabled()
+        val metrics = cameraService.getRTSPMetrics()
+        val rtspUrl = cameraService.getRTSPUrl()
+        
+        if (rtspEnabled && metrics != null) {
+            val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
+            call.respondText(
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"url":"$rtspUrl","port":8554}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"ok","rtspEnabled":false,"message":"RTSP streaming is not enabled"}""",
+                ContentType.Application.Json
+            )
+        }
+    }
+    
+    // ==================== End RTSP Streaming Endpoints ====================
 }
