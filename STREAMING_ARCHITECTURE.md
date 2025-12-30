@@ -12,13 +12,99 @@ This document provides a comprehensive technical analysis of the IP_Cam applicat
 
 ## Table of Contents
 
-1. [Current Streaming Implementation](#current-streaming-implementation)
-2. [Frame Processing Pipeline](#frame-processing-pipeline)
-3. [Performance Characteristics](#performance-characteristics)
-4. [Optimization Opportunities](#optimization-opportunities)
-5. [MP4 Segment Streaming Analysis](#mp4-segment-streaming-analysis)
-6. [Deep Dive: Hardware Encoding & Implementation Details](#deep-dive-hardware-encoding--implementation-details)
-7. [Recommendations](#recommendations)
+1. [MJPEG: Current Streaming Architecture (Preserved)](#mjpeg-current-streaming-architecture-preserved)
+2. [Current Streaming Implementation](#current-streaming-implementation)
+3. [Frame Processing Pipeline](#frame-processing-pipeline)
+4. [Performance Characteristics](#performance-characteristics)
+5. [Optimization Opportunities](#optimization-opportunities)
+6. [Requirements for Hardware-Encoded Modern Streaming](#requirements-for-hardware-encoded-modern-streaming)
+7. [MP4 Segment Streaming Analysis](#mp4-segment-streaming-analysis)
+8. [Deep Dive: Hardware Encoding & Implementation Details](#deep-dive-hardware-encoding--implementation-details)
+9. [Recommendations](#recommendations)
+
+---
+
+## MJPEG: Current Streaming Architecture (Preserved)
+
+### Why MJPEG is Preserved and Remains the Foundation
+
+**MJPEG (Motion JPEG) is the current and primary streaming architecture for IP_Cam, and it will be preserved as the foundation for basic camera functionality.** This decision is based on strong technical and practical rationale:
+
+#### Key Advantages of MJPEG
+
+**1. Low Latency (~150-280ms)**
+- Immediate frame delivery with no buffering required
+- Each frame is independently encoded and transmitted
+- Perfect for live surveillance and monitoring applications
+- No segment buffer delays like HLS (6-12 seconds)
+
+**2. Universal Compatibility**
+- Works with ALL surveillance systems out-of-the-box
+- ZoneMinder, Shinobi, Blue Iris, MotionEye natively support MJPEG
+- Simple `<img>` tag in web browsers - no JavaScript required
+- VLC and all media players support MJPEG streams
+- No codec negotiation or compatibility issues
+
+**3. Simplicity and Reliability**
+- Standard HTTP protocol with multipart/x-mixed-replace
+- No complex container formats or muxing required
+- Each frame is a complete image (no inter-frame dependencies)
+- Stream recovery is instantaneous - just start reading the next frame
+- Minimal server-side complexity
+
+**4. Real-Time Operation**
+- Frame-by-frame transmission allows instant adaptation
+- No pre-buffering delays
+- Perfect for motion detection and real-time alerts
+- Suitable for interactive monitoring
+
+**5. Proven Track Record**
+- Battle-tested protocol used by IP cameras for decades
+- Known performance characteristics
+- Predictable behavior across all platforms
+- Minimal implementation bugs or edge cases
+
+#### Use Cases Where MJPEG Excels
+
+✅ **Primary surveillance monitoring** - Low latency is critical  
+✅ **Motion detection integration** - Frame-by-frame analysis  
+✅ **Legacy NVR/VMS compatibility** - Maximum compatibility  
+✅ **Simple browser-based viewing** - No plugins required  
+✅ **Quick deployment** - Works immediately with standard tools  
+✅ **Local network streaming** - Bandwidth is generally sufficient  
+✅ **Real-time monitoring** - Sub-300ms latency  
+
+#### MJPEG Performance Profile
+
+| Metric | Value | Notes |
+|--------|-------|-------|
+| **Latency** | 150-280ms | Excellent for surveillance |
+| **Bandwidth** | ~8 Mbps @ 10fps 1080p | Acceptable on WiFi networks |
+| **Compatibility** | 100% | Universal support |
+| **Complexity** | Low | Simple implementation |
+| **Quality** | Good | 75% JPEG quality |
+| **Recovery** | Instant | No buffer flush needed |
+
+### MJPEG Will Not Be Replaced
+
+**Important: MJPEG will remain as the primary streaming method indefinitely.** Any future additions (such as HLS or RTSP) will be implemented **alongside** MJPEG, not as replacements. This ensures:
+
+- Backward compatibility with existing integrations
+- Continued support for low-latency use cases
+- Simple deployment remains possible
+- Universal surveillance system compatibility
+- Reliable fallback option
+
+### When MJPEG May Not Be Optimal
+
+While MJPEG excels in many scenarios, there are specific use cases where alternative streaming methods may provide benefits:
+
+⚠️ **High bandwidth cost** - Remote viewing over cellular/metered connections  
+⚠️ **Many concurrent viewers** - 10+ simultaneous streams  
+⚠️ **Recording to disk** - MP4 format more storage efficient  
+⚠️ **Very low bandwidth** - < 2 Mbps available  
+
+For these specialized cases, **hardware-encoded modern streaming (HLS/RTSP)** can be implemented as an **optional alternative**, as detailed in the [Requirements for Hardware-Encoded Modern Streaming](#requirements-for-hardware-encoded-modern-streaming) section below.
 
 ---
 
@@ -448,6 +534,575 @@ fun processImageForStream(image: ImageProxy): ByteArray {
     return bitmapToJpeg(bitmap, JPEG_QUALITY_STREAM)
 }
 ```
+
+---
+
+## Requirements for Hardware-Encoded Modern Streaming
+
+This section defines the requirements for implementing **optional** hardware-encoded video streaming with modern protocols (HLS/RTSP) alongside the existing MJPEG streaming. These requirements ensure proper implementation that leverages hardware capabilities while maintaining compatibility with the current architecture.
+
+### Overview and Scope
+
+**Purpose:** Provide an alternative streaming method that significantly reduces bandwidth consumption for use cases where higher latency (6-12 seconds) is acceptable.
+
+**Implementation Approach:** Dual-stream architecture where both MJPEG and HW-encoded streaming coexist, allowing clients to choose based on their requirements.
+
+**Priority:** OPTIONAL - To be implemented only after core MJPEG functionality is stable and battle-tested.
+
+---
+
+### REQ-HW-001: Protocol Selection
+
+**Requirement:** The system SHALL implement HLS (HTTP Live Streaming) as the modern streaming protocol.
+
+**Rationale:**
+- HLS is HTTP-based and works through existing web server infrastructure
+- Native support in Safari and iOS devices
+- Works in all browsers via hls.js JavaScript library
+- Segment-based approach allows caching and CDN distribution
+- Widely supported by modern surveillance systems (Shinobi, Blue Iris)
+
+**Alternative Considered:** RTSP (Real-Time Streaming Protocol)
+- RTSP is UDP-based requiring separate server implementation
+- Not natively supported in web browsers
+- More complex firewall configuration
+- Better for very low latency (<1 second) which is not our target
+
+**Decision:** HLS for better compatibility and simpler integration.
+
+---
+
+### REQ-HW-002: Hardware Encoder Detection and Selection
+
+**Requirement:** The system SHALL detect and prefer hardware-accelerated H.264 encoders via MediaCodec API.
+
+**Implementation:**
+
+```kotlin
+fun selectBestEncoder(): MediaCodec {
+    val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+    
+    // Prefer hardware encoder
+    for (codecInfo in codecList.codecInfos) {
+        if (!codecInfo.isEncoder) continue
+        if (!codecInfo.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+        
+        // Hardware encoders don't contain "OMX.google" or "c2.android"
+        if (!codecInfo.name.contains("OMX.google", ignoreCase = true) &&
+            !codecInfo.name.contains("c2.android", ignoreCase = true)) {
+            Log.d(TAG, "Selected hardware encoder: ${codecInfo.name}")
+            return MediaCodec.createByCodecName(codecInfo.name)
+        }
+    }
+    
+    // Fallback to any available H.264 encoder
+    Log.w(TAG, "Hardware encoder not found, using software fallback")
+    return MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+}
+```
+
+**Verification:**
+- Log the selected encoder name on startup
+- Report encoder type in `/status` endpoint
+- Measure encoding time to verify hardware acceleration (should be <20ms per frame for 1080p)
+
+**Fallback:** If hardware encoder is not available, system SHALL fallback to software encoder with warning logged.
+
+---
+
+### REQ-HW-003: Encoder Configuration
+
+**Requirement:** The H.264 encoder SHALL be configured for surveillance use with the following parameters:
+
+**Video Format:**
+- **Codec:** H.264 (MIMETYPE_VIDEO_AVC)
+- **Profile:** Baseline or Main Profile (for broad compatibility)
+- **Level:** Level 4.0 or higher (supports up to 1080p@30fps)
+
+**Encoding Parameters:**
+- **Resolution:** 1920x1080 (configurable, matches camera resolution)
+- **Frame Rate:** 30 fps (target, may be lower based on camera capabilities)
+- **Bitrate:** 2,000,000 bps (2 Mbps) for 1080p
+  - Variable bitrate (VBR) preferred for quality
+  - CBR acceptable for consistent network usage
+- **Keyframe Interval:** 1-2 seconds (30-60 frames)
+  - Shorter interval = better seek performance, larger file size
+  - Longer interval = better compression, slower segment starts
+
+**Color Format:**
+- **Input:** YUV_420_888 (from CameraX ImageProxy)
+- **Encoder Format:** COLOR_FormatYUV420Flexible or COLOR_FormatYUV420SemiPlanar (NV12)
+
+**Configuration Example:**
+```kotlin
+val format = MediaFormat.createVideoFormat(
+    MediaFormat.MIMETYPE_VIDEO_AVC,
+    width,  // 1920
+    height  // 1080
+)
+
+// Basic settings
+format.setInteger(MediaFormat.KEY_COLOR_FORMAT,
+    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+format.setInteger(MediaFormat.KEY_BIT_RATE, 2_000_000)
+format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+
+// Quality settings
+format.setInteger(MediaFormat.KEY_BITRATE_MODE,
+    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+format.setInteger(MediaFormat.KEY_COMPLEXITY,
+    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+
+// Optional: Set profile/level explicitly
+format.setInteger(MediaFormat.KEY_PROFILE,
+    MediaCodecInfo.CodecProfileLevel.AVCProfileMain)
+format.setInteger(MediaFormat.KEY_LEVEL,
+    MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+
+encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+encoder.start()
+```
+
+---
+
+### REQ-HW-004: Segment Management
+
+**Requirement:** The system SHALL generate and manage HLS segments with the following characteristics:
+
+**Segment Properties:**
+- **Duration:** 2 seconds per segment (configurable: 2-6 seconds)
+- **Format:** MPEG-TS (Transport Stream) for HLS compatibility
+- **Container:** Use MediaMuxer with `MUXER_OUTPUT_MPEG_2_TS`
+- **Naming:** `segment{sequence}.ts` (e.g., segment0.ts, segment1.ts)
+
+**Segment Management:**
+- **Sliding Window:** Maintain last 10 segments (20 seconds of video)
+- **Storage:** App cache directory (`context.cacheDir/hls_segments/`)
+- **Cleanup:** Delete segments older than the sliding window
+- **Disk Space:** Monitor and ensure at least 50MB free space
+
+**Implementation Pattern:**
+```kotlin
+class HLSSegmentManager(
+    private val cacheDir: File,
+    private val segmentDurationSec: Int = 2,
+    private val maxSegments: Int = 10
+) {
+    private val segmentFiles = mutableListOf<File>()
+    private var segmentIndex = 0
+    
+    fun createNewSegment(): File {
+        val segmentFile = File(cacheDir, "segment${segmentIndex}.ts")
+        segmentFiles.add(segmentFile)
+        
+        // Cleanup old segments
+        while (segmentFiles.size > maxSegments) {
+            val old = segmentFiles.removeAt(0)
+            old.delete()
+        }
+        
+        segmentIndex++
+        return segmentFile
+    }
+    
+    fun generatePlaylist(): String {
+        val playlist = StringBuilder()
+        playlist.append("#EXTM3U\n")
+        playlist.append("#EXT-X-VERSION:3\n")
+        playlist.append("#EXT-X-TARGETDURATION:$segmentDurationSec\n")
+        playlist.append("#EXT-X-MEDIA-SEQUENCE:${maxOf(0, segmentIndex - maxSegments)}\n")
+        
+        segmentFiles.forEach { file ->
+            playlist.append("#EXTINF:$segmentDurationSec.0,\n")
+            playlist.append("${file.name}\n")
+        }
+        
+        return playlist.toString()
+    }
+}
+```
+
+---
+
+### REQ-HW-005: HTTP Endpoints for HLS
+
+**Requirement:** The system SHALL expose the following HTTP endpoints for HLS streaming:
+
+**Primary Endpoints:**
+
+1. **`GET /hls/stream.m3u8`** - Master playlist
+   - **MIME Type:** `application/vnd.apple.mpegurl` or `application/x-mpegURL`
+   - **Response:** M3U8 playlist with list of available segments
+   - **Cache Headers:** `Cache-Control: no-cache` (playlist updates frequently)
+
+2. **`GET /hls/segment{N}.ts`** - Video segment files
+   - **MIME Type:** `video/mp2t` (MPEG Transport Stream)
+   - **Response:** Binary TS segment data
+   - **Cache Headers:** `Cache-Control: public, max-age=60` (segments are immutable)
+
+**Example Playlist Response:**
+```
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:2
+#EXT-X-MEDIA-SEQUENCE:50
+#EXTINF:2.0,
+segment50.ts
+#EXTINF:2.0,
+segment51.ts
+#EXTINF:2.0,
+segment52.ts
+...
+```
+
+**Endpoint Implementation:**
+```kotlin
+when (uri) {
+    "/hls/stream.m3u8" -> {
+        val playlist = hlsEncoder?.generatePlaylist() ?: return@respond newFixedLengthResponse(
+            Response.Status.SERVICE_UNAVAILABLE,
+            MIME_PLAINTEXT,
+            "HLS not enabled"
+        )
+        
+        val response = newFixedLengthResponse(Response.Status.OK,
+            "application/vnd.apple.mpegurl", playlist)
+        response.addHeader("Cache-Control", "no-cache")
+        response.addHeader("Access-Control-Allow-Origin", "*")
+        return@respond response
+    }
+    
+    uri.startsWith("/hls/segment") && uri.endsWith(".ts") -> {
+        val segmentName = uri.substringAfterLast("/")
+        val segmentFile = File(File(cacheDir, "hls_segments"), segmentName)
+        
+        if (!segmentFile.exists()) {
+            return@respond newFixedLengthResponse(
+                Response.Status.NOT_FOUND,
+                MIME_PLAINTEXT,
+                "Segment not found"
+            )
+        }
+        
+        val response = newFixedLengthResponse(Response.Status.OK,
+            "video/mp2t",
+            segmentFile.inputStream(),
+            segmentFile.length())
+        response.addHeader("Cache-Control", "public, max-age=60")
+        response.addHeader("Access-Control-Allow-Origin", "*")
+        return@respond response
+    }
+}
+```
+
+---
+
+### REQ-HW-006: Latency Considerations
+
+**Requirement:** The system SHALL accept and communicate the latency characteristics of HLS streaming.
+
+**Expected Latency:**
+- **Standard HLS:** 6-12 seconds (2-second segments × 3-6 segment buffer)
+- **Acceptable for:** Recording, bandwidth-constrained viewing, non-real-time monitoring
+- **NOT acceptable for:** Real-time monitoring, motion-triggered alerts, live interaction
+
+**Latency Composition:**
+1. Segment creation: 2 seconds (buffering frames)
+2. Encoding: <0.5 seconds (hardware acceleration)
+3. Network transmission: <0.5 seconds (local network)
+4. Client buffering: 4-8 seconds (2-4 segments ahead)
+5. **Total: 6-12 seconds**
+
+**Communication:**
+- Document latency clearly in README and API documentation
+- Add latency warning in web UI when switching to HLS
+- Include latency information in `/status` endpoint for HLS streams
+
+---
+
+### REQ-HW-007: Reliability and Error Handling
+
+**Requirement:** The system SHALL implement robust error handling for HLS encoding and streaming.
+
+**Error Scenarios and Handling:**
+
+1. **Encoder Initialization Failure:**
+   - Log error with encoder name and capabilities
+   - Attempt software fallback encoder
+   - If all encoders fail, disable HLS and log critical error
+   - Continue MJPEG streaming normally
+
+2. **Encoding Error During Operation:**
+   - Catch `MediaCodec.CodecException`
+   - Log frame number and error details
+   - Attempt to recover by restarting encoder
+   - Use exponential backoff (1s, 2s, 4s, 8s, max 30s)
+   - After 5 failed attempts, disable HLS until restart
+
+3. **Segment Write Failure:**
+   - Catch IOException during MediaMuxer operations
+   - Check disk space availability
+   - Clean up old segments more aggressively
+   - If space < 10MB, stop HLS and alert via logs
+   - Continue MJPEG streaming
+
+4. **Client Request for Missing Segment:**
+   - Return HTTP 404 Not Found
+   - Log segment request and available segments
+   - Client should request updated playlist
+
+**Watchdog Integration:**
+```kotlin
+private fun checkHLSHealth(): Boolean {
+    // Check encoder is alive
+    if (hlsEncoder?.isAlive() == false) {
+        Log.w(TAG, "HLS encoder dead, restarting...")
+        restartHLSEncoder()
+        return false
+    }
+    
+    // Check segment freshness (should have segment from last 5 seconds)
+    val latestSegment = segmentManager.getLatestSegment()
+    if (latestSegment != null && 
+        System.currentTimeMillis() - latestSegment.lastModified() > 5000) {
+        Log.w(TAG, "HLS segments stale, encoder may be stuck")
+        return false
+    }
+    
+    return true
+}
+```
+
+---
+
+### REQ-HW-008: Performance Monitoring
+
+**Requirement:** The system SHALL monitor and report HLS encoder performance metrics.
+
+**Metrics to Track:**
+- Encoding time per frame (ms)
+- Frames encoded per second
+- Keyframe interval (actual vs target)
+- Bitrate (actual vs target)
+- Segment creation time
+- Disk space used by segments
+- Number of active HLS clients
+
+**Status Endpoint Enhancement:**
+```json
+{
+  "status": "running",
+  "streaming": {
+    "mjpeg": {
+      "enabled": true,
+      "clients": 2,
+      "bandwidth": "8.5 Mbps"
+    },
+    "hls": {
+      "enabled": true,
+      "clients": 3,
+      "encoderType": "OMX.qcom.video.encoder.avc",
+      "resolution": "1920x1080",
+      "bitrate": 2000000,
+      "targetFps": 30,
+      "actualFps": 28.5,
+      "avgEncodingTimeMs": 18.3,
+      "keyframeInterval": 30,
+      "segmentDuration": 2,
+      "activeSegments": 10,
+      "diskSpaceUsedMB": 4.2,
+      "latencyEstimateMs": 8000
+    }
+  }
+}
+```
+
+---
+
+### REQ-HW-009: Integration with Existing Architecture
+
+**Requirement:** HLS streaming SHALL be implemented alongside MJPEG without disrupting existing functionality.
+
+**Integration Points:**
+
+1. **CameraService Modifications:**
+   - Add `HLSEncoderManager` component (optional, lazy initialization)
+   - Feed camera frames to both MJPEG and HLS pipelines
+   - Both pipelines process independently from same ImageProxy source
+
+2. **Frame Distribution:**
+```kotlin
+private fun processImage(image: ImageProxy) {
+    try {
+        // Existing MJPEG pipeline (always active)
+        val bitmap = imageProxyToBitmap(image)
+        val annotated = annotateBitmap(bitmap)
+        val jpegBytes = compressToJpeg(annotated, currentQuality)
+        synchronized(jpegLock) {
+            lastFrameJpegBytes = jpegBytes
+        }
+        
+        // Optional HLS pipeline (if enabled)
+        if (hlsEnabled && hlsEncoder != null) {
+            // Feed raw YUV to HLS encoder (no annotation for efficiency)
+            hlsEncoder.encodeFrame(image)
+        }
+        
+    } finally {
+        image.close()
+    }
+}
+```
+
+3. **Settings Persistence:**
+   - Add `hlsEnabled` to SharedPreferences
+   - Add `hlsBitrate`, `hlsSegmentDuration` settings
+   - Restore HLS state on service restart
+
+4. **Control Endpoints:**
+   - `/enableHLS` - Enable HLS streaming
+   - `/disableHLS` - Disable HLS streaming
+   - `/setHLSBitrate?value=2000000` - Adjust HLS bitrate
+   - `/setHLSSegmentDuration?value=2` - Adjust segment duration
+
+---
+
+### REQ-HW-010: Compatibility Testing
+
+**Requirement:** HLS implementation SHALL be tested with common clients and surveillance systems.
+
+**Test Matrix:**
+
+| Client/System | Test Type | Expected Result |
+|---------------|-----------|-----------------|
+| **Safari (macOS/iOS)** | Native playback | Works without hls.js |
+| **Chrome/Firefox** | hls.js playback | Requires hls.js library |
+| **VLC Media Player** | Network stream | Direct HLS playback |
+| **Shinobi NVR** | HLS input | Recording and playback |
+| **Blue Iris** | HLS camera | Integration and recording |
+| **FFmpeg** | HLS download | `ffmpeg -i http://.../stream.m3u8 output.mp4` |
+
+**Web UI Test:**
+```html
+<video id="hlsPlayer" controls style="width: 100%; max-width: 1280px;">
+    <source src="/hls/stream.m3u8" type="application/x-mpegURL">
+</video>
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+    if (Hls.isSupported()) {
+        var video = document.getElementById('hlsPlayer');
+        var hls = new Hls();
+        hls.loadSource('/hls/stream.m3u8');
+        hls.attachMedia(video);
+        hls.on(Hls.Events.MANIFEST_PARSED, function() {
+            video.play();
+        });
+    }
+</script>
+```
+
+---
+
+### REQ-HW-011: Documentation Requirements
+
+**Requirement:** Complete documentation SHALL be provided for HLS streaming feature.
+
+**Documentation Must Include:**
+
+1. **User Guide:**
+   - How to enable/disable HLS streaming
+   - Comparison table: MJPEG vs HLS
+   - When to use each streaming method
+   - Latency expectations and use cases
+   - Client configuration examples
+
+2. **API Documentation:**
+   - All HLS endpoints with request/response examples
+   - Error codes and handling
+   - Client integration examples (web, VLC, NVR)
+
+3. **Technical Documentation:**
+   - Architecture diagrams showing dual-stream design
+   - Encoder selection and configuration details
+   - Performance characteristics and benchmarks
+   - Troubleshooting guide
+
+4. **Integration Examples:**
+   - Shinobi configuration
+   - Blue Iris configuration
+   - VLC playback commands
+   - Web browser integration code
+
+---
+
+### Implementation Priority and Roadmap
+
+**Phase 1: Foundation (Week 1-2)**
+- Implement MediaCodec encoder detection and initialization
+- Create basic H.264 encoding pipeline
+- Test single segment creation and playback
+
+**Phase 2: Segmentation (Week 2-3)**
+- Implement HLSSegmentManager
+- Add sliding window and cleanup logic
+- Generate M3U8 playlists
+
+**Phase 3: Integration (Week 3-4)**
+- Integrate with CameraService
+- Add HTTP endpoints for HLS
+- Implement enable/disable controls
+
+**Phase 4: Optimization (Week 4-5)**
+- Performance tuning (bitrate, quality)
+- Error handling and recovery
+- Monitoring and metrics
+
+**Phase 5: Testing (Week 5-6)**
+- Client compatibility testing
+- Stress testing with multiple clients
+- Long-term reliability testing
+
+**Phase 6: Documentation (Week 6)**
+- Complete user and technical documentation
+- Integration examples and guides
+- Performance benchmarks
+
+**Total Estimated Effort:** 6-8 weeks for complete implementation
+
+---
+
+### Success Criteria
+
+**The HLS implementation is considered successful when:**
+
+✅ Hardware encoder is detected and used on supported devices  
+✅ H.264 encoding achieves 50-75% bandwidth reduction vs MJPEG  
+✅ Segments are generated reliably with 2-second duration  
+✅ Playlist is valid and playable in Safari, VLC, and modern browsers  
+✅ Multiple simultaneous HLS clients are supported (10+ clients)  
+✅ Disk space is managed automatically with segment cleanup  
+✅ Error recovery is robust (survives encoder crashes)  
+✅ MJPEG streaming continues to work perfectly alongside HLS  
+✅ Performance overhead is acceptable (<10% CPU increase)  
+✅ Latency is consistent at 6-12 seconds as expected  
+✅ Documentation is complete and accurate  
+
+---
+
+### Summary: Why This Approach
+
+This requirements section provides a complete blueprint for implementing hardware-encoded modern streaming while:
+
+1. **Preserving MJPEG** as the primary, low-latency streaming method
+2. **Adding HLS as optional** for bandwidth-constrained use cases
+3. **Leveraging hardware encoding** for efficiency and quality
+4. **Maintaining compatibility** with existing surveillance systems
+5. **Ensuring reliability** through robust error handling
+6. **Providing flexibility** for users to choose based on their needs
+
+The dual-stream architecture ensures that users get the best of both worlds: low-latency MJPEG for real-time monitoring and bandwidth-efficient HLS for recording and remote viewing.
 
 ---
 
@@ -1427,6 +2082,8 @@ class MotionDetectionRecorder(
 
 ### Short-Term Optimizations (Low Effort, High Value)
 
+**Note:** Focus on MJPEG optimizations first, as it remains the primary streaming method.
+
 #### 1. **Implement Adaptive Frame Rate** ⭐⭐⭐
 **Effort:** Medium | **Impact:** High | **Risk:** Low
 
@@ -1497,9 +2154,11 @@ if (clientBufferFull) {
 **Effort:** High | **Impact:** Very High | **Risk:** Medium
 
 Implement H.264/HLS streaming alongside MJPEG:
-- Keep MJPEG for compatibility
+- Keep MJPEG for compatibility and low latency
 - Add HLS for bandwidth efficiency
 - Client can choose based on needs
+
+**Complete implementation requirements are documented in the [Requirements for Hardware-Encoded Modern Streaming](#requirements-for-hardware-encoded-modern-streaming) section above.**
 
 **Benefits:**
 - 50-75% bandwidth reduction
@@ -1619,8 +2278,8 @@ Use GPU for overlay rendering:
 3. Network bandwidth monitoring
 
 **Phase 3: Advanced Streaming (4-8 weeks)**
-1. Add optional HLS streaming endpoint
-2. Keep MJPEG as default
+1. Implement optional HLS streaming endpoint (see [Requirements for Hardware-Encoded Modern Streaming](#requirements-for-hardware-encoded-modern-streaming))
+2. Keep MJPEG as default and primary method
 3. Document use cases for each method
 4. Add client switching logic
 
@@ -1629,16 +2288,16 @@ Use GPU for overlay rendering:
 2. Single compression pass
 3. Performance benchmarking
 
-### Final Verdict on MP4 Streaming
+**Final Verdict on MP4 Streaming**
 
-**Is it feasible?** ✅ **Yes**, via HLS with H.264 encoding
+**Is it feasible?** ✅ **Yes**, via HLS with H.264 encoding (see [Requirements for Hardware-Encoded Modern Streaming](#requirements-for-hardware-encoded-modern-streaming) for complete implementation details)
 
 **Should you implement it?** ⚠️ **Depends on use case**
 
 **Recommendation:**
-- **Keep MJPEG as primary method** for compatibility and simplicity
-- **Add HLS as optional feature** for users who need bandwidth efficiency
-- **Implement quality/resolution parameters first** - easier wins with less risk
+- **Keep MJPEG as primary method** for compatibility, simplicity, and low latency
+- **Add HLS as optional feature** for users who need bandwidth efficiency (complete requirements documented above)
+- **Implement quality/resolution parameters for MJPEG first** - easier wins with less risk
 - **Document tradeoffs** clearly for users to choose
 
 **MP4/HLS is beneficial if:**

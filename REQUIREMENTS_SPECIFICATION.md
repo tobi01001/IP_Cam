@@ -177,14 +177,30 @@ The IP_Cam application is built around **five critical design principles** that 
 
 **Principle:** The application MAY be extended with advanced streaming options for specialized use cases requiring lower bandwidth at the cost of increased latency.
 
-#### 3.6.1 HLS (HTTP Live Streaming) Support
+**Important:** MJPEG will remain the primary streaming method. Any additions will be implemented alongside, not as replacements.
 
-**Purpose:** Provide an alternative streaming method that significantly reduces bandwidth consumption for scenarios where higher latency is acceptable.
+#### 3.6.1 Hardware-Encoded Modern Streaming (HLS/RTSP)
 
-**Optional Requirements:**
+**Purpose:** Provide an alternative streaming method that significantly reduces bandwidth consumption (50-75% reduction) for scenarios where higher latency (6-12 seconds) is acceptable.
+
+**Detailed Requirements:** Complete requirements for implementing hardware-encoded H.264/HLS streaming are documented in [STREAMING_ARCHITECTURE.md - Requirements for Hardware-Encoded Modern Streaming](STREAMING_ARCHITECTURE.md#requirements-for-hardware-encoded-modern-streaming), including:
+
+- **REQ-HW-001:** Protocol selection (HLS recommended)
+- **REQ-HW-002:** Hardware encoder detection via MediaCodec
+- **REQ-HW-003:** H.264 encoder configuration (2 Mbps, 30 fps, VBR)
+- **REQ-HW-004:** HLS segment management (2-sec segments, 10-segment sliding window)
+- **REQ-HW-005:** HTTP endpoints (`/hls/stream.m3u8`, `/hls/segment{N}.ts`)
+- **REQ-HW-006:** Latency expectations (6-12 seconds documented)
+- **REQ-HW-007:** Error handling and recovery mechanisms
+- **REQ-HW-008:** Performance monitoring and metrics
+- **REQ-HW-009:** Integration with existing MJPEG architecture
+- **REQ-HW-010:** Compatibility testing (Safari, Chrome, VLC, NVRs)
+- **REQ-HW-011:** Complete documentation requirements
+
+**Summary Requirements:**
 - REQ-OPT-001: System MAY support HLS streaming alongside MJPEG streaming
 - REQ-OPT-002: HLS implementation SHALL use hardware-accelerated H.264 encoding via MediaCodec
-- REQ-OPT-003: HLS SHALL generate 2-6 second segments in MPEG-TS or MP4 format
+- REQ-OPT-003: HLS SHALL generate 2-6 second segments in MPEG-TS format
 - REQ-OPT-004: HLS SHALL maintain a sliding window of 10 segments
 - REQ-OPT-005: HLS playlist SHALL be served at `/hls/stream.m3u8` endpoint
 - REQ-OPT-006: HLS segments SHALL be served at `/hls/segment{N}.ts` endpoints
@@ -192,7 +208,7 @@ The IP_Cam application is built around **five critical design principles** that 
 - REQ-OPT-008: HLS SHALL provide 50-75% bandwidth reduction compared to MJPEG
 - REQ-OPT-009: HLS latency SHALL be 6-12 seconds (acceptable for non-real-time monitoring)
 - REQ-OPT-010: Both MJPEG and HLS streams SHALL be available simultaneously
-- REQ-OPT-011: HLS SHALL be configurable (enabled/disabled) via settings
+- REQ-OPT-011: HLS SHALL be configurable (enabled/disabled) via settings and API
 - REQ-OPT-012: System SHALL cache segments in app cache directory with automatic cleanup
 
 **Use Cases:**
@@ -203,14 +219,15 @@ The IP_Cam application is built around **five critical design principles** that 
 
 **Tradeoffs:**
 - **Benefit:** 50-75% bandwidth reduction (8 Mbps → 2-4 Mbps per client)
-- **Benefit:** Better video quality through inter-frame compression
-- **Benefit:** Native MP4/TS format for easy recording
-- **Cost:** Increased latency (150ms → 6-12 seconds)
-- **Cost:** Higher implementation complexity
-- **Cost:** Additional storage for segment cache (~5 MB)
-- **Cost:** Increased CPU usage for H.264 encoding
+- **Benefit:** Better video quality through inter-frame compression (H.264)
+- **Benefit:** Native MP4/TS format suitable for recording
+- **Benefit:** Lower bandwidth enables more concurrent viewers
+- **Cost:** Increased latency (150ms → 6-12 seconds) - not suitable for real-time monitoring
+- **Cost:** Higher implementation complexity (MediaCodec, segment management, playlist generation)
+- **Cost:** Additional storage required for segment cache (~5 MB)
+- **Cost:** Increased CPU usage for H.264 encoding (mitigated by hardware acceleration)
 
-**Implementation Reference:** See STREAMING_ARCHITECTURE.md for detailed HLS implementation analysis, including MediaCodec integration, segment management, and performance comparisons.
+**Implementation Reference:** See [STREAMING_ARCHITECTURE.md - Requirements for Hardware-Encoded Modern Streaming](STREAMING_ARCHITECTURE.md#requirements-for-hardware-encoded-modern-streaming) for detailed implementation analysis, including MediaCodec integration, segment management, error handling, and performance comparisons.
 
 **Priority:** LOW - Implement only after core MJPEG functionality is stable and tested. MJPEG remains the primary streaming method for compatibility and low latency.
 
