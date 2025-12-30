@@ -515,25 +515,29 @@ class HLSEncoderManager(
     
     /**
      * Start a new segment file
-     * REQ-HW-004: Segment creation with MPEG-TS format (with MP4 fallback)
+     * REQ-HW-004: Segment creation with MPEG-TS format
      * 
-     * CRITICAL: For MP4 format, segments are only finalized on muxer.stop().
-     * We track the current segment separately and only add it to the available
-     * list after finalization to prevent clients from accessing empty files.
+     * @throws IllegalStateException if MPEG-TS format is not supported
      */
     private fun startNewSegment() {
         val segmentDir = File(cacheDir, "hls_segments")
         val currentIndex = segmentIndex.getAndIncrement()
         
         // Determine output format on first segment creation if not already done
+        // This will throw IllegalStateException if MPEG-TS is not supported
         if (muxerOutputFormat == -1) {
-            muxerOutputFormat = detectMuxerFormat()
-            Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
+            try {
+                muxerOutputFormat = detectMuxerFormat()
+                Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
+            } catch (e: IllegalStateException) {
+                Log.e(TAG, "Cannot start HLS streaming: ${e.message}")
+                lastError = e.message
+                throw e  // Propagate to caller
+            }
         }
         
-        // Use correct file extension based on format: .ts for MPEG-TS, .m4s for MP4
-        val extension = if (muxerOutputFormat == 8) "ts" else "m4s"
-        val segmentFile = File(segmentDir, "segment${currentIndex}.${extension}")
+        // Use .ts extension for MPEG-TS (MP4 fallback removed)
+        val segmentFile = File(segmentDir, "segment${currentIndex}.ts")
         
         try {
             muxer = MediaMuxer(
@@ -549,16 +553,11 @@ class HLSEncoderManager(
             // Track current segment being written
             currentSegmentFile = segmentFile
             
-            // For MPEG-TS, add to available list immediately (progressive writing)
-            // For MP4, wait until finalization (only writes on stop())
-            if (muxerOutputFormat == 8) {
-                synchronized(segmentFiles) {
-                    segmentFiles.add(segmentFile)
-                }
-                Log.d(TAG, "Started new MPEG-TS segment: ${segmentFile.name} (immediately available)")
-            } else {
-                Log.d(TAG, "Started new MP4 segment: ${segmentFile.name} (will be available after finalization)")
+            // MPEG-TS: Add to available list immediately (progressive writing)
+            synchronized(segmentFiles) {
+                segmentFiles.add(segmentFile)
             }
+            Log.d(TAG, "Started new MPEG-TS segment: ${segmentFile.name} (immediately available)")
             
             segmentStartTime.set(System.currentTimeMillis())
             
@@ -566,19 +565,24 @@ class HLSEncoderManager(
             Log.e(TAG, "Error starting new segment", e)
             lastError = "Segment creation failed: ${e.message}"
             currentSegmentFile = null
+            throw e
         }
     }
     
     /**
      * Detect supported muxer format
-     * Tries MPEG-TS first (best for HLS), falls back to fragmented MP4
-     * REQ-HW-004: Format detection and fallback
+     * HLS requires MPEG-TS format for proper streaming compatibility
+     * REQ-HW-004: Format detection
      * 
-     * IMPORTANT: MP4 format requires finalization (muxer.stop()) before segments are playable.
-     * This means there will be a delay (segment duration) before segments appear in playlist.
+     * CRITICAL: Standard MP4 is NOT compatible with HLS streaming.
+     * Android MediaMuxer creates standard MP4 (moov at end), not fragmented MP4 (fMP4).
+     * HLS players expect either MPEG-TS or fMP4, so standard MP4 will not work.
+     * 
+     * @return MUXER_OUTPUT_MPEG_2_TS format code
+     * @throws IllegalStateException if MPEG-TS is not supported
      */
     private fun detectMuxerFormat(): Int {
-        // Try MPEG-TS first (API 26+)
+        // MPEG-TS is REQUIRED for HLS (API 26+)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
             try {
                 // Test if MPEG-TS format is supported by creating a temporary muxer
@@ -589,22 +593,23 @@ class HLSEncoderManager(
                 )
                 testMuxer.release()
                 testFile.delete()
-                Log.i(TAG, "MPEG-TS format supported, using MPEG-TS for HLS segments (progressive writing)")
+                Log.i(TAG, "MPEG-TS format supported - HLS streaming is available")
                 return 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
             } catch (e: Exception) {
-                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to MP4", e)
+                Log.e(TAG, "MPEG-TS format test failed despite API 26+", e)
+                throw IllegalStateException(
+                    "HLS streaming requires MPEG-TS format support, which is not available on this device. " +
+                    "MPEG-TS format test failed: ${e.message}"
+                )
             }
         } else {
-            Log.i(TAG, "Device API < 26, MPEG-TS not available")
+            Log.e(TAG, "Device API ${android.os.Build.VERSION.SDK_INT} does not support MPEG-TS (requires API 26+)")
+            throw IllegalStateException(
+                "HLS streaming requires Android 8.0+ (API 26+) for MPEG-TS format support. " +
+                "Current device is API ${android.os.Build.VERSION.SDK_INT}. " +
+                "Please use MJPEG streaming instead (http://DEVICE_IP:8080/stream)"
+            )
         }
-        
-        // Fallback to regular MP4 (universally supported)
-        // Note: MP4 requires finalization (muxer.stop()) before data is complete and playable
-        Log.w(TAG, "Using standard MP4 format for HLS segments")
-        Log.w(TAG, "IMPORTANT: MP4 segments will only appear in playlist after finalization (segment duration elapsed)")
-        Log.w(TAG, "This means initial playback will be delayed by one segment duration (~2 seconds)")
-        Log.w(TAG, "For best HLS experience, use a device with Android 8.0+ (API 26+) for MPEG-TS support")
-        return MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
     }
     
     /**
@@ -621,9 +626,6 @@ class HLSEncoderManager(
     /**
      * Finalize current segment and cleanup old segments
      * REQ-HW-004: Sliding window of 10 segments
-     * 
-     * CRITICAL: For MP4 format, this is where the segment becomes complete and playable.
-     * Only after muxer.stop() does the MP4 file have a valid moov atom and become seekable.
      */
     private fun finalizeSegment() {
         try {
@@ -637,15 +639,6 @@ class HLSEncoderManager(
             muxer = null
             videoTrackIndex = -1
             muxerStarted = false
-            
-            // For MP4 format, add the finalized segment to available list NOW
-            // (MPEG-TS was added immediately in startNewSegment)
-            if (muxerOutputFormat != 8 && currentSegmentFile != null) {
-                synchronized(segmentFiles) {
-                    segmentFiles.add(currentSegmentFile!!)
-                }
-                Log.i(TAG, "MP4 segment finalized and now available: ${currentSegmentFile!!.name}")
-            }
             currentSegmentFile = null
             
             // Cleanup old segments (keep only last maxSegments)
@@ -805,37 +798,23 @@ class HLSEncoderManager(
      * Generate M3U8 playlist for HLS clients
      * REQ-HW-005: M3U8 playlist generation
      * 
-     * IMPORTANT: Android MediaMuxer creates standard MP4, not fragmented MP4 (fMP4).
-     * Using version 3 for maximum compatibility, even though MP4 segments are non-standard.
+     * Only MPEG-TS format is supported (MP4 fallback has been removed)
      */
     fun generatePlaylist(): String {
         val playlist = StringBuilder()
         playlist.append("#EXTM3U\n")
-        
-        // CRITICAL: Use version 3 for both MPEG-TS and MP4
-        // Android MediaMuxer MUXER_OUTPUT_MPEG_4 creates STANDARD MP4, not fragmented MP4
-        // Version 7 requires fMP4 format which we don't have
-        // Version 3 is more permissive and some players accept standard MP4 segments
-        val version = 3
-        playlist.append("#EXT-X-VERSION:$version\n")
+        playlist.append("#EXT-X-VERSION:3\n")
         playlist.append("#EXT-X-TARGETDURATION:$segmentDurationSec\n")
         
         val currentIndex = segmentIndex.get()
         val mediaSequence = maxOf(0, currentIndex - maxSegments)
         playlist.append("#EXT-X-MEDIA-SEQUENCE:$mediaSequence\n")
         
-        // Log format-specific information
-        if (muxerOutputFormat != 8) {
-            Log.w(TAG, "Generating playlist with standard MP4 segments (not fMP4)")
-            Log.w(TAG, "Using HLS version 3 for maximum compatibility")
-            Log.w(TAG, "Note: Standard MP4 in HLS is non-standard and may not work with all players")
-        }
-        
         synchronized(segmentFiles) {
             if (segmentFiles.isEmpty()) {
                 Log.w(TAG, "No segments available yet for playlist generation")
             } else {
-                Log.d(TAG, "Generating playlist with ${segmentFiles.size} available segments")
+                Log.d(TAG, "Generating MPEG-TS playlist with ${segmentFiles.size} available segments")
             }
             
             segmentFiles.forEach { file ->

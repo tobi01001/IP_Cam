@@ -1517,14 +1517,20 @@ class HttpServer(
      * Serve HLS segment file (TS or M4S)
      * REQ-HW-005: /hls/segment{N}.ts or /hls/segment{N}.m4s endpoint
      */
+    /**
+     * Serve HLS segment file (TS only)
+     * REQ-HW-005: /hls/segment{N}.ts endpoint
+     * 
+     * MP4 fallback has been removed - only MPEG-TS segments are supported
+     */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
         val segmentName = call.parameters["segmentName"] ?: ""
         
         // Validate segment name format to prevent directory traversal
-        // Accept both .ts (MPEG-TS) and .m4s (fragmented MP4) extensions
-        if (!segmentName.matches(Regex("^segment\\d+\\.(ts|m4s)$"))) {
+        // Only accept .ts (MPEG-TS) extension
+        if (!segmentName.matches(Regex("^segment\\d+\\.ts$"))) {
             call.respondText(
-                """{"status":"error","message":"Invalid segment name format. Expected segment{N}.ts or segment{N}.m4s"}""",
+                """{"status":"error","message":"Invalid segment name format. Expected segment{N}.ts"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.BadRequest
             )
@@ -1534,14 +1540,7 @@ class HttpServer(
         val segmentFile = cameraService.getHLSSegment(segmentName)
         
         if (segmentFile != null && segmentFile.exists()) {
-            // Set correct Content-Type based on file extension
-            val contentType = when {
-                segmentName.endsWith(".ts") -> ContentType.parse("video/mp2t")
-                segmentName.endsWith(".m4s") -> ContentType.parse("video/mp4")
-                else -> ContentType.Application.OctetStream
-            }
-            
-            call.response.header("Content-Type", contentType.toString())
+            call.response.header("Content-Type", "video/mp2t")
             call.response.header("Cache-Control", "public, max-age=60")
             call.response.header("Access-Control-Allow-Origin", "*")
             
