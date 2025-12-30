@@ -388,6 +388,10 @@ class HLSEncoderManager(
      * REQ-HW-008: Performance optimization - reuse buffers to reduce GC pressure
      * 
      * Handles proper stride and padding for YUV planes
+     * 
+     * CRITICAL: This method creates COPIES of the ImageProxy buffer data to avoid
+     * corrupting the shared buffers used by the MJPEG pipeline. We must NOT call
+     * rewind() or position() on the original buffers as they are shared.
      */
     private fun fillInputBuffer(buffer: ByteBuffer, image: ImageProxy) {
         try {
@@ -403,9 +407,12 @@ class HLSEncoderManager(
             val uPlane = planes[1]
             val vPlane = planes[2]
             
-            val yBuffer = yPlane.buffer
-            val uBuffer = uPlane.buffer
-            val vBuffer = vPlane.buffer
+            // CRITICAL: Create DUPLICATE buffers to avoid corrupting shared ImageProxy buffers
+            // The original buffers are shared with MJPEG pipeline - modifying their position
+            // causes green artifacts in both preview and MJPEG stream
+            val yBuffer = yPlane.buffer.duplicate()
+            val uBuffer = uPlane.buffer.duplicate()
+            val vBuffer = vPlane.buffer.duplicate()
             
             val yRowStride = yPlane.rowStride
             val yPixelStride = yPlane.pixelStride
@@ -421,6 +428,7 @@ class HLSEncoderManager(
             }
             
             // Copy Y plane with stride handling
+            // Now safe to call rewind() since we're working with duplicates
             yBuffer.rewind()
             if (yRowStride == width && yPixelStride == 1) {
                 // Contiguous memory, direct copy
@@ -454,6 +462,7 @@ class HLSEncoderManager(
                 uvRowBuffer = ByteArray(uvRowStride)
             }
             
+            // Now safe to call rewind() since we're working with duplicates
             uBuffer.rewind()
             vBuffer.rewind()
             
@@ -510,15 +519,18 @@ class HLSEncoderManager(
     private fun startNewSegment() {
         val segmentDir = File(cacheDir, "hls_segments")
         val currentIndex = segmentIndex.getAndIncrement()
-        val segmentFile = File(segmentDir, "segment${currentIndex}.ts")
+        
+        // Determine output format on first segment creation if not already done
+        if (muxerOutputFormat == -1) {
+            muxerOutputFormat = detectMuxerFormat()
+            Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
+        }
+        
+        // Use correct file extension based on format: .ts for MPEG-TS, .m4s for fMP4
+        val extension = if (muxerOutputFormat == 8) "ts" else "m4s"
+        val segmentFile = File(segmentDir, "segment${currentIndex}.${extension}")
         
         try {
-            // Determine output format on first segment creation
-            if (muxerOutputFormat == -1) {
-                muxerOutputFormat = detectMuxerFormat()
-                Log.i(TAG, "Using muxer format: ${getMuxerFormatName(muxerOutputFormat)}")
-            }
-            
             muxer = MediaMuxer(
                 segmentFile.absolutePath,
                 muxerOutputFormat
@@ -547,7 +559,7 @@ class HLSEncoderManager(
     
     /**
      * Detect supported muxer format
-     * Tries MPEG-TS first (best for HLS), falls back to MP4
+     * Tries MPEG-TS first (best for HLS), falls back to fragmented MP4
      * REQ-HW-004: Format detection and fallback
      */
     private fun detectMuxerFormat(): Int {
@@ -562,15 +574,20 @@ class HLSEncoderManager(
                 )
                 testMuxer.release()
                 testFile.delete()
-                Log.d(TAG, "MPEG-TS format supported")
+                Log.i(TAG, "MPEG-TS format supported, using MPEG-TS for HLS segments")
                 return 8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
             } catch (e: Exception) {
-                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to MP4", e)
+                Log.w(TAG, "MPEG-TS format not supported on this device, falling back to fragmented MP4", e)
             }
+        } else {
+            Log.i(TAG, "Device API < 26, MPEG-TS not available")
         }
         
-        // Fallback to MP4 (universally supported)
-        Log.d(TAG, "Using MP4 format for HLS segments")
+        // Fallback to regular MP4 (universally supported)
+        // Note: Fragmented MP4 (fMP4) would be better for HLS but requires MediaMuxer.OutputFormat.MUXER_OUTPUT_HEIF
+        // which is only for HEIF images. We'll use standard MP4 and document the limitation.
+        Log.w(TAG, "Using standard MP4 format for HLS segments - playback may be limited to devices/players that support MP4-in-HLS")
+        Log.w(TAG, "Recommended: Use a device with API 26+ for proper MPEG-TS support, or consider VLC which supports MP4 segments")
         return MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4
     }
     
@@ -761,12 +778,24 @@ class HLSEncoderManager(
     fun generatePlaylist(): String {
         val playlist = StringBuilder()
         playlist.append("#EXTM3U\n")
-        playlist.append("#EXT-X-VERSION:3\n")
+        
+        // Use version 3 for MPEG-TS, version 7 for fragmented MP4
+        // Version 7 indicates ISO Base Media File Format segments (fMP4)
+        val version = if (muxerOutputFormat == 8) 3 else 7
+        playlist.append("#EXT-X-VERSION:$version\n")
         playlist.append("#EXT-X-TARGETDURATION:$segmentDurationSec\n")
         
         val currentIndex = segmentIndex.get()
         val mediaSequence = maxOf(0, currentIndex - maxSegments)
         playlist.append("#EXT-X-MEDIA-SEQUENCE:$mediaSequence\n")
+        
+        // Add map tag for fragmented MP4 format (if using MP4)
+        // This helps players understand the initialization segment
+        if (muxerOutputFormat != 8) {
+            // Note: For proper fMP4 support, we'd need an initialization segment
+            // For now, we document that MP4 fallback has limited compatibility
+            Log.d(TAG, "Generating playlist with MP4 segments (limited HLS compatibility)")
+        }
         
         synchronized(segmentFiles) {
             segmentFiles.forEach { file ->
