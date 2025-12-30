@@ -295,6 +295,16 @@ class HLSEncoderManager(
                 return false
             }
             
+            // Validate image dimensions match encoder configuration
+            if (image.width != width || image.height != height) {
+                // Only log once per mismatch to avoid spam
+                if (lastError != "Resolution mismatch: ${image.width}x${image.height} vs ${width}x${height}") {
+                    Log.e(TAG, "Image resolution (${image.width}x${image.height}) does not match encoder configuration (${width}x${height}). Skipping frame.")
+                    lastError = "Resolution mismatch: ${image.width}x${image.height} vs ${width}x${height}"
+                }
+                return false
+            }
+            
             // Get input buffer from encoder
             val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
             if (inputBufferIndex >= 0) {

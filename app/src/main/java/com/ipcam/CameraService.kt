@@ -710,12 +710,51 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // === HLS Pipeline (if enabled) ===
             // Feed raw YUV to HLS encoder BEFORE bitmap conversion for efficiency
             // REQ-OPT-010: HLS and MJPEG streams available simultaneously
-            if (hlsEnabled && hlsEncoder != null) {
-                try {
-                    hlsEncoder?.encodeFrame(image)
-                } catch (e: Exception) {
-                    Log.e(TAG, "HLS encoding failed", e)
-                    // Continue with MJPEG even if HLS fails
+            if (hlsEnabled) {
+                // Lazy initialization of encoder with actual frame dimensions
+                if (hlsEncoder == null) {
+                    try {
+                        Log.i(TAG, "Creating HLS encoder with actual frame dimensions: ${image.width}x${image.height}")
+                        
+                        // Create HLS segment directory
+                        val hlsDir = File(cacheDir, "hls_segments")
+                        if (!hlsDir.exists()) {
+                            hlsDir.mkdirs()
+                        }
+                        
+                        // Create and start HLS encoder with actual image dimensions
+                        hlsEncoder = HLSEncoderManager(
+                            cacheDir = cacheDir,
+                            width = image.width,
+                            height = image.height,
+                            fps = 30,
+                            bitrate = 2_000_000 // 2 Mbps
+                        )
+                        
+                        if (hlsEncoder?.start() != true) {
+                            Log.e(TAG, "Failed to start HLS encoder")
+                            hlsEncoder = null
+                            hlsEnabled = false
+                            saveSettings()
+                        } else {
+                            Log.i(TAG, "HLS encoder started: ${image.width}x${image.height} @ 30fps, 2 Mbps")
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error creating HLS encoder", e)
+                        hlsEncoder = null
+                        hlsEnabled = false
+                        saveSettings()
+                    }
+                }
+                
+                // Encode frame if encoder is ready
+                if (hlsEncoder != null) {
+                    try {
+                        hlsEncoder?.encodeFrame(image)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "HLS encoding failed", e)
+                        // Continue with MJPEG even if HLS fails
+                    }
                 }
             }
             
@@ -1716,37 +1755,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Log.w(TAG, "Hardware encoder not available, HLS may use software fallback")
             }
             
-            // Get current camera resolution for encoder
-            val width = selectedResolution?.width ?: 1920
-            val height = selectedResolution?.height ?: 1080
-            
-            // Create HLS segment directory
-            val hlsDir = File(cacheDir, "hls_segments")
-            if (!hlsDir.exists()) {
-                hlsDir.mkdirs()
-            }
-            
-            // Create and start HLS encoder
-            hlsEncoder = HLSEncoderManager(
-                cacheDir = cacheDir,
-                width = width,
-                height = height,
-                fps = 30,
-                bitrate = 2_000_000 // 2 Mbps
-            )
-            
-            if (hlsEncoder?.start() == true) {
-                hlsEnabled = true
-                saveSettings() // Persist HLS state
-                Log.i(TAG, "HLS streaming enabled: ${width}x${height} @ 30fps, 2 Mbps")
-                return true
-            } else {
-                Log.e(TAG, "Failed to start HLS encoder")
-                hlsEnabled = false
-                hlsEncoder = null
-                saveSettings() // Ensure flag is cleared
-                return false
-            }
+            // Note: We don't create the encoder here immediately because selectedResolution
+            // might not match the actual camera output resolution.
+            // The encoder will be created lazily on the first frame with actual dimensions.
+            // Just set the flag and let processImage() handle encoder creation.
+            hlsEnabled = true
+            saveSettings()
+            Log.i(TAG, "HLS streaming enabled (encoder will be created on first frame)")
+            return true
             
         } catch (e: Exception) {
             Log.e(TAG, "Error enabling HLS streaming", e)
