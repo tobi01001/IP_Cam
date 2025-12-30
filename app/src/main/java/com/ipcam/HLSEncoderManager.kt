@@ -319,9 +319,18 @@ class HLSEncoderManager(
         val segmentFile = File(segmentDir, "segment${currentIndex}.ts")
         
         try {
+            // Use MPEG-TS format for HLS compatibility
+            // MUXER_OUTPUT_MPEG_2_TS = 8 (added in API 26)
+            // For API 24-25, we'll use MP4 format which is also compatible with HLS
+            val outputFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                8 // MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS
+            } else {
+                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4 // MP4 fallback for API 24-25
+            }
+            
             muxer = MediaMuxer(
                 segmentFile.absolutePath,
-                MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_2_TS // MPEG-TS for HLS
+                outputFormat
             )
             
             // Add video track

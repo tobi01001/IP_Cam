@@ -43,6 +43,7 @@ import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.LifecycleRegistry
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -1674,7 +1675,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Enable HLS streaming
      * REQ-OPT-001 through REQ-OPT-012: Hardware-encoded H.264/HLS streaming
      */
-    fun enableHLSStreaming(): Boolean {
+    override fun enableHLSStreaming(): Boolean {
         if (hlsEnabled) {
             Log.w(TAG, "HLS already enabled")
             return true
@@ -1726,7 +1727,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Disable HLS streaming
      */
-    fun disableHLSStreaming() {
+    override fun disableHLSStreaming() {
         if (!hlsEnabled) {
             Log.w(TAG, "HLS already disabled")
             return
@@ -1747,13 +1748,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Check if HLS is enabled
      */
-    fun isHLSEnabled(): Boolean = hlsEnabled
+    override fun isHLSEnabled(): Boolean = hlsEnabled
     
     /**
      * Get HLS encoder metrics
      * REQ-HW-008: Performance monitoring
      */
-    fun getHLSMetrics(): HLSEncoderManager.EncoderMetrics? {
+    override fun getHLSMetrics(): HLSEncoderManager.EncoderMetrics? {
         return hlsEncoder?.getMetrics()
     }
     
@@ -1761,7 +1762,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Get HLS playlist (M3U8)
      * REQ-HW-005: M3U8 playlist generation
      */
-    fun getHLSPlaylist(): String? {
+    override fun getHLSPlaylist(): String? {
         return if (hlsEnabled) {
             hlsEncoder?.generatePlaylist()
         } else {
@@ -1773,7 +1774,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Get HLS segment file
      * REQ-HW-005: Segment file serving
      */
-    fun getHLSSegment(segmentName: String): File? {
+    override fun getHLSSegment(segmentName: String): File? {
         return if (hlsEnabled) {
             hlsEncoder?.getSegmentFile(segmentName)
         } else {
