@@ -113,6 +113,13 @@ class HttpServer(
                 // Adaptive quality control
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
+                
+                // RTSP streaming endpoints
+                get("/enableRTSP") { serveEnableRTSP() }
+                get("/disableRTSP") { serveDisableRTSP() }
+                get("/rtspStatus") { serveRTSPStatus() }
+                get("/setRTSPBitrate") { serveSetRTSPBitrate() }
+                get("/setRTSPBitrateMode") { serveSetRTSPBitrateMode() }
             }
         }
         
@@ -384,6 +391,52 @@ class HttpServer(
                     <div class="endpoint">
                         <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                         Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
+                    </div>
+                    <h2>RTSP Streaming (Hardware-Accelerated H.264)</h2>
+                    <p class="note"><em>RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency. Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.</em></p>
+                    <div class="row">
+                        <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
+                        <button id="disableRTSPBtn" onclick="disableRTSP()">Disable RTSP</button>
+                        <button onclick="checkRTSPStatus()">Check Status</button>
+                    </div>
+                    <div id="rtspStatus" class="note" style="margin-top: 10px;"></div>
+                    
+                    <h3 style="margin-top: 20px;">Encoder Settings</h3>
+                    <div class="row">
+                        <label for="bitrateInput" style="margin-right: 10px;">Bitrate (Mbps):</label>
+                        <input type="number" id="bitrateInput" min="0.5" max="20" step="0.5" value="3.0" style="width: 80px; margin-right: 10px;">
+                        <button onclick="setBitrate()">Set Bitrate</button>
+                    </div>
+                    <div class="row" style="margin-top: 10px;">
+                        <label for="bitrateModeSelect" style="margin-right: 10px;">Bitrate Mode:</label>
+                        <select id="bitrateModeSelect" style="margin-right: 10px; padding: 5px;">
+                            <option value="VBR">VBR (Variable, best quality)</option>
+                            <option value="CBR">CBR (Constant, stable bandwidth)</option>
+                            <option value="CQ">CQ (Constant Quality)</option>
+                        </select>
+                        <button onclick="setBitrateMode()">Set Mode</button>
+                    </div>
+                    <div id="encoderSettings" class="note" style="margin-top: 10px;"></div>
+                    
+                    <div class="endpoint">
+                        <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
+                        Enable hardware-accelerated RTSP streaming on port 8554
+                    </div>
+                    <div class="endpoint">
+                        <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
+                        Disable RTSP streaming to save resources
+                    </div>
+                    <div class="endpoint">
+                        <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
+                        Get RTSP server status and metrics (JSON)
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Bitrate:</strong> <a href="/setRTSPBitrate?value=5.0" target="_blank"><code>GET /setRTSPBitrate?value=5.0</code></a><br>
+                        Set encoder bitrate (value in Mbps, e.g., 3.0, 5.0, 8.0)
+                    </div>
+                    <div class="endpoint">
+                        <strong>Set Bitrate Mode:</strong> <a href="/setRTSPBitrateMode?value=VBR" target="_blank"><code>GET /setRTSPBitrateMode?value=VBR</code></a><br>
+                        Set bitrate mode: VBR (variable), CBR (constant), or CQ (constant quality)
                     </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
@@ -895,6 +948,141 @@ class HttpServer(
                     window.addEventListener('beforeunload', function() {
                         eventSource.close();
                     });
+                    
+                    // RTSP Control Functions
+                    function enableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Enabling RTSP...';
+                        fetch('/enableRTSP')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Enabled</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port + '<br>' +
+                                        'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed to enable RTSP</strong><br>' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function disableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Disabling RTSP...';
+                        fetch('/disableRTSP')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Disabled</strong>';
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: red;">Error:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function checkRTSPStatus() {
+                        document.getElementById('rtspStatus').textContent = 'Checking RTSP status...';
+                        fetch('/rtspStatus')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.rtspEnabled) {
+                                    const encodedFps = data.encodedFps > 0 ? data.encodedFps.toFixed(1) : '0.0';
+                                    const dropRate = data.framesEncoded > 0 
+                                        ? (data.droppedFrames / (data.framesEncoded + data.droppedFrames) * 100).toFixed(1)
+                                        : '0.0';
+                                    const bandwidthMbps = (data.bitrateMbps * encodedFps / data.targetFps).toFixed(2);
+                                    
+                                    // Update status display
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Active</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
+                                        'Resolution: ' + data.resolution + ' @ ' + data.bitrateMbps.toFixed(1) + ' Mbps (' + data.bitrateMode + ')<br>' +
+                                        'Camera FPS: ' + encodedFps + ' fps (encoder configured: ' + data.targetFps + ' fps)<br>' +
+                                        'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped (' + dropRate + '%)<br>' +
+                                        'Bandwidth: ~' + bandwidthMbps + ' Mbps (actual)<br>' +
+                                        'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port;
+                                    
+                                    // Update encoder settings controls to reflect current values
+                                    document.getElementById('bitrateInput').value = data.bitrateMbps.toFixed(1);
+                                    document.getElementById('bitrateModeSelect').value = data.bitrateMode;
+                                } else {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Not Enabled</strong><br>' +
+                                        'Use "Enable RTSP" button to start hardware-accelerated H.264 streaming';
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('rtspStatus').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    // Check RTSP status on page load
+                    window.addEventListener('load', function() {
+                        checkRTSPStatus();
+                    });
+                    
+                    function setBitrate() {
+                        const bitrate = document.getElementById('bitrateInput').value;
+                        document.getElementById('encoderSettings').textContent = 'Setting bitrate to ' + bitrate + ' Mbps...';
+                        
+                        fetch('/setRTSPBitrate?value=' + bitrate)
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('encoderSettings').innerHTML = 
+                                        '<strong style="color: green;">✓ Bitrate set to ' + bitrate + ' Mbps</strong><br>' +
+                                        'Encoder will restart with new settings. Check status for confirmation.';
+                                    setTimeout(checkRTSPStatus, 2000);
+                                } else {
+                                    document.getElementById('encoderSettings').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('encoderSettings').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
+                    
+                    function setBitrateMode() {
+                        const mode = document.getElementById('bitrateModeSelect').value;
+                        document.getElementById('encoderSettings').textContent = 'Setting bitrate mode to ' + mode + '...';
+                        
+                        fetch('/setRTSPBitrateMode?value=' + mode)
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    document.getElementById('encoderSettings').innerHTML = 
+                                        '<strong style="color: green;">✓ Bitrate mode set to ' + mode + '</strong><br>' +
+                                        'Encoder will restart with new settings. Check status for confirmation.';
+                                    setTimeout(checkRTSPStatus, 2000);
+                                } else {
+                                    document.getElementById('encoderSettings').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed:</strong> ' + data.message;
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('encoderSettings').innerHTML = 
+                                    '<strong style="color: red;">Error:</strong> ' + error;
+                            });
+                    }
                 </script>
             </body>
             </html>
@@ -977,6 +1165,8 @@ class HttpServer(
         val activeStreamCount = activeStreams.get()
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
         
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\"]"
+        
         val json = """
             {
                 "status": "running",
@@ -991,7 +1181,7 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": ["/", "/snapshot", "/stream", "/switch", "/status", "/events", "/toggleFlashlight", "/formats", "/connections", "/stats"]
+                "endpoints": $endpoints
             }
         """.trimIndent()
         
@@ -1350,4 +1540,134 @@ class HttpServer(
             ContentType.Application.Json
         )
     }
+    
+    // ==================== RTSP Streaming Endpoints ====================
+    
+    /**
+     * Enable RTSP streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableRTSP() {
+        val success = cameraService.enableRTSPStreaming()
+        
+        if (success) {
+            val metrics = cameraService.getRTSPMetrics()
+            val rtspUrl = cameraService.getRTSPUrl()
+            val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
+            val colorFormat = metrics?.colorFormat?.replace("\"", "\\\"") ?: "unknown"
+            val colorFormatHex = metrics?.colorFormatHex ?: "unknown"
+            
+            call.respondText(
+                """{"status":"ok","message":"RTSP streaming enabled","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","url":"$rtspUrl","port":8554}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to enable RTSP streaming. Check logs for details.","rtspEnabled":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Disable RTSP streaming
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableRTSP() {
+        cameraService.disableRTSPStreaming()
+        call.respondText(
+            """{"status":"ok","message":"RTSP streaming disabled","rtspEnabled":false}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    /**
+     * Get RTSP status and metrics
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRTSPStatus() {
+        val rtspEnabled = cameraService.isRTSPEnabled()
+        val metrics = cameraService.getRTSPMetrics()
+        val rtspUrl = cameraService.getRTSPUrl()
+        
+        if (rtspEnabled && metrics != null) {
+            val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
+            val colorFormat = metrics.colorFormat.replace("\"", "\\\"")
+            val colorFormatHex = metrics.colorFormatHex
+            val resolution = metrics.resolution
+            val bitrateMbps = metrics.bitrateMbps
+            val bitrateMode = metrics.bitrateMode
+            call.respondText(
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"bitrateMode":"$bitrateMode","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"ok","rtspEnabled":false,"message":"RTSP streaming is not enabled"}""",
+                ContentType.Application.Json
+            )
+        }
+    }
+    
+    /**
+     * Set RTSP bitrate (in Mbps)
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRTSPBitrate() {
+        val mbps = call.request.queryParameters["value"]?.toFloatOrNull()
+        
+        if (mbps == null || mbps <= 0) {
+            call.respondText(
+                """{"status":"error","message":"Invalid bitrate value. Provide ?value=X where X is bitrate in Mbps (e.g., 3.5)"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val success = cameraService.setRTSPBitrate((mbps * 1_000_000).toInt())
+        
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"RTSP bitrate set to $mbps Mbps","bitrateMbps":$mbps}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to set RTSP bitrate. Ensure RTSP is enabled."}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Set RTSP bitrate mode (VBR or CBR)
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRTSPBitrateMode() {
+        val mode = call.request.queryParameters["value"]?.uppercase()
+        
+        if (mode == null || (mode != "VBR" && mode != "CBR" && mode != "CQ")) {
+            call.respondText(
+                """{"status":"error","message":"Invalid mode. Use ?value=VBR, ?value=CBR, or ?value=CQ"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val success = cameraService.setRTSPBitrateMode(mode)
+        
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"RTSP bitrate mode set to $mode","bitrateMode":"$mode"}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to set RTSP bitrate mode. Ensure RTSP is enabled."}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    // ==================== End RTSP Streaming Endpoints ====================
 }

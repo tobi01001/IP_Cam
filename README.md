@@ -5,22 +5,31 @@ Android IP-Cam - turning an old phone into a camera
 IP_Cam is a simple Android application that turns your Android phone into an IP camera accessible over your local WiFi network. It provides a web server with a REST API and MJPEG streaming capabilities, making it compatible with popular surveillance systems like ZoneMinder and Shinobi.
 
 ## Features
-- **Live Camera Preview**: View what the camera sees directly in the app
-- **HTTP Web Server**: Access the camera through any web browser
+
+### Streaming
 - **MJPEG Streaming**: Real-time video streaming with low latency (~150-280ms) compatible with all surveillance systems
+- **RTSP Streaming (Optional)**: Hardware-accelerated H.264 streaming with 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) and acceptable latency (~500ms-1s)
+- **Dual-Stream Architecture**: Both MJPEG and RTSP can run simultaneously for different clients
+- **Dual Transport**: RTSP supports both UDP (lower latency) and TCP (firewall-friendly) transport modes
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
-- **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
+
+### Camera & Control
+- **Live Camera Preview**: View what the camera sees directly in the app
 - **Camera Selection**: Switch between front and back cameras
 - **Flashlight/Torch Control**: Toggle flashlight for back camera (in-app and via HTTP API)
 - **Configurable Formats**: Choose supported resolutions from the web UI
 - **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
 - **Resolution Debugging**: Optional overlay showing actual bitmap dimensions
+
+### Reliability & Management
+- **HTTP Web Server**: Access the camera through any web browser (Ktor-based)
+- **Real-time Updates**: Server-Sent Events (SSE) for live connection monitoring
 - **Persistent Service**: Foreground service with automatic restart and battery optimization
 - **Network Monitoring**: Automatically restarts server on network changes
 - **Settings Persistence**: All settings saved and restored across app restarts
 - **Overlay & Reliability**: Battery/time overlay with auto-reconnect stream handling
 - **REST API**: Simple API for integration with other systems
-- **Low Latency**: Optimized for fast streaming with JPEG compression
+- **Performance Monitoring**: Real-time bandwidth and quality metrics
 
 ## Target Device
 Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
@@ -30,7 +39,9 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 - **[Requirements Specification](REQUIREMENTS_SPECIFICATION.md)** - Complete technical requirements for implementing IP_Cam from scratch
 - **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
 - **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
-- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (HLS/RTSP)
+- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (RTSP)
+- **[RTSP Implementation](RTSP_IMPLEMENTATION.md)** - Complete documentation on RTSP streaming implementation, protocol details, usage examples, and troubleshooting
+
 
 ## Requirements
 - Android 7.0 (API level 24) or higher
@@ -81,9 +92,10 @@ Simply open the displayed URL in any web browser on the same network to access t
 
 #### API Endpoints
 
+##### MJPEG Streaming (Default - Low Latency)
 - **`GET /`** - Web interface with live stream
 - **`GET /snapshot`** - Capture and return a single JPEG image
-- **`GET /stream`** - MJPEG video stream
+- **`GET /stream`** - MJPEG video stream (~150-280ms latency, ~8 Mbps @ 10fps)
 - **`GET /switch`** - Switch between front and back camera (returns JSON)
 - **`GET /status`** - Get server status and camera information (returns JSON with connection info)
 - **`GET /formats`** - List supported resolutions for the active camera
@@ -93,7 +105,25 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
 - **`GET /toggleFlashlight`** - Toggle flashlight on/off for back camera (returns JSON with state)
 
+##### RTSP Streaming (Optional - Bandwidth Efficient)
+**Note:** RTSP streaming provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) with acceptable latency (~500ms-1s). Ideal for recording, remote viewing over limited bandwidth, and integration with all major surveillance systems. MJPEG remains the primary streaming method for lowest-latency applications.
+
+- **`GET /enableRTSP`** - Enable RTSP streaming (returns JSON with encoder info and RTSP URL)
+- **`GET /disableRTSP`** - Disable RTSP streaming (returns JSON)
+- **`GET /rtspStatus`** - Get RTSP server status and metrics (returns JSON)
+- **`rtsp://DEVICE_IP:8554/stream`** - RTSP video stream (H.264 over RTP)
+
+**RTSP Features:**
+- Hardware-accelerated H.264 encoding for efficiency
+- 50-75% bandwidth reduction compared to MJPEG
+- 500ms-1s latency (acceptable for most surveillance applications)
+- Industry standard protocol compatible with all surveillance systems
+- Dual transport: UDP (default, lower latency) and TCP (automatic fallback, firewall-friendly)
+- Compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye, Home Assistant
+
 #### Example Usage
+
+##### MJPEG Streaming Examples
 
 **Capture a snapshot:**
 ```bash
@@ -129,6 +159,117 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 ```bash
 curl http://192.168.1.100:8080/toggleFlashlight
 ```
+
+##### RTSP Streaming Examples
+
+**Enable RTSP streaming:**
+```bash
+curl http://192.168.1.100:8080/enableRTSP
+```
+
+**Disable RTSP streaming:**
+```bash
+curl http://192.168.1.100:8080/disableRTSP
+```
+
+**Get RTSP status:**
+```bash
+curl http://192.168.1.100:8080/rtspStatus
+```
+
+**Play RTSP stream in VLC:**
+```bash
+vlc rtsp://192.168.1.100:8554/stream
+```
+
+**Play RTSP stream with FFplay:**
+```bash
+ffplay rtsp://192.168.1.100:8554/stream
+```
+
+**Record RTSP stream with FFmpeg:**
+```bash
+ffmpeg -i rtsp://192.168.1.100:8554/stream -c copy output.mp4
+```
+
+**Force TCP transport (if UDP is blocked):**
+```bash
+ffplay -rtsp_transport tcp rtsp://192.168.1.100:8554/stream
+vlc --rtsp-tcp rtsp://192.168.1.100:8554/stream
+```
+
+**Use in surveillance systems (ZoneMinder, Shinobi, Blue Iris):**
+- **MJPEG (recommended for lowest latency):** `http://192.168.1.100:8080/stream`
+- **RTSP (for bandwidth efficiency):** `rtsp://192.168.1.100:8554/stream`
+
+### Choosing Between MJPEG and RTSP Streaming
+
+IP_Cam supports both MJPEG and RTSP streaming protocols, each optimized for different use cases:
+
+#### MJPEG Streaming (Default - Recommended for Most Users)
+
+**Best For:**
+- Real-time monitoring and surveillance
+- Motion detection integration
+- Lowest-latency requirements (<300ms)
+- Maximum compatibility with all surveillance systems
+- Local network streaming with sufficient bandwidth
+
+**Advantages:**
+- ✅ Very low latency (~150-280ms)
+- ✅ Universal compatibility (works with all surveillance systems)
+- ✅ Simple implementation (works in any browser with `<img>` tag)
+- ✅ Instant recovery from disconnections
+- ✅ Frame-by-frame streaming (no buffering delays)
+
+**Considerations:**
+- ⚠️ Higher bandwidth usage (~8 Mbps per client @ 1080p 10fps)
+- ⚠️ Each frame is independently compressed (no inter-frame compression)
+
+#### RTSP Streaming (Optional - For Bandwidth-Constrained Scenarios)
+
+**Best For:**
+- Remote viewing over limited bandwidth connections
+- Recording to disk (H.264 format)
+- Multiple concurrent viewers on bandwidth-limited networks
+- Integration with surveillance systems and NVRs
+- Cellular or metered network connections
+
+**Advantages:**
+- ✅ 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps)
+- ✅ Hardware-accelerated H.264 encoding (efficient, low CPU usage)
+- ✅ Better video quality through inter-frame compression
+- ✅ Industry standard protocol (works with all modern surveillance systems)
+- ✅ Acceptable latency (~500ms-1s) for most surveillance applications
+- ✅ Dual transport: UDP (lower latency) and TCP (firewall-friendly)
+
+**Considerations:**
+- ⚠️ Slightly higher latency than MJPEG (but much better than HLS)
+- ⚠️ UDP may be blocked by some firewalls (automatic TCP fallback available)
+- ⚠️ Requires RTSP-compatible client (VLC, FFmpeg, surveillance systems)
+
+#### Comparison Table
+
+| Feature | MJPEG | RTSP |
+|---------|-------|------|
+| **Latency** | 150-280ms | 500-1000ms |
+| **Bandwidth** | ~8 Mbps | ~2-4 Mbps |
+| **Compatibility** | Universal | Modern systems |
+| **Quality** | Good | Excellent |
+| **CPU Usage** | Medium | Low (hardware) |
+| **Best For** | Real-time monitoring | Recording/bandwidth-limited |
+
+#### Recommendation
+
+- **Start with MJPEG** - It works everywhere and provides the lowest latency for surveillance
+- **Add RTSP when needed** - Enable RTSP when you need to:
+  - Stream over limited bandwidth connections
+  - Support many concurrent viewers
+  - Record video in H.264 format
+  - Reduce cellular data usage for remote viewing
+  - Achieve better video quality with inter-frame compression
+
+Both streams can run simultaneously, allowing different clients to choose the best option for their needs.
 
 ### Camera Orientation Control
 
@@ -488,7 +629,7 @@ IP_Cam uses **MJPEG (Motion JPEG)** as its primary streaming format for several 
 ✅ **Reliable** - Each frame is independent, instant recovery from errors  
 ✅ **Real-Time** - No buffering delays, immediate frame-by-frame transmission  
 
-For specialized use cases requiring lower bandwidth (at the cost of increased latency), hardware-encoded streaming with modern protocols (HLS/RTSP) can be added as an **optional feature** alongside MJPEG. See [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) for detailed requirements and implementation guidance.
+For specialized use cases requiring lower bandwidth (with acceptable latency trade-off), hardware-encoded RTSP streaming with H.264 is available as an **optional feature** alongside MJPEG. See [RTSP_IMPLEMENTATION.md](RTSP_IMPLEMENTATION.md) for detailed usage and [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) for architectural details.
 
 ### Architecture
 

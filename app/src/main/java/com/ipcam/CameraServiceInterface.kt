@@ -2,6 +2,7 @@ package com.ipcam
 
 import android.util.Size
 import androidx.camera.core.CameraSelector
+import java.io.File
 
 /**
  * Interface for HttpServer to communicate with CameraService.
@@ -46,4 +47,13 @@ interface CameraServiceInterface {
     
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
+    
+    // RTSP streaming operations
+    fun enableRTSPStreaming(): Boolean
+    fun disableRTSPStreaming()
+    fun isRTSPEnabled(): Boolean
+    fun getRTSPMetrics(): RTSPServer.ServerMetrics?
+    fun getRTSPUrl(): String
+    fun setRTSPBitrate(bitrate: Int): Boolean
+    fun setRTSPBitrateMode(mode: String): Boolean
 }
