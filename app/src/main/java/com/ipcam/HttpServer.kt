@@ -39,7 +39,6 @@ class HttpServer(
     
     companion object {
         private const val TAG = "HttpServer"
-        private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
         private const val JPEG_QUALITY_STREAM = 75
     }
     
@@ -105,6 +104,15 @@ class HttpServer(
                 get("/setCameraOrientation") { serveSetCameraOrientation() }
                 get("/setRotation") { serveSetRotation() }
                 get("/setResolutionOverlay") { serveSetResolutionOverlay() }
+                
+                // OSD overlay endpoints
+                get("/setDateTimeOverlay") { serveSetDateTimeOverlay() }
+                get("/setBatteryOverlay") { serveSetBatteryOverlay() }
+                get("/setFpsOverlay") { serveSetFpsOverlay() }
+                
+                // FPS control endpoints
+                get("/setMjpegFps") { serveSetMjpegFps() }
+                get("/setRtspFps") { serveSetRtspFps() }
                 
                 // Server configuration
                 get("/setMaxConnections") { serveSetMaxConnections() }
@@ -296,16 +304,61 @@ class HttpServer(
                         </select>
                         <button onclick="applyRotation()">Apply Rotation</button>
                     </div>
+                    <h2>OSD Overlays</h2>
+                    <p class="note">Customize what information appears on the video stream overlay.</p>
+                    <div class="row">
+                        <label>
+                            <input type="checkbox" id="dateTimeOverlayCheckbox" checked onchange="toggleDateTimeOverlay()">
+                            Show Date/Time (Top Left)
+                        </label>
+                    </div>
+                    <div class="row">
+                        <label>
+                            <input type="checkbox" id="batteryOverlayCheckbox" checked onchange="toggleBatteryOverlay()">
+                            Show Battery (Top Right)
+                        </label>
+                    </div>
                     <div class="row">
                         <label>
                             <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
-                            Show Resolution Overlay (Bottom Right)
+                            Show Resolution (Bottom Right)
                         </label>
                     </div>
+                    <div class="row">
+                        <label>
+                            <input type="checkbox" id="fpsOverlayCheckbox" checked onchange="toggleFpsOverlay()">
+                            Show FPS (Bottom Left)
+                        </label>
+                    </div>
+                    <h2>FPS Settings</h2>
+                    <p class="note">Adjust streaming frame rates. Current FPS: <span id="currentFpsDisplay">0.0</span> fps</p>
+                    <div class="row">
+                        <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
+                        <select id="mjpegFpsSelect">
+                            <option value="1">1 fps</option>
+                            <option value="5">5 fps</option>
+                            <option value="10" selected>10 fps</option>
+                            <option value="15">15 fps</option>
+                            <option value="20">20 fps</option>
+                            <option value="24">24 fps</option>
+                            <option value="30">30 fps</option>
+                            <option value="60">60 fps</option>
+                        </select>
+                        <button onclick="applyMjpegFps()">Apply FPS</button>
+                    </div>
+                    <div class="row">
+                        <label for="rtspFpsSelect">RTSP Target FPS:</label>
+                        <select id="rtspFpsSelect">
+                            <option value="15">15 fps</option>
+                            <option value="20">20 fps</option>
+                            <option value="24">24 fps</option>
+                            <option value="30" selected>30 fps</option>
+                            <option value="60">60 fps</option>
+                        </select>
+                        <button onclick="applyRtspFps()">Apply FPS</button>
+                    </div>
+                    <p class="note"><em>Note: RTSP FPS change requires RTSP server restart (disable/enable) to take effect.</em></p>
                     <div class="note" id="formatStatus"></div>
-                    <p class="note">Overlay shows date/time (top left) and battery status (top right). Stream auto-reconnects if interrupted.</p>
-                    <p class="note"><strong>Camera Orientation:</strong> Sets the base recording mode (landscape/portrait). <strong>Rotation:</strong> Rotates the video feed by the specified degrees.</p>
-                    <p class="note"><strong>Resolution Overlay:</strong> Shows actual bitmap resolution in bottom right for debugging resolution issues.</p>
                     <h2>Active Connections</h2>
                     <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
                     <div id="connectionsContainer">
@@ -653,6 +706,77 @@ class HttpServer(
                             });
                     }
 
+                    function toggleDateTimeOverlay() {
+                        const checkbox = document.getElementById('dateTimeOverlayCheckbox');
+                        const value = checkbox.checked ? 'true' : 'false';
+                        const url = '/setDateTimeOverlay?value=' + value;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to toggle date/time overlay';
+                            });
+                    }
+
+                    function toggleBatteryOverlay() {
+                        const checkbox = document.getElementById('batteryOverlayCheckbox');
+                        const value = checkbox.checked ? 'true' : 'false';
+                        const url = '/setBatteryOverlay?value=' + value;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to toggle battery overlay';
+                            });
+                    }
+
+                    function toggleFpsOverlay() {
+                        const checkbox = document.getElementById('fpsOverlayCheckbox');
+                        const value = checkbox.checked ? 'true' : 'false';
+                        const url = '/setFpsOverlay?value=' + value;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to toggle FPS overlay';
+                            });
+                    }
+
+                    function applyMjpegFps() {
+                        const fps = document.getElementById('mjpegFpsSelect').value;
+                        const url = '/setMjpegFps?value=' + fps;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to set MJPEG FPS';
+                            });
+                    }
+
+                    function applyRtspFps() {
+                        const fps = document.getElementById('rtspFpsSelect').value;
+                        const url = '/setRtspFps?value=' + fps;
+                        fetch(url)
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                            })
+                            .catch(() => {
+                                document.getElementById('formatStatus').textContent = 'Failed to set RTSP FPS';
+                            });
+                    }
+
                     function refreshConnections() {
                         fetch('/connections')
                             .then(response => {
@@ -916,6 +1040,71 @@ class HttpServer(
                                 }
                             }
                             
+                            // Update OSD overlay checkboxes
+                            if (state.showDateTimeOverlay !== undefined) {
+                                const checkbox = document.getElementById('dateTimeOverlayCheckbox');
+                                if (checkbox && checkbox.checked !== state.showDateTimeOverlay) {
+                                    checkbox.checked = state.showDateTimeOverlay;
+                                    console.log('Updated date/time overlay checkbox to:', state.showDateTimeOverlay);
+                                }
+                            }
+                            
+                            if (state.showBatteryOverlay !== undefined) {
+                                const checkbox = document.getElementById('batteryOverlayCheckbox');
+                                if (checkbox && checkbox.checked !== state.showBatteryOverlay) {
+                                    checkbox.checked = state.showBatteryOverlay;
+                                    console.log('Updated battery overlay checkbox to:', state.showBatteryOverlay);
+                                }
+                            }
+                            
+                            if (state.showFpsOverlay !== undefined) {
+                                const checkbox = document.getElementById('fpsOverlayCheckbox');
+                                if (checkbox && checkbox.checked !== state.showFpsOverlay) {
+                                    checkbox.checked = state.showFpsOverlay;
+                                    console.log('Updated FPS overlay checkbox to:', state.showFpsOverlay);
+                                }
+                            }
+                            
+                            // Update FPS displays and controls
+                            if (state.currentFps !== undefined) {
+                                const fpsDisplay = document.getElementById('currentFpsDisplay');
+                                if (fpsDisplay) {
+                                    fpsDisplay.textContent = state.currentFps.toFixed(1);
+                                }
+                            }
+                            
+                            if (state.targetMjpegFps !== undefined) {
+                                const mjpegSelect = document.getElementById('mjpegFpsSelect');
+                                if (mjpegSelect) {
+                                    const options = mjpegSelect.options;
+                                    for (let i = 0; i < options.length; i++) {
+                                        if (parseInt(options[i].value) === state.targetMjpegFps) {
+                                            if (mjpegSelect.selectedIndex !== i) {
+                                                mjpegSelect.selectedIndex = i;
+                                                console.log('Updated MJPEG FPS select to:', state.targetMjpegFps);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            if (state.targetRtspFps !== undefined) {
+                                const rtspSelect = document.getElementById('rtspFpsSelect');
+                                if (rtspSelect) {
+                                    const options = rtspSelect.options;
+                                    for (let i = 0; i < options.length; i++) {
+                                        if (parseInt(options[i].value) === state.targetRtspFps) {
+                                            if (rtspSelect.selectedIndex !== i) {
+                                                rtspSelect.selectedIndex = i;
+                                                console.log('Updated RTSP FPS select to:', state.targetRtspFps);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
                             // Update flashlight button state
                             updateFlashlightButton();
                             
@@ -1132,7 +1321,10 @@ class HttpServer(
                         }
                     }
                     
-                    delay(STREAM_FRAME_DELAY_MS)
+                    // Use dynamic frame delay based on target MJPEG FPS
+                    val targetFps = cameraService.getTargetMjpegFps()
+                    val frameDelayMs = 1000L / targetFps
+                    delay(frameDelayMs)
                 }
             } finally {
                 cameraService.removeClient(clientId)
@@ -1455,6 +1647,133 @@ class HttpServer(
         cameraService.setShowResolutionOverlay(showOverlay)
         call.respondText(
             """{"status":"ok","message":"Resolution overlay ${if (showOverlay) "enabled" else "disabled"}","showResolutionOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetDateTimeOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowDateTimeOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"Date/time overlay ${if (showOverlay) "enabled" else "disabled"}","showDateTimeOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetBatteryOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowBatteryOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"Battery overlay ${if (showOverlay) "enabled" else "disabled"}","showBatteryOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetFpsOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowFpsOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"FPS overlay ${if (showOverlay) "enabled" else "disabled"}","showFpsOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetMjpegFps() {
+        val valueStr = call.parameters["value"]
+        
+        if (valueStr == null) {
+            call.respondText(
+                """{"status":"error","message":"Missing value parameter. Use ?value=N where N is FPS (1-60)"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val fps = valueStr.toIntOrNull()
+        if (fps == null || fps < 1 || fps > 60) {
+            call.respondText(
+                """{"status":"error","message":"FPS must be between 1 and 60"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        cameraService.setTargetMjpegFps(fps)
+        call.respondText(
+            """{"status":"ok","message":"MJPEG target FPS set to $fps","targetMjpegFps":$fps}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRtspFps() {
+        val valueStr = call.parameters["value"]
+        
+        if (valueStr == null) {
+            call.respondText(
+                """{"status":"error","message":"Missing value parameter. Use ?value=N where N is FPS (1-60)"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val fps = valueStr.toIntOrNull()
+        if (fps == null || fps < 1 || fps > 60) {
+            call.respondText(
+                """{"status":"error","message":"FPS must be between 1 and 60"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        cameraService.setTargetRtspFps(fps)
+        call.respondText(
+            """{"status":"ok","message":"RTSP target FPS set to $fps. RTSP server must be restarted for changes to take effect.","targetRtspFps":$fps,"requiresRtspRestart":true}""",
             ContentType.Application.Json
         )
     }

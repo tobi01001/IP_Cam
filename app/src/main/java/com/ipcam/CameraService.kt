@@ -95,7 +95,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var rotation: Int = 0 // 0, 90, 180, 270 - applied to the camera-oriented image
     private var deviceOrientation: Int = 0 // Current device orientation (for app UI only, not camera)
     private var orientationEventListener: OrientationEventListener? = null
-    private var showResolutionOverlay: Boolean = true // Show actual resolution in overlay for debugging
+    // OSD overlay settings - individually toggleable
+    private var showDateTimeOverlay: Boolean = true // Show date/time in top left
+    private var showBatteryOverlay: Boolean = true // Show battery in top right
+    private var showResolutionOverlay: Boolean = true // Show actual resolution in bottom right for debugging
+    private var showFpsOverlay: Boolean = true // Show FPS in bottom left
+    // FPS tracking
+    private val fpsFrameTimes = mutableListOf<Long>() // Track frame times for FPS calculation
+    private var currentFps: Float = 0f // Current calculated FPS
+    private var lastFpsCalculation: Long = 0 // Last time FPS was calculated
+    // Target FPS settings
+    @Volatile private var targetMjpegFps: Int = 10 // Target FPS for MJPEG streaming (default 10)
+    @Volatile private var targetRtspFps: Int = 30 // Target FPS for RTSP streaming (default 30)
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
@@ -680,6 +691,27 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val processingStart = System.currentTimeMillis()
         
         try {
+            // Track FPS: add current time to frame times list
+            synchronized(fpsFrameTimes) {
+                fpsFrameTimes.add(processingStart)
+                // Keep only the last 2 seconds of frame times
+                val cutoffTime = processingStart - 2000
+                fpsFrameTimes.removeAll { it < cutoffTime }
+                
+                // Calculate FPS every 500ms
+                if (processingStart - lastFpsCalculation > 500) {
+                    if (fpsFrameTimes.size > 1) {
+                        val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
+                        currentFps = if (timeSpan > 0) {
+                            (fpsFrameTimes.size - 1) * 1000f / timeSpan
+                        } else {
+                            0f
+                        }
+                    }
+                    lastFpsCalculation = processingStart
+                }
+            }
+            
             // DUAL-STREAM ARCHITECTURE:
             // 1. MJPEG Pipeline: bitmap → annotation → JPEG compression (always active)
             // 2. RTSP Pipeline: raw YUV → H.264 encoding (optional, bandwidth-efficient)
@@ -700,7 +732,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
             if (frameCount == 0) {
-                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}")
+                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, FPS: ${"%.1f".format(currentFps)}")
             }
             
             // Apply camera orientation and rotation without creating squared bitmaps
@@ -1071,17 +1103,78 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
     
+    // OSD overlay settings
+    override fun setShowDateTimeOverlay(show: Boolean) {
+        showDateTimeOverlay = show
+        saveSettings()
+        broadcastCameraState()
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getShowDateTimeOverlay(): Boolean = showDateTimeOverlay
+    
+    override fun setShowBatteryOverlay(show: Boolean) {
+        showBatteryOverlay = show
+        saveSettings()
+        broadcastCameraState()
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getShowBatteryOverlay(): Boolean = showBatteryOverlay
+    
+    override fun setShowFpsOverlay(show: Boolean) {
+        showFpsOverlay = show
+        saveSettings()
+        broadcastCameraState()
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getShowFpsOverlay(): Boolean = showFpsOverlay
+    
+    // FPS settings
+    override fun setTargetMjpegFps(fps: Int) {
+        targetMjpegFps = fps.coerceIn(1, 60)
+        saveSettings()
+        broadcastCameraState()
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getTargetMjpegFps(): Int = targetMjpegFps
+    
+    override fun setTargetRtspFps(fps: Int) {
+        targetRtspFps = fps.coerceIn(1, 60)
+        saveSettings()
+        broadcastCameraState()
+        onCameraStateChangedCallback?.invoke(currentCamera)
+    }
+    
+    override fun getTargetRtspFps(): Int = targetRtspFps
+    
+    override fun getCurrentFps(): Float = currentFps
+    
     private fun loadSettings() {
         val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
         cameraOrientation = prefs.getString("cameraOrientation", "landscape") ?: "landscape"
         rotation = prefs.getInt("rotation", 0)
+        
+        // OSD overlay settings
+        showDateTimeOverlay = prefs.getBoolean("showDateTimeOverlay", true)
+        showBatteryOverlay = prefs.getBoolean("showBatteryOverlay", true)
         showResolutionOverlay = prefs.getBoolean("showResolutionOverlay", true)
+        showFpsOverlay = prefs.getBoolean("showFpsOverlay", true)
+        
+        // FPS settings
+        targetMjpegFps = prefs.getInt("targetMjpegFps", 10).coerceIn(1, 60)
+        targetRtspFps = prefs.getInt("targetRtspFps", 30).coerceIn(1, 60)
+        
         maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
-        // Load RTSP settings
+        // Load RTSP settings (with persistence)
         rtspEnabled = prefs.getBoolean("rtspEnabled", false)
+        val rtspBitrate = prefs.getInt("rtspBitrate", -1)
+        val rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
         
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
@@ -1129,7 +1222,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps")
     }
     
     private fun saveSettings() {
@@ -1137,12 +1230,26 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         prefs.edit().apply {
             putString("cameraOrientation", cameraOrientation)
             putInt("rotation", rotation)
+            
+            // OSD overlay settings
+            putBoolean("showDateTimeOverlay", showDateTimeOverlay)
+            putBoolean("showBatteryOverlay", showBatteryOverlay)
             putBoolean("showResolutionOverlay", showResolutionOverlay)
+            putBoolean("showFpsOverlay", showFpsOverlay)
+            
+            // FPS settings
+            putInt("targetMjpegFps", targetMjpegFps)
+            putInt("targetRtspFps", targetRtspFps)
+            
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
-            // Save RTSP settings
+            // Save RTSP settings (with persistence for bitrate and mode)
             putBoolean("rtspEnabled", rtspEnabled)
+            rtspServer?.getMetrics()?.let { metrics ->
+                putInt("rtspBitrate", (metrics.bitrateMbps * 1_000_000).toInt())
+                putString("rtspBitrateMode", metrics.bitrateMode)
+            }
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1468,20 +1575,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             style = Paint.Style.FILL
             setShadowLayer(6f, 2f, 2f, Color.BLACK)
         }
-        val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#66000000")
-            style = Paint.Style.FILL
-        }
-        val timeText = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
-        // Use cached battery info to avoid Binder calls from HTTP threads
-        val batteryInfo = getCachedBatteryInfo()
-        val batteryText = buildString {
-            append(batteryInfo.level)
-            append("%")
-            if (batteryInfo.isCharging) append(" ⚡")
-        }
         
-        fun drawLabel(text: String, alignRight: Boolean, topOffset: Float) {
+        fun drawLabel(text: String, alignRight: Boolean, topOffset: Float, bottomAlign: Boolean = false) {
             val textWidth = textPaint.measureText(text)
             val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
             val left = if (alignRight) {
@@ -1489,42 +1584,75 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             } else {
                 padding
             }
-            val top = topOffset
-            val right = if (alignRight) canvas.width - padding else padding + textWidth + padding
-            val bottom = top + textHeight + padding
-
-            canvas.drawText(text, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
+            
+            val verticalPos = if (bottomAlign) {
+                // Bottom aligned - calculate from bottom of canvas
+                val bottom = canvas.height.toFloat() - padding
+                bottom - padding - textPaint.fontMetrics.bottom
+            } else {
+                // Top aligned - use topOffset
+                val bottom = topOffset + textHeight + padding
+                bottom - padding - textPaint.fontMetrics.bottom
+            }
+            
+            canvas.drawText(text, left + padding, verticalPos, textPaint)
         }
         
-        // Calculate widths to check for overlap
-        val timeWidth = textPaint.measureText(timeText) + padding * 3
-        val batteryWidth = textPaint.measureText(batteryText) + padding * 3
+        // Prepare OSD text elements
+        val timeText = if (showDateTimeOverlay) {
+            SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        } else null
+        
+        val batteryText = if (showBatteryOverlay) {
+            val batteryInfo = getCachedBatteryInfo()
+            buildString {
+                append(batteryInfo.level)
+                append("%")
+                if (batteryInfo.isCharging) append(" ⚡")
+            }
+        } else null
+        
+        val fpsText = if (showFpsOverlay) {
+            "%.1f fps".format(currentFps)
+        } else null
+        
+        val resolutionText = if (showResolutionOverlay) {
+            "${source.width}x${source.height}"
+        } else null
+        
+        // Calculate widths to check for overlap (only for top row)
+        val timeWidth = timeText?.let { textPaint.measureText(it) + padding * 3 } ?: 0f
+        val batteryWidth = batteryText?.let { textPaint.measureText(it) + padding * 3 } ?: 0f
         val availableWidth = canvas.width.toFloat()
         
-        // Check if labels would overlap
+        // Check if top labels would overlap
         val wouldOverlap = (timeWidth + batteryWidth) > availableWidth
+        val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
         
-        if (wouldOverlap) {
-            // Stack vertically if they would overlap
-            val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
+        // Draw date/time in top left (if enabled)
+        if (timeText != null) {
             drawLabel(timeText, alignRight = false, topOffset = padding)
-            drawLabel(batteryText, alignRight = true, topOffset = padding + textHeight + padding * 2)
-        } else {
-            // Draw side by side
-            drawLabel(timeText, alignRight = false, topOffset = padding)
-            drawLabel(batteryText, alignRight = true, topOffset = padding)
         }
         
-        // Add resolution overlay in bottom right for debugging
-        if (showResolutionOverlay) {
-            val resolutionText = "${source.width}x${source.height}"
-            val textHeight = textPaint.fontMetrics.bottom - textPaint.fontMetrics.top
-            val textWidth = textPaint.measureText(resolutionText)
-            val left = canvas.width - padding - textWidth - padding
-            val bottom = canvas.height.toFloat() - padding
-            val top = bottom - textHeight - padding
-            val right = canvas.width.toFloat() - padding
-            canvas.drawText(resolutionText, left + padding, bottom - padding - textPaint.fontMetrics.bottom, textPaint)
+        // Draw battery in top right (if enabled)
+        if (batteryText != null) {
+            if (wouldOverlap && timeText != null) {
+                // Stack vertically if they would overlap and both are shown
+                drawLabel(batteryText, alignRight = true, topOffset = padding + textHeight + padding * 2)
+            } else {
+                // Draw side by side
+                drawLabel(batteryText, alignRight = true, topOffset = padding)
+            }
+        }
+        
+        // Draw FPS in bottom left (if enabled)
+        if (fpsText != null) {
+            drawLabel(fpsText, alignRight = false, topOffset = 0f, bottomAlign = true)
+        }
+        
+        // Draw resolution in bottom right (if enabled)
+        if (resolutionText != null) {
+            drawLabel(resolutionText, alignRight = true, topOffset = 0f, bottomAlign = true)
         }
         
         return mutable
@@ -1629,7 +1757,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "resolution": "$resolutionLabel",
             "cameraOrientation": "$cameraOrientation",
             "rotation": $rotation,
+            "showDateTimeOverlay": $showDateTimeOverlay,
+            "showBatteryOverlay": $showBatteryOverlay,
             "showResolutionOverlay": $showResolutionOverlay,
+            "showFpsOverlay": $showFpsOverlay,
+            "currentFps": $currentFps,
+            "targetMjpegFps": $targetMjpegFps,
+            "targetRtspFps": $targetRtspFps,
             "flashlightAvailable": ${isFlashlightAvailable()},
             "flashlightOn": ${isFlashlightEnabled()}
         }

@@ -43,6 +43,14 @@ class MainActivity : AppCompatActivity() {
     private lateinit var autoStartCheckBox: android.widget.CheckBox
     private lateinit var activeConnectionsText: TextView
     private lateinit var maxConnectionsSpinner: Spinner
+    // OSD overlay checkboxes
+    private lateinit var showDateTimeCheckBox: android.widget.CheckBox
+    private lateinit var showBatteryCheckBox: android.widget.CheckBox
+    private lateinit var showResolutionCheckBox: android.widget.CheckBox
+    private lateinit var showFpsCheckBox: android.widget.CheckBox
+    // FPS controls
+    private lateinit var currentFpsText: TextView
+    private lateinit var mjpegFpsSpinner: Spinner
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
@@ -134,6 +142,7 @@ class MainActivity : AppCompatActivity() {
             cameraService?.setOnConnectionsChangedCallback {
                 runOnUiThread {
                     updateConnectionsUI()
+                    updateFpsDisplay()
                 }
             }
             
@@ -145,6 +154,8 @@ class MainActivity : AppCompatActivity() {
                 loadCameraOrientationOptions()
                 loadRotationOptions()
                 loadMaxConnectionsOptions()
+                loadOsdSettings()
+                loadFpsSettings()
             } finally {
                 isUpdatingSpinners = false
             }
@@ -176,6 +187,14 @@ class MainActivity : AppCompatActivity() {
         autoStartCheckBox = findViewById(R.id.autoStartCheckBox)
         activeConnectionsText = findViewById(R.id.activeConnectionsText)
         maxConnectionsSpinner = findViewById(R.id.maxConnectionsSpinner)
+        // OSD overlay checkboxes
+        showDateTimeCheckBox = findViewById(R.id.showDateTimeCheckBox)
+        showBatteryCheckBox = findViewById(R.id.showBatteryCheckBox)
+        showResolutionCheckBox = findViewById(R.id.showResolutionCheckBox)
+        showFpsCheckBox = findViewById(R.id.showFpsCheckBox)
+        // FPS controls
+        currentFpsText = findViewById(R.id.currentFpsText)
+        mjpegFpsSpinner = findViewById(R.id.mjpegFpsSpinner)
         
         setupEndpointsText()
         setupResolutionSpinner()
@@ -183,6 +202,8 @@ class MainActivity : AppCompatActivity() {
         setupRotationSpinner()
         setupAutoStartCheckBox()
         setupMaxConnectionsSpinner()
+        setupOsdCheckBoxes()
+        setupMjpegFpsSpinner()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -611,6 +632,72 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    private fun setupOsdCheckBoxes() {
+        // Set listeners for OSD overlay checkboxes
+        showDateTimeCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            cameraService?.setShowDateTimeOverlay(isChecked)
+        }
+        
+        showBatteryCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            cameraService?.setShowBatteryOverlay(isChecked)
+        }
+        
+        showResolutionCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            cameraService?.setShowResolutionOverlay(isChecked)
+        }
+        
+        showFpsCheckBox.setOnCheckedChangeListener { _, isChecked ->
+            cameraService?.setShowFpsOverlay(isChecked)
+        }
+    }
+    
+    private fun setupMjpegFpsSpinner() {
+        // Create FPS options: 1, 5, 10, 15, 20, 24, 30, 60
+        val fpsOptions = listOf(1, 5, 10, 15, 20, 24, 30, 60)
+        val items = fpsOptions.map { "$it fps" }
+        
+        val adapter = ArrayAdapter(this, android.R.layout.simple_spinner_item, items)
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        mjpegFpsSpinner.adapter = adapter
+        
+        mjpegFpsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val fps = fpsOptions[position]
+                cameraService?.setTargetMjpegFps(fps)
+            }
+            
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+    }
+    
+    private fun loadOsdSettings() {
+        val service = cameraService ?: return
+        
+        // Load current OSD overlay settings
+        showDateTimeCheckBox.isChecked = service.getShowDateTimeOverlay()
+        showBatteryCheckBox.isChecked = service.getShowBatteryOverlay()
+        showResolutionCheckBox.isChecked = service.getShowResolutionOverlay()
+        showFpsCheckBox.isChecked = service.getShowFpsOverlay()
+    }
+    
+    private fun loadFpsSettings() {
+        val service = cameraService ?: return
+        
+        // Update current FPS display
+        val currentFps = service.getCurrentFps()
+        currentFpsText.text = "%.1f fps".format(currentFps)
+        
+        // Load target MJPEG FPS setting
+        val targetFps = service.getTargetMjpegFps()
+        val fpsOptions = listOf(1, 5, 10, 15, 20, 24, 30, 60)
+        val index = fpsOptions.indexOf(targetFps)
+        if (index >= 0) {
+            mjpegFpsSpinner.setSelection(index)
+        }
+    }
+    
     private fun updateConnectionsUI() {
         val service = cameraService ?: return
         
@@ -624,6 +711,12 @@ class MainActivity : AppCompatActivity() {
         val maxConns = service.getMaxConnections()
         
         activeConnectionsText.text = getString(R.string.connections_count, activeCount, maxConns)
+    }
+    
+    private fun updateFpsDisplay() {
+        val service = cameraService ?: return
+        val currentFps = service.getCurrentFps()
+        currentFpsText.text = "%.1f fps".format(currentFps)
     }
     
     private fun checkAutoStart() {

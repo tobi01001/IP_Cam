@@ -52,4 +52,13 @@
     <string name="notification_permission_rationale_message">This app needs notification permission to show service status updates and alerts. The service will work without it, but you won\'t see status notifications.</string>
     <string name="notification_permission_optional">The service will work without notification permission, but status updates won\'t be visible.</string>
     <string name="notification_permission_granted">Notification permission granted</string>
+    <string name="osd_overlays_label">OSD Overlays:</string>
+    <string name="show_date_time">Show Date/Time</string>
+    <string name="show_battery">Show Battery</string>
+    <string name="show_resolution">Show Resolution</string>
+    <string name="show_fps">Show FPS</string>
+    <string name="fps_settings_label">FPS Settings:</string>
+    <string name="mjpeg_target_fps_label">MJPEG Target FPS:</string>
+    <string name="rtsp_target_fps_label">RTSP Target FPS:</string>
+    <string name="current_fps_label">Current FPS:</string>
 </resources>
