@@ -675,14 +675,19 @@ class RTSPServer(
                     fillInputBuffer(inputBuffer, image)
                     
                     val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                    val bufferSize = inputBuffer.remaining() // Size of data after flip()
                     encoder?.queueInputBuffer(
                         inputBufferIndex,
                         0,
-                        inputBuffer.position(),
+                        bufferSize,
                         presentationTimeUs,
                         0
                     )
                     frameCount.incrementAndGet()
+                    
+                    if (frameCount.get() == 1L) {
+                        Log.d(TAG, "First frame queued with size: $bufferSize bytes")
+                    }
                 }
             }
             
