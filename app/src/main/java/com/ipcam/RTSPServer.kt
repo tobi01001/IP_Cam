@@ -62,8 +62,6 @@ class RTSPServer(
     
     // Frame timing control
     @Volatile private var lastFrameTimeNs: Long = 0
-    private val targetFrameIntervalNs = 1_000_000_000L / fps // Nanoseconds per frame
-    @Volatile private var lastDropLogTimeMs: Long = 0
     @Volatile private var lastQueueFullLogTimeMs: Long = 0
     private val logThrottleMs = 5000L // Log at most every 5 seconds
     @Volatile private var streamStartTimeMs: Long = 0
@@ -878,26 +876,6 @@ class RTSPServer(
         }
         
         try {
-            // === Frame Rate Control ===
-            // Drop frames to maintain target FPS and reduce encoding load
-            val currentTimeNs = System.nanoTime()
-            val timeSinceLastFrameNs = currentTimeNs - lastFrameTimeNs
-            
-            if (lastFrameTimeNs > 0 && timeSinceLastFrameNs < targetFrameIntervalNs) {
-                // Too soon for next frame - drop it
-                droppedFrameCount.incrementAndGet()
-                
-                // Log periodically (time-based throttling to avoid spam)
-                val currentTimeMs = System.currentTimeMillis()
-                if (currentTimeMs - lastDropLogTimeMs > logThrottleMs) {
-                    Log.d(TAG, "Frame rate limiting: dropped ${droppedFrameCount.get()} total frames to maintain ${fps} fps target")
-                    lastDropLogTimeMs = currentTimeMs
-                }
-                return false
-            }
-            
-            lastFrameTimeNs = currentTimeNs
-            
             // === Encoder Initialization/Recreation ===
             // Check if encoder needs to be (re)created due to resolution mismatch
             if (encoder == null || image.width != width || image.height != height) {
@@ -924,6 +902,7 @@ class RTSPServer(
             if (frameCount.get() == 0L) {
                 Log.i(TAG, "Encoding first frame: ${image.width}x${image.height} @ ${fps} fps")
                 streamStartTimeMs = System.currentTimeMillis()
+                lastFrameTimeNs = System.nanoTime()
             }
             
             // === Encode Frame ===
@@ -945,6 +924,9 @@ class RTSPServer(
                         0
                     )
                     frameCount.incrementAndGet()
+                    
+                    // Update timing for FPS calculation
+                    lastFrameTimeNs = System.nanoTime()
                     
                     if (frameCount.get() == 1L) {
                         Log.i(TAG, "First frame queued with size: $bufferSize bytes")
