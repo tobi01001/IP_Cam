@@ -474,9 +474,9 @@ class RTSPServer(
         width = newWidth
         height = newHeight
         
-        // Recalculate bitrate for new resolution
-        bitrate = calculateBitrate(width, height)
-        Log.i(TAG, "Adjusted bitrate for ${width}x${height}: $bitrate bps (${bitrate / 1_000_000} Mbps)")
+        // NOTE: Do NOT recalculate bitrate here - preserve user-set bitrate
+        // Bitrate is only auto-calculated on initial creation or when explicitly reset
+        Log.i(TAG, "Using current bitrate: $bitrate bps (${bitrate / 1_000_000} Mbps)")
         
         // Recreate buffers
         yDataBuffer = null
@@ -1444,12 +1444,20 @@ class RTSPServer(
             return false
         }
         
-        Log.i(TAG, "Changing bitrate from $bitrate to $newBitrate bps")
+        Log.i(TAG, "=== BITRATE CHANGE REQUESTED ===")
+        Log.i(TAG, "Current bitrate: $bitrate bps (${bitrate / 1_000_000f} Mbps)")
+        Log.i(TAG, "New bitrate: $newBitrate bps (${newBitrate / 1_000_000f} Mbps)")
         bitrate = newBitrate
+        Log.i(TAG, "Bitrate updated in memory: $bitrate bps")
         
         // Recreate encoder if it's already running
         if (encoder != null && isEncoding.get()) {
-            return recreateEncoder(width, height)
+            Log.i(TAG, "Encoder is running, recreating with new bitrate...")
+            val result = recreateEncoder(width, height)
+            Log.i(TAG, "Encoder recreation ${if (result) "SUCCESSFUL" else "FAILED"}")
+            return result
+        } else {
+            Log.i(TAG, "Encoder not running, bitrate will be applied on next start")
         }
         
         return true
@@ -1469,13 +1477,21 @@ class RTSPServer(
             }
         }
         
-        Log.i(TAG, "Changing bitrate mode from $bitrateModeName to $mode")
+        Log.i(TAG, "=== BITRATE MODE CHANGE REQUESTED ===")
+        Log.i(TAG, "Current mode: $bitrateModeName (value: $bitrateMode)")
+        Log.i(TAG, "New mode: ${mode.uppercase()} (value: $newMode)")
         bitrateMode = newMode
         bitrateModeName = mode.uppercase()
+        Log.i(TAG, "Bitrate mode updated in memory: $bitrateModeName")
         
         // Recreate encoder if it's already running
         if (encoder != null && isEncoding.get()) {
-            return recreateEncoder(width, height)
+            Log.i(TAG, "Encoder is running, recreating with new bitrate mode...")
+            val result = recreateEncoder(width, height)
+            Log.i(TAG, "Encoder recreation ${if (result) "SUCCESSFUL" else "FAILED"}")
+            return result
+        } else {
+            Log.i(TAG, "Encoder not running, bitrate mode will be applied on next start")
         }
         
         return true

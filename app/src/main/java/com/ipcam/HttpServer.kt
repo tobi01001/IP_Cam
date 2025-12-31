@@ -1009,7 +1009,7 @@ class HttpServer(
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
                                         'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
                                         'Resolution: ' + data.resolution + ' @ ' + data.bitrateMbps.toFixed(1) + ' Mbps (' + data.bitrateMode + ')<br>' +
-                                        'Encoding Rate: ' + encodedFps + ' fps (target: ' + data.targetFps + ' fps)<br>' +
+                                        'Camera FPS: ' + encodedFps + ' fps (encoder configured: ' + data.targetFps + ' fps)<br>' +
                                         'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped (' + dropRate + '%)<br>' +
                                         'Bandwidth: ~' + bandwidthMbps + ' Mbps (actual)<br>' +
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
