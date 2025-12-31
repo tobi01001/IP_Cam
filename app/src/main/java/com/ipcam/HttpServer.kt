@@ -1004,6 +1004,8 @@ class HttpServer(
                                         ? (data.droppedFrames / (data.framesEncoded + data.droppedFrames) * 100).toFixed(1)
                                         : '0.0';
                                     const bandwidthMbps = (data.bitrateMbps * encodedFps / data.targetFps).toFixed(2);
+                                    
+                                    // Update status display
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: green;">✓ RTSP Active</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
@@ -1015,6 +1017,10 @@ class HttpServer(
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port;
+                                    
+                                    // Update encoder settings controls to reflect current values
+                                    document.getElementById('bitrateInput').value = data.bitrateMbps.toFixed(1);
+                                    document.getElementById('bitrateModeSelect').value = data.bitrateMode;
                                 } else {
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: orange;">RTSP Not Enabled</strong><br>' +
