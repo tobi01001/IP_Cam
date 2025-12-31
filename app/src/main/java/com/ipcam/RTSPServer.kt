@@ -918,14 +918,23 @@ class RTSPServer(
                     
                     val presentationTimeUs = frameCount.get() * 1_000_000L / fps
                     val bufferSize = inputBuffer.remaining() // Size of data after flip()
-                    encoder?.queueInputBuffer(
-                        inputBufferIndex,
-                        0,
-                        bufferSize,
-                        presentationTimeUs,
-                        0
-                    )
-                    frameCount.incrementAndGet()
+                    
+                    // Check encoder state before queueing - avoid race condition during start()
+                    try {
+                        encoder?.queueInputBuffer(
+                            inputBufferIndex,
+                            0,
+                            bufferSize,
+                            presentationTimeUs,
+                            0
+                        )
+                        frameCount.incrementAndGet()
+                    } catch (e: IllegalStateException) {
+                        // Encoder not yet in EXECUTING state (still in start())
+                        // This can happen during encoder recreation - safe to drop frame
+                        Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
+                        return false
+                    }
                     
                     // Update timing for FPS calculation
                     lastFrameTimeNs = System.nanoTime()
