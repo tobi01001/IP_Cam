@@ -114,12 +114,10 @@ class HttpServer(
                 get("/enableAdaptiveQuality") { serveEnableAdaptiveQuality() }
                 get("/disableAdaptiveQuality") { serveDisableAdaptiveQuality() }
                 
-                // HLS streaming endpoints
-                // REQ-HW-005: HTTP endpoints for HLS
-                get("/hls/stream.m3u8") { serveHLSPlaylist() }
-                get("/hls/{segmentName}") { serveHLSSegment() }
-                get("/enableHLS") { serveEnableHLS() }
-                get("/disableHLS") { serveDisableHLS() }
+                // RTSP streaming endpoints
+                get("/enableRTSP") { serveEnableRTSP() }
+                get("/disableRTSP") { serveDisableRTSP() }
+                get("/rtspStatus") { serveRTSPStatus() }
             }
         }
         
@@ -392,25 +390,25 @@ class HttpServer(
                         <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                         Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
                     </div>
-                    <h2>HLS Streaming (Bandwidth Efficient)</h2>
-                    <p class="note"><em>HLS provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) with 6-12 second latency. Suitable for recording or limited bandwidth scenarios.</em></p>
+                    <h2>RTSP Streaming (Hardware-Accelerated H.264)</h2>
+                    <p class="note"><em>RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency and 2-4 Mbps bandwidth. Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.</em></p>
                     <div class="row">
-                        <button id="enableHLSBtn" onclick="enableHLS()">Enable HLS</button>
-                        <button id="disableHLSBtn" onclick="disableHLS()">Disable HLS</button>
-                        <button onclick="checkHLSStatus()">Check Status</button>
+                        <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
+                        <button id="disableRTSPBtn" onclick="disableRTSP()">Disable RTSP</button>
+                        <button onclick="checkRTSPStatus()">Check Status</button>
                     </div>
-                    <div id="hlsStatus" class="note" style="margin-top: 10px;"></div>
+                    <div id="rtspStatus" class="note" style="margin-top: 10px;"></div>
                     <div class="endpoint">
-                        <strong>HLS Playlist:</strong> <a href="/hls/stream.m3u8" target="_blank"><code>GET /hls/stream.m3u8</code></a><br>
-                        M3U8 playlist for HLS streaming. Works in VLC, Safari (native), Chrome/Firefox (with hls.js)
-                    </div>
-                    <div class="endpoint">
-                        <strong>Enable HLS:</strong> <a href="/enableHLS" target="_blank"><code>GET /enableHLS</code></a><br>
-                        Enable hardware-accelerated H.264 HLS streaming
+                        <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
+                        Enable hardware-accelerated RTSP streaming on port 8554
                     </div>
                     <div class="endpoint">
-                        <strong>Disable HLS:</strong> <a href="/disableHLS" target="_blank"><code>GET /disableHLS</code></a><br>
-                        Disable HLS streaming to save resources
+                        <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
+                        Disable RTSP streaming to save resources
+                    </div>
+                    <div class="endpoint">
+                        <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
+                        Get RTSP server status and metrics (JSON)
                     </div>
                     <h2>Keep the stream alive</h2>
                     <ul>
@@ -923,77 +921,77 @@ class HttpServer(
                         eventSource.close();
                     });
                     
-                    // HLS Control Functions
-                    function enableHLS() {
-                        document.getElementById('hlsStatus').textContent = 'Enabling HLS...';
-                        fetch('/enableHLS')
+                    // RTSP Control Functions
+                    function enableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Enabling RTSP...';
+                        fetch('/enableRTSP')
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('hlsStatus').innerHTML = 
-                                        '<strong style="color: green;">✓ HLS Enabled</strong><br>' +
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Enabled</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
-                                        'Config: ' + data.resolution + '<br>' +
-                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port + '<br>' +
+                                        'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
                                 } else {
-                                    document.getElementById('hlsStatus').innerHTML = 
-                                        '<strong style="color: red;">✗ Failed to enable HLS</strong><br>' + data.message;
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: red;">✗ Failed to enable RTSP</strong><br>' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('hlsStatus').innerHTML = 
+                                document.getElementById('rtspStatus').innerHTML = 
                                     '<strong style="color: red;">Error:</strong> ' + error;
                             });
                     }
                     
-                    function disableHLS() {
-                        document.getElementById('hlsStatus').textContent = 'Disabling HLS...';
-                        fetch('/disableHLS')
+                    function disableRTSP() {
+                        document.getElementById('rtspStatus').textContent = 'Disabling RTSP...';
+                        fetch('/disableRTSP')
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('hlsStatus').innerHTML = 
-                                        '<strong style="color: orange;">HLS Disabled</strong>';
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Disabled</strong>';
                                 } else {
-                                    document.getElementById('hlsStatus').innerHTML = 
+                                    document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: red;">Error:</strong> ' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('hlsStatus').innerHTML = 
+                                document.getElementById('rtspStatus').innerHTML = 
                                     '<strong style="color: red;">Error:</strong> ' + error;
                             });
                     }
                     
-                    function checkHLSStatus() {
-                        document.getElementById('hlsStatus').textContent = 'Checking HLS status...';
-                        fetch('/status')
+                    function checkRTSPStatus() {
+                        document.getElementById('rtspStatus').textContent = 'Checking RTSP status...';
+                        fetch('/rtspStatus')
                             .then(response => response.json())
                             .then(data => {
-                                if (data.hls && data.hls.enabled) {
-                                    document.getElementById('hlsStatus').innerHTML = 
-                                        '<strong style="color: green;">✓ HLS Active</strong><br>' +
-                                        'Encoder: ' + data.hls.encoderName + ' (Hardware: ' + data.hls.isHardware + ')<br>' +
-                                        'Bitrate: ' + (data.hls.targetBitrate / 1000000) + ' Mbps @ ' + data.hls.targetFps + ' fps<br>' +
-                                        'Actual FPS: ' + data.hls.actualFps.toFixed(1) + '<br>' +
-                                        'Frames: ' + data.hls.framesEncoded + ' | Segments: ' + data.hls.activeSegments + '<br>' +
-                                        'Avg Encoding: ' + data.hls.avgEncodingTimeMs.toFixed(2) + ' ms<br>' +
-                                        'Playlist: <a href="/hls/stream.m3u8" target="_blank">/hls/stream.m3u8</a>';
+                                if (data.rtspEnabled) {
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: green;">✓ RTSP Active</strong><br>' +
+                                        'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
+                                        'Frames Encoded: ' + data.framesEncoded + '<br>' +
+                                        'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
+                                        'Port: ' + data.port;
                                 } else {
-                                    document.getElementById('hlsStatus').innerHTML = 
-                                        '<strong style="color: orange;">HLS Not Enabled</strong><br>' +
-                                        'Use "Enable HLS" button to start hardware-accelerated streaming';
+                                    document.getElementById('rtspStatus').innerHTML = 
+                                        '<strong style="color: orange;">RTSP Not Enabled</strong><br>' +
+                                        'Use "Enable RTSP" button to start hardware-accelerated H.264 streaming';
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('hlsStatus').innerHTML = 
+                                document.getElementById('rtspStatus').innerHTML = 
                                     '<strong style="color: red;">Error:</strong> ' + error;
                             });
                     }
                     
-                    // Check HLS status on page load
+                    // Check RTSP status on page load
                     window.addEventListener('load', function() {
-                        checkHLSStatus();
+                        checkRTSPStatus();
                     });
                 </script>
             </body>
@@ -1077,39 +1075,7 @@ class HttpServer(
         val activeStreamCount = activeStreams.get()
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
         
-        // HLS metrics
-        // REQ-HW-008: Performance monitoring
-        val hlsEnabled = cameraService.isHLSEnabled()
-        val hlsMetrics = if (hlsEnabled) cameraService.getHLSMetrics() else null
-        
-        val hlsJson = if (hlsEnabled && hlsMetrics != null) {
-            """
-                "hls": {
-                    "enabled": true,
-                    "encoderName": "${hlsMetrics.encoderName}",
-                    "isHardware": ${hlsMetrics.isHardware},
-                    "targetBitrate": ${hlsMetrics.targetBitrate},
-                    "targetFps": ${hlsMetrics.targetFps},
-                    "actualFps": ${String.format("%.1f", hlsMetrics.actualFps)},
-                    "framesEncoded": ${hlsMetrics.framesEncoded},
-                    "avgEncodingTimeMs": ${String.format("%.2f", hlsMetrics.avgEncodingTimeMs)},
-                    "activeSegments": ${hlsMetrics.activeSegments},
-                    "lastError": ${if (hlsMetrics.lastError != null) "\"${hlsMetrics.lastError}\"" else "null"}
-                },
-            """.trimIndent()
-        } else {
-            """
-                "hls": {
-                    "enabled": false
-                },
-            """.trimIndent()
-        }
-        
-        val endpoints = if (hlsEnabled) {
-            "[/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/hls/stream.m3u8\", \"/enableHLS\", \"/disableHLS\"]"
-        } else {
-            "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/enableHLS\"]"
-        }
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\"]"
         
         val json = """
             {
@@ -1125,7 +1091,6 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                $hlsJson
                 "endpoints": $endpoints
             }
         """.trimIndent()
@@ -1486,94 +1451,26 @@ class HttpServer(
         )
     }
     
-    // ==================== HLS Streaming Endpoints ====================
-    // REQ-HW-005: HTTP endpoints for HLS streaming
+    // ==================== RTSP Streaming Endpoints ====================
     
     /**
-     * Serve HLS playlist (M3U8)
-     * REQ-HW-005: /hls/stream.m3u8 endpoint
+     * Enable RTSP streaming
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSPlaylist() {
-        val playlist = cameraService.getHLSPlaylist()
-        
-        if (playlist != null) {
-            call.response.header("Cache-Control", "no-cache")
-            call.response.header("Access-Control-Allow-Origin", "*")
-            call.respondText(
-                playlist,
-                ContentType.parse("application/vnd.apple.mpegurl"),
-                HttpStatusCode.OK
-            )
-        } else {
-            call.respondText(
-                """{"status":"error","message":"HLS not enabled. Use /enableHLS to enable HLS streaming."}""",
-                ContentType.Application.Json,
-                HttpStatusCode.ServiceUnavailable
-            )
-        }
-    }
-    
-    /**
-     * Serve HLS segment file (TS or M4S)
-     * REQ-HW-005: /hls/segment{N}.ts or /hls/segment{N}.m4s endpoint
-     */
-    /**
-     * Serve HLS segment file (TS only)
-     * REQ-HW-005: /hls/segment{N}.ts endpoint
-     * 
-     * MP4 fallback has been removed - only MPEG-TS segments are supported
-     */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveHLSSegment() {
-        val segmentName = call.parameters["segmentName"] ?: ""
-        
-        // Validate segment name format to prevent directory traversal
-        // Only accept .ts (MPEG-TS) extension
-        if (!segmentName.matches(Regex("^segment\\d+\\.ts$"))) {
-            call.respondText(
-                """{"status":"error","message":"Invalid segment name format. Expected segment{N}.ts"}""",
-                ContentType.Application.Json,
-                HttpStatusCode.BadRequest
-            )
-            return
-        }
-        
-        val segmentFile = cameraService.getHLSSegment(segmentName)
-        
-        if (segmentFile != null && segmentFile.exists()) {
-            call.response.header("Content-Type", "video/mp2t")
-            call.response.header("Cache-Control", "public, max-age=60")
-            call.response.header("Access-Control-Allow-Origin", "*")
-            
-            call.respondFile(segmentFile)
-        } else {
-            // Generic error message to avoid information disclosure
-            call.respondText(
-                """{"status":"error","message":"Segment not found"}""",
-                ContentType.Application.Json,
-                HttpStatusCode.NotFound
-            )
-        }
-    }
-    
-    /**
-     * Enable HLS streaming
-     * REQ-OPT-011: HLS configurable via API
-     */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableHLS() {
-        val success = cameraService.enableHLSStreaming()
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableRTSP() {
+        val success = cameraService.enableRTSPStreaming()
         
         if (success) {
-            val metrics = cameraService.getHLSMetrics()
-            // Escape encoder name to prevent JSON injection
+            val metrics = cameraService.getRTSPMetrics()
+            val rtspUrl = cameraService.getRTSPUrl()
             val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
-            val bitrateInfo = metrics?.let { "${it.targetBitrate/1000000} Mbps @ ${it.targetFps} fps" } ?: "unknown"
+            
             call.respondText(
-                """{"status":"ok","message":"HLS streaming enabled","hlsEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"resolution":"$bitrateInfo"}""",
+                """{"status":"ok","message":"RTSP streaming enabled","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
             call.respondText(
-                """{"status":"error","message":"Failed to enable HLS streaming. Check logs for details.","hlsEnabled":false}""",
+                """{"status":"error","message":"Failed to enable RTSP streaming. Check logs for details.","rtspEnabled":false}""",
                 ContentType.Application.Json,
                 HttpStatusCode.InternalServerError
             )
@@ -1581,15 +1478,37 @@ class HttpServer(
     }
     
     /**
-     * Disable HLS streaming
+     * Disable RTSP streaming
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableHLS() {
-        cameraService.disableHLSStreaming()
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableRTSP() {
+        cameraService.disableRTSPStreaming()
         call.respondText(
-            """{"status":"ok","message":"HLS streaming disabled","hlsEnabled":false}""",
+            """{"status":"ok","message":"RTSP streaming disabled","rtspEnabled":false}""",
             ContentType.Application.Json
         )
     }
     
-    // ==================== End HLS Streaming Endpoints ====================
+    /**
+     * Get RTSP status and metrics
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRTSPStatus() {
+        val rtspEnabled = cameraService.isRTSPEnabled()
+        val metrics = cameraService.getRTSPMetrics()
+        val rtspUrl = cameraService.getRTSPUrl()
+        
+        if (rtspEnabled && metrics != null) {
+            val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
+            call.respondText(
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"url":"$rtspUrl","port":8554}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"ok","rtspEnabled":false,"message":"RTSP streaming is not enabled"}""",
+                ContentType.Application.Json
+            )
+        }
+    }
+    
+    // ==================== End RTSP Streaming Endpoints ====================
 }

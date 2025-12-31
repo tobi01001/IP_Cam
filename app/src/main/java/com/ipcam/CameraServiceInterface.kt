@@ -48,12 +48,10 @@ interface CameraServiceInterface {
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
     
-    // HLS streaming operations
-    // REQ-HW-005: HLS endpoints integration
-    fun enableHLSStreaming(): Boolean
-    fun disableHLSStreaming()
-    fun isHLSEnabled(): Boolean
-    fun getHLSMetrics(): HLSEncoderManager.EncoderMetrics?
-    fun getHLSPlaylist(): String?
-    fun getHLSSegment(segmentName: String): File?
+    // RTSP streaming operations
+    fun enableRTSPStreaming(): Boolean
+    fun disableRTSPStreaming()
+    fun isRTSPEnabled(): Boolean
+    fun getRTSPMetrics(): RTSPServer.ServerMetrics?
+    fun getRTSPUrl(): String
 }

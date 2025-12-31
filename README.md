@@ -8,8 +8,9 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 
 ### Streaming
 - **MJPEG Streaming**: Real-time video streaming with low latency (~150-280ms) compatible with all surveillance systems
-- **HLS Streaming (Optional)**: Hardware-accelerated H.264 streaming with 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) at the cost of higher latency (6-12 seconds)
-- **Dual-Stream Architecture**: Both MJPEG and HLS can run simultaneously for different clients
+- **RTSP Streaming (Optional)**: Hardware-accelerated H.264 streaming with 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) and acceptable latency (~500ms-1s)
+- **Dual-Stream Architecture**: Both MJPEG and RTSP can run simultaneously for different clients
+- **Dual Transport**: RTSP supports both UDP (lower latency) and TCP (firewall-friendly) transport modes
 - **Multiple Concurrent Connections**: Supports 32+ simultaneous clients (streams, status checks, snapshots)
 
 ### Camera & Control
@@ -38,8 +39,8 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 - **[Requirements Specification](REQUIREMENTS_SPECIFICATION.md)** - Complete technical requirements for implementing IP_Cam from scratch
 - **[Requirements Summary](REQUIREMENTS_SUMMARY.md)** - Quick reference guide to the requirements specification
 - **[Architecture Documentation](ARCHITECTURE.md)** - System architecture and connection handling design
-- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (HLS/RTSP)
-- **[HLS Troubleshooting Guide](HLS_TROUBLESHOOTING.md)** - Comprehensive guide for troubleshooting HLS streaming issues, including fixes for green artifacts and MP4 fallback compatibility
+- **[Streaming Architecture](STREAMING_ARCHITECTURE.md)** - Comprehensive analysis of MJPEG streaming (current), frame processing pipeline, performance characteristics, and requirements for optional hardware-encoded modern streaming (RTSP)
+- **[RTSP Implementation](RTSP_IMPLEMENTATION.md)** - Complete documentation on RTSP streaming implementation, protocol details, usage examples, and troubleshooting
 
 
 ## Requirements
@@ -104,23 +105,21 @@ Simply open the displayed URL in any web browser on the same network to access t
 - **`GET /setResolutionOverlay?value=true|false`** - Toggle resolution overlay in bottom-right corner
 - **`GET /toggleFlashlight`** - Toggle flashlight on/off for back camera (returns JSON with state)
 
-##### HLS Streaming (Optional - Bandwidth Efficient)
-**Note:** HLS streaming provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) at the cost of higher latency (6-12 seconds). Suitable for recording, remote viewing over limited bandwidth, and integration with modern NVR systems. MJPEG remains the primary streaming method for low-latency applications.
+##### RTSP Streaming (Optional - Bandwidth Efficient)
+**Note:** RTSP streaming provides 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps) with acceptable latency (~500ms-1s). Ideal for recording, remote viewing over limited bandwidth, and integration with all major surveillance systems. MJPEG remains the primary streaming method for lowest-latency applications.
 
-**⚠️ Known Issue Fixed:** Green artifacts in preview and playback issues have been fixed. See [HLS Troubleshooting Guide](HLS_TROUBLESHOOTING.md) for details.
+- **`GET /enableRTSP`** - Enable RTSP streaming (returns JSON with encoder info and RTSP URL)
+- **`GET /disableRTSP`** - Disable RTSP streaming (returns JSON)
+- **`GET /rtspStatus`** - Get RTSP server status and metrics (returns JSON)
+- **`rtsp://DEVICE_IP:8554/stream`** - RTSP video stream (H.264 over RTP)
 
-- **`GET /enableHLS`** - Enable HLS streaming (returns JSON with encoder info)
-- **`GET /disableHLS`** - Disable HLS streaming (returns JSON)
-- **`GET /hls/stream.m3u8`** - HLS master playlist (M3U8 format)
-- **`GET /hls/segment{N}.ts`** or **`GET /hls/segment{N}.m4s`** - HLS video segments (MPEG-TS or MP4 format, depending on device support)
-
-**HLS Features:**
+**RTSP Features:**
 - Hardware-accelerated H.264 encoding for efficiency
 - 50-75% bandwidth reduction compared to MJPEG
-- 2-second segments with 10-segment sliding window
-- 6-12 seconds latency (not suitable for real-time monitoring)
-- Compatible with Safari (native), Chrome/Firefox (via hls.js), VLC, modern surveillance systems
-- Automatic format detection: MPEG-TS (API 26+) or MP4 fallback (API 24-25)
+- 500ms-1s latency (acceptable for most surveillance applications)
+- Industry standard protocol compatible with all surveillance systems
+- Dual transport: UDP (default, lower latency) and TCP (automatic fallback, firewall-friendly)
+- Compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye, Home Assistant
 
 #### Example Usage
 
@@ -161,66 +160,58 @@ curl http://192.168.1.100:8080/setRotation?value=auto
 curl http://192.168.1.100:8080/toggleFlashlight
 ```
 
-##### HLS Streaming Examples
+##### RTSP Streaming Examples
 
-**Enable HLS streaming:**
+**Enable RTSP streaming:**
 ```bash
-curl http://192.168.1.100:8080/enableHLS
+curl http://192.168.1.100:8080/enableRTSP
 ```
 
-**Disable HLS streaming:**
+**Disable RTSP streaming:**
 ```bash
-curl http://192.168.1.100:8080/disableHLS
+curl http://192.168.1.100:8080/disableRTSP
 ```
 
-**Play HLS stream in VLC:**
+**Get RTSP status:**
 ```bash
-vlc http://192.168.1.100:8080/hls/stream.m3u8
+curl http://192.168.1.100:8080/rtspStatus
 ```
 
-**Play HLS stream in web browser (Safari - native support):**
-```html
-<video controls>
-    <source src="http://192.168.1.100:8080/hls/stream.m3u8" type="application/x-mpegURL">
-</video>
-```
-
-**Play HLS stream in Chrome/Firefox (using hls.js):**
-```html
-<video id="hlsPlayer" controls style="width: 100%; max-width: 1280px;"></video>
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script>
-    if (Hls.isSupported()) {
-        var video = document.getElementById('hlsPlayer');
-        var hls = new Hls();
-        hls.loadSource('http://192.168.1.100:8080/hls/stream.m3u8');
-        hls.attachMedia(video);
-        hls.on(Hls.Events.MANIFEST_PARSED, function() {
-            video.play();
-        });
-    }
-</script>
-```
-
-**Download HLS stream with FFmpeg:**
+**Play RTSP stream in VLC:**
 ```bash
-ffmpeg -i http://192.168.1.100:8080/hls/stream.m3u8 -c copy output.mp4
+vlc rtsp://192.168.1.100:8554/stream
+```
+
+**Play RTSP stream with FFplay:**
+```bash
+ffplay rtsp://192.168.1.100:8554/stream
+```
+
+**Record RTSP stream with FFmpeg:**
+```bash
+ffmpeg -i rtsp://192.168.1.100:8554/stream -c copy output.mp4
+```
+
+**Force TCP transport (if UDP is blocked):**
+```bash
+ffplay -rtsp_transport tcp rtsp://192.168.1.100:8554/stream
+vlc --rtsp-tcp rtsp://192.168.1.100:8554/stream
 ```
 
 **Use in surveillance systems (ZoneMinder, Shinobi, Blue Iris):**
-- **MJPEG (recommended for low latency):** `http://192.168.1.100:8080/stream`
-- **HLS (for bandwidth efficiency):** `http://192.168.1.100:8080/hls/stream.m3u8`
+- **MJPEG (recommended for lowest latency):** `http://192.168.1.100:8080/stream`
+- **RTSP (for bandwidth efficiency):** `rtsp://192.168.1.100:8554/stream`
 
-### Choosing Between MJPEG and HLS Streaming
+### Choosing Between MJPEG and RTSP Streaming
 
-IP_Cam supports both MJPEG and HLS streaming protocols, each optimized for different use cases:
+IP_Cam supports both MJPEG and RTSP streaming protocols, each optimized for different use cases:
 
 #### MJPEG Streaming (Default - Recommended for Most Users)
 
 **Best For:**
 - Real-time monitoring and surveillance
 - Motion detection integration
-- Low-latency requirements (<300ms)
+- Lowest-latency requirements (<300ms)
 - Maximum compatibility with all surveillance systems
 - Local network streaming with sufficient bandwidth
 
@@ -235,33 +226,33 @@ IP_Cam supports both MJPEG and HLS streaming protocols, each optimized for diffe
 - ⚠️ Higher bandwidth usage (~8 Mbps per client @ 1080p 10fps)
 - ⚠️ Each frame is independently compressed (no inter-frame compression)
 
-#### HLS Streaming (Optional - For Bandwidth-Constrained Scenarios)
+#### RTSP Streaming (Optional - For Bandwidth-Constrained Scenarios)
 
 **Best For:**
 - Remote viewing over limited bandwidth connections
-- Recording to disk (native MP4/TS format)
+- Recording to disk (H.264 format)
 - Multiple concurrent viewers on bandwidth-limited networks
-- Integration with modern web-based surveillance systems
+- Integration with surveillance systems and NVRs
 - Cellular or metered network connections
 
 **Advantages:**
 - ✅ 50-75% bandwidth reduction (2-4 Mbps vs 8 Mbps)
 - ✅ Hardware-accelerated H.264 encoding (efficient, low CPU usage)
 - ✅ Better video quality through inter-frame compression
-- ✅ Native support in modern browsers and surveillance systems
-- ✅ Scalable to more concurrent viewers
+- ✅ Industry standard protocol (works with all modern surveillance systems)
+- ✅ Acceptable latency (~500ms-1s) for most surveillance applications
+- ✅ Dual transport: UDP (lower latency) and TCP (firewall-friendly)
 
 **Considerations:**
-- ⚠️ Higher latency (6-12 seconds) - not suitable for real-time monitoring
-- ⚠️ More complex implementation (requires segment buffering)
-- ⚠️ Requires modern client support (hls.js for Chrome/Firefox)
-- ⚠️ Additional storage for segment cache (~5 MB)
+- ⚠️ Slightly higher latency than MJPEG (but much better than HLS)
+- ⚠️ UDP may be blocked by some firewalls (automatic TCP fallback available)
+- ⚠️ Requires RTSP-compatible client (VLC, FFmpeg, surveillance systems)
 
 #### Comparison Table
 
-| Feature | MJPEG | HLS |
-|---------|-------|-----|
-| **Latency** | 150-280ms | 6-12 seconds |
+| Feature | MJPEG | RTSP |
+|---------|-------|------|
+| **Latency** | 150-280ms | 500-1000ms |
 | **Bandwidth** | ~8 Mbps | ~2-4 Mbps |
 | **Compatibility** | Universal | Modern systems |
 | **Quality** | Good | Excellent |
@@ -270,12 +261,13 @@ IP_Cam supports both MJPEG and HLS streaming protocols, each optimized for diffe
 
 #### Recommendation
 
-- **Start with MJPEG** - It works everywhere and provides the low latency needed for surveillance
-- **Add HLS when needed** - Enable HLS when you need to:
+- **Start with MJPEG** - It works everywhere and provides the lowest latency for surveillance
+- **Add RTSP when needed** - Enable RTSP when you need to:
   - Stream over limited bandwidth connections
   - Support many concurrent viewers
-  - Record video in native MP4 format
+  - Record video in H.264 format
   - Reduce cellular data usage for remote viewing
+  - Achieve better video quality with inter-frame compression
 
 Both streams can run simultaneously, allowing different clients to choose the best option for their needs.
 
@@ -637,7 +629,7 @@ IP_Cam uses **MJPEG (Motion JPEG)** as its primary streaming format for several 
 ✅ **Reliable** - Each frame is independent, instant recovery from errors  
 ✅ **Real-Time** - No buffering delays, immediate frame-by-frame transmission  
 
-For specialized use cases requiring lower bandwidth (at the cost of increased latency), hardware-encoded streaming with modern protocols (HLS/RTSP) can be added as an **optional feature** alongside MJPEG. See [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) for detailed requirements and implementation guidance.
+For specialized use cases requiring lower bandwidth (with acceptable latency trade-off), hardware-encoded RTSP streaming with H.264 is available as an **optional feature** alongside MJPEG. See [RTSP_IMPLEMENTATION.md](RTSP_IMPLEMENTATION.md) for detailed usage and [STREAMING_ARCHITECTURE.md](STREAMING_ARCHITECTURE.md) for architectural details.
 
 ### Architecture
 

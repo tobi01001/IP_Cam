@@ -125,10 +125,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
     private val clientIdCounter = AtomicInteger(0) // For unique client IDs
     
-    // HLS encoder for optional bandwidth-efficient streaming
-    // REQ-OPT-001 through REQ-OPT-012: Hardware-encoded H.264/HLS streaming
-    private var hlsEncoder: HLSEncoderManager? = null
-    @Volatile private var hlsEnabled: Boolean = false // Toggle via settings or API
+    // RTSP server for hardware-accelerated H.264 streaming
+    private var rtspServer: RTSPServer? = null
+    @Volatile private var rtspEnabled: Boolean = false
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -240,27 +239,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
-        
-        // Restore HLS encoder if it was enabled
-        if (hlsEnabled) {
-            Log.d(TAG, "HLS was enabled in settings, attempting to restore encoder...")
-            // Use a coroutine to avoid blocking onCreate
-            serviceScope.launch(Dispatchers.IO) {
-                try {
-                    // Wait for camera to be ready before starting HLS
-                    delay(2000) // Give camera time to initialize
-                    if (!enableHLSStreaming()) {
-                        Log.w(TAG, "Failed to restore HLS encoder, disabling HLS flag")
-                        hlsEnabled = false
-                        saveSettings()
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error restoring HLS encoder", e)
-                    hlsEnabled = false
-                    saveSettings()
-                }
-            }
-        }
         
         // Don't start server automatically in onCreate - wait for explicit start request
         startCamera()
@@ -704,71 +682,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             // DUAL-STREAM ARCHITECTURE:
             // 1. MJPEG Pipeline: bitmap → annotation → JPEG compression (always active)
-            // 2. HLS Pipeline: raw YUV → H.264 encoding (optional, bandwidth-efficient)
-            // REQ-HW-009: Both pipelines process independently from same ImageProxy source
+            // 2. RTSP Pipeline: raw YUV → H.264 encoding (optional, bandwidth-efficient)
             
-            // === HLS Pipeline (if enabled) ===
-            // Feed raw YUV to HLS encoder BEFORE bitmap conversion for efficiency
-            // REQ-OPT-010: HLS and MJPEG streams available simultaneously
-            if (hlsEnabled) {
-                // Check if encoder needs to be (re)created
-                val needsRecreation = hlsEncoder == null || 
-                    !hlsEncoder!!.matchesResolution(image.width, image.height)
-                
-                if (needsRecreation) {
-                    // Clean up existing encoder if resolution changed
-                    if (hlsEncoder != null) {
-                        Log.i(TAG, "Resolution changed, recreating HLS encoder for ${image.width}x${image.height}")
-                        try {
-                            hlsEncoder?.stop()
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error stopping old encoder", e)
-                        }
-                        hlsEncoder = null
-                    }
-                    
-                    try {
-                        Log.i(TAG, "Creating HLS encoder with actual frame dimensions: ${image.width}x${image.height}")
-                        
-                        // Create HLS segment directory
-                        val hlsDir = File(cacheDir, "hls_segments")
-                        if (!hlsDir.exists()) {
-                            hlsDir.mkdirs()
-                        }
-                        
-                        // Create and start HLS encoder with actual image dimensions
-                        hlsEncoder = HLSEncoderManager(
-                            cacheDir = cacheDir,
-                            width = image.width,
-                            height = image.height,
-                            fps = 30,
-                            bitrate = 2_000_000 // 2 Mbps
-                        )
-                        
-                        if (hlsEncoder?.start() != true) {
-                            Log.e(TAG, "Failed to start HLS encoder")
-                            hlsEncoder = null
-                            hlsEnabled = false
-                            saveSettings()
-                        } else {
-                            Log.i(TAG, "HLS encoder started: ${image.width}x${image.height} @ 30fps, 2 Mbps")
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error creating HLS encoder", e)
-                        hlsEncoder = null
-                        hlsEnabled = false
-                        saveSettings()
-                    }
-                }
-                
-                // Encode frame if encoder is ready
-                if (hlsEncoder != null) {
-                    try {
-                        hlsEncoder?.encodeFrame(image)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "HLS encoding failed", e)
-                        // Continue with MJPEG even if HLS fails
-                    }
+            // === RTSP Pipeline (if enabled) ===
+            // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
+            if (rtspEnabled && rtspServer != null) {
+                try {
+                    rtspServer?.encodeFrame(image)
+                } catch (e: Exception) {
+                    Log.e(TAG, "RTSP encoding failed", e)
+                    // Continue with MJPEG even if RTSP fails
                 }
             }
             
@@ -1157,9 +1080,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
-        // Load HLS settings
-        // REQ-OPT-011: HLS configurable via settings
-        hlsEnabled = prefs.getBoolean("hlsEnabled", false)
+        // Load RTSP settings
+        rtspEnabled = prefs.getBoolean("rtspEnabled", false)
         
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
@@ -1207,7 +1129,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, hls=$hlsEnabled")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn")
     }
     
     private fun saveSettings() {
@@ -1219,9 +1141,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
-            // Save HLS settings
-            // REQ-OPT-011: HLS configurable via settings
-            putBoolean("hlsEnabled", hlsEnabled)
+            // Save RTSP settings
+            putBoolean("rtspEnabled", rtspEnabled)
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1743,109 +1664,108 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
     }
     
-    // ==================== HLS Streaming Control ====================
-    // REQ-OPT-011: HLS configurable via settings and API
+    // ==================== RTSP Streaming Control ====================
     
     /**
-     * Enable HLS streaming
-     * REQ-OPT-001 through REQ-OPT-012: Hardware-encoded H.264/HLS streaming
+     * Enable RTSP streaming
      */
-    override fun enableHLSStreaming(): Boolean {
-        // Check if HLS is already enabled AND encoder is actually running
-        if (hlsEnabled && hlsEncoder != null && hlsEncoder?.isAlive() == true) {
-            Log.d(TAG, "HLS already enabled and encoder is running")
+    override fun enableRTSPStreaming(): Boolean {
+        if (rtspEnabled && rtspServer != null && rtspServer?.isAlive() == true) {
+            Log.d(TAG, "RTSP already enabled and server is running")
             return true
         }
         
-        // If flag is set but encoder is not running, clean up and restart
-        if (hlsEnabled) {
-            Log.w(TAG, "HLS flag was set but encoder not running, restarting...")
-            disableHLSStreaming()
+        if (rtspEnabled) {
+            Log.w(TAG, "RTSP flag was set but server not running, restarting...")
+            disableRTSPStreaming()
         }
         
         try {
             // Check if hardware encoder is available
-            if (!HLSEncoderManager.isHardwareEncoderAvailable()) {
-                Log.w(TAG, "Hardware encoder not available, HLS may use software fallback")
+            if (!RTSPServer.isHardwareEncoderAvailable()) {
+                Log.w(TAG, "Hardware encoder not available, RTSP may use software fallback")
             }
             
-            // Note: We don't create the encoder here immediately because selectedResolution
-            // might not match the actual camera output resolution.
-            // The encoder will be created lazily on the first frame with actual dimensions.
-            // Just set the flag and let processImage() handle encoder creation.
-            hlsEnabled = true
+            // Get current camera resolution for encoder
+            val resolution = selectedResolution ?: run {
+                // Use a default resolution if none is set
+                Log.d(TAG, "No resolution set, using 1920x1080 for RTSP")
+                Size(1920, 1080)
+            }
+            
+            // Create RTSP server with current resolution
+            rtspServer = RTSPServer(
+                port = 8554,
+                width = resolution.width,
+                height = resolution.height,
+                fps = 30,
+                bitrate = 2_000_000 // 2 Mbps
+            )
+            
+            if (rtspServer?.start() != true) {
+                Log.e(TAG, "Failed to start RTSP server")
+                rtspServer = null
+                rtspEnabled = false
+                saveSettings()
+                return false
+            }
+            
+            rtspEnabled = true
             saveSettings()
-            Log.i(TAG, "HLS streaming enabled (encoder will be created on first frame)")
+            Log.i(TAG, "RTSP streaming enabled on port 8554")
             return true
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error enabling HLS streaming", e)
-            hlsEnabled = false
-            hlsEncoder = null
-            saveSettings() // Ensure flag is cleared
+            Log.e(TAG, "Error enabling RTSP streaming", e)
+            rtspEnabled = false
+            rtspServer = null
+            saveSettings()
             return false
         }
     }
     
     /**
-     * Disable HLS streaming
+     * Disable RTSP streaming
      */
-    override fun disableHLSStreaming() {
-        if (!hlsEnabled) {
-            Log.w(TAG, "HLS already disabled")
+    override fun disableRTSPStreaming() {
+        if (!rtspEnabled) {
+            Log.w(TAG, "RTSP already disabled")
             return
         }
         
         try {
-            hlsEnabled = false
-            hlsEncoder?.stop()
-            hlsEncoder = null
-            saveSettings() // Persist HLS state
-            Log.i(TAG, "HLS streaming disabled")
+            rtspEnabled = false
+            rtspServer?.stop()
+            rtspServer = null
+            saveSettings()
+            Log.i(TAG, "RTSP streaming disabled")
             
         } catch (e: Exception) {
-            Log.e(TAG, "Error disabling HLS streaming", e)
+            Log.e(TAG, "Error disabling RTSP streaming", e)
         }
     }
     
     /**
-     * Check if HLS is enabled
+     * Check if RTSP is enabled
      */
-    override fun isHLSEnabled(): Boolean = hlsEnabled
+    override fun isRTSPEnabled(): Boolean = rtspEnabled
     
     /**
-     * Get HLS encoder metrics
-     * REQ-HW-008: Performance monitoring
+     * Get RTSP server metrics
      */
-    override fun getHLSMetrics(): HLSEncoderManager.EncoderMetrics? {
-        return hlsEncoder?.getMetrics()
+    override fun getRTSPMetrics(): RTSPServer.ServerMetrics? {
+        return rtspServer?.getMetrics()
     }
     
     /**
-     * Get HLS playlist (M3U8)
-     * REQ-HW-005: M3U8 playlist generation
+     * Get RTSP URL
      */
-    override fun getHLSPlaylist(): String? {
-        return if (hlsEnabled) {
-            hlsEncoder?.generatePlaylist()
-        } else {
-            null
-        }
+    override fun getRTSPUrl(): String {
+        val ipAddress = getServerUrl().substringAfter("http://").substringBefore(":")
+        return "rtsp://$ipAddress:8554/stream"
     }
     
-    /**
-     * Get HLS segment file
-     * REQ-HW-005: Segment file serving
-     */
-    override fun getHLSSegment(segmentName: String): File? {
-        return if (hlsEnabled) {
-            hlsEncoder?.getSegmentFile(segmentName)
-        } else {
-            null
-        }
-    }
-    
-    // ==================== End HLS Streaming Control ====================
+    // ==================== End RTSP Streaming Control ====================
     
     /**
      * Broadcast connection count update to all SSE clients via HttpServer
