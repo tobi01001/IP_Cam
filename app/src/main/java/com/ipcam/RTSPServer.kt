@@ -71,6 +71,9 @@ class RTSPServer(
     private val logThrottleMs = 5000L // Log at most every 5 seconds
     @Volatile private var streamStartTimeMs: Long = 0
     
+    // Synchronization lock for encoder lifecycle operations
+    private val encoderLock = Any()
+    
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
     private var uvDataBuffer: ByteArray? = null
@@ -82,6 +85,8 @@ class RTSPServer(
         private const val TIMEOUT_US = 10_000L
         private const val RTP_VERSION = 2
         private const val RTP_PT_H264 = 96 // Dynamic payload type for H.264
+        // Neutral chroma value - mid-point value (128) for U/V chrominance components in YUV color space
+        private const val NEUTRAL_CHROMA_VALUE: Byte = 128.toByte()
         
         /**
          * Calculate appropriate bitrate based on resolution
@@ -602,6 +607,8 @@ class RTSPServer(
      * Handle RTSP client connection
      */
     private suspend fun handleClient(socket: Socket) {
+        // SECURITY NOTE: Session IDs are generated server-side and must never be accepted
+        // from untrusted client input to prevent injection attacks
         val sessionId = "session${sessionIdCounter.incrementAndGet()}"
         Log.d(TAG, "New RTSP client connected: $sessionId from ${socket.inetAddress}")
         
@@ -647,6 +654,17 @@ class RTSPServer(
             Log.e(TAG, "Error handling client $sessionId", e)
         } finally {
             sessions.remove(sessionId)
+            // Clean up RTP/RTCP sockets
+            try {
+                session.rtpSocket?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing RTP socket for session $sessionId", e)
+            }
+            try {
+                session.rtcpSocket?.close()
+            } catch (e: Exception) {
+                Log.w(TAG, "Error closing RTCP socket for session $sessionId", e)
+            }
             try {
                 socket.close()
             } catch (e: Exception) {
@@ -880,23 +898,29 @@ class RTSPServer(
         try {
             // === Encoder Initialization/Recreation ===
             // Check if encoder needs to be (re)created due to resolution mismatch
+            // Use synchronization to prevent race conditions during encoder recreation
             if (encoder == null || image.width != width || image.height != height) {
-                if (encoder != null) {
-                    Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
-                    try {
-                        encoder?.stop()
-                        encoder?.release()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error stopping old encoder", e)
+                synchronized(encoderLock) {
+                    // Double-check inside synchronized block
+                    if (encoder == null || image.width != width || image.height != height) {
+                        if (encoder != null) {
+                            Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
+                            try {
+                                encoder?.stop()
+                                encoder?.release()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Error stopping old encoder", e)
+                            }
+                            encoder = null
+                            sps = null
+                            pps = null
+                        }
+                        
+                        // Recreate encoder with actual frame dimensions
+                        if (!recreateEncoder(image.width, image.height)) {
+                            return false
+                        }
                     }
-                    encoder = null
-                    sps = null
-                    pps = null
-                }
-                
-                // Recreate encoder with actual frame dimensions
-                if (!recreateEncoder(image.width, image.height)) {
-                    return false
                 }
             }
             
@@ -909,39 +933,39 @@ class RTSPServer(
             
             // === Encode Frame ===
             // Get input buffer with timeout
-            val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
+            val currentEncoder = encoder ?: throw IllegalStateException("Encoder is null after recreation attempt - this indicates a programming error")
+            val inputBufferIndex = currentEncoder.dequeueInputBuffer(TIMEOUT_US)
             if (inputBufferIndex >= 0) {
-                val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
+                val inputBuffer = currentEncoder.getInputBuffer(inputBufferIndex)
+                    ?: throw IllegalStateException("Input buffer is null for valid index $inputBufferIndex")
                 
-                if (inputBuffer != null) {
-                    fillInputBuffer(inputBuffer, image)
-                    
-                    val presentationTimeUs = frameCount.get() * 1_000_000L / fps
-                    val bufferSize = inputBuffer.remaining() // Size of data after flip()
-                    
-                    // Check encoder state before queueing - avoid race condition during start()
-                    try {
-                        encoder?.queueInputBuffer(
-                            inputBufferIndex,
-                            0,
-                            bufferSize,
-                            presentationTimeUs,
-                            0
-                        )
-                        frameCount.incrementAndGet()
-                    } catch (e: IllegalStateException) {
-                        // Encoder not yet in EXECUTING state (still in start())
-                        // This can happen during encoder recreation - safe to drop frame
-                        Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
-                        return false
-                    }
-                    
-                    // Update timing for FPS calculation
-                    lastFrameTimeNs = System.nanoTime()
-                    
-                    if (frameCount.get() == 1L) {
-                        Log.i(TAG, "First frame queued with size: $bufferSize bytes")
-                    }
+                fillInputBuffer(inputBuffer, image)
+                
+                val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                val bufferSize = inputBuffer.remaining() // Size of data after flip()
+                
+                // Check encoder state before queueing - avoid race condition during start()
+                try {
+                    currentEncoder.queueInputBuffer(
+                        inputBufferIndex,
+                        0,
+                        bufferSize,
+                        presentationTimeUs,
+                        0
+                    )
+                    frameCount.incrementAndGet()
+                } catch (e: IllegalStateException) {
+                    // Encoder not yet in EXECUTING state (still in start())
+                    // This can happen during encoder recreation - safe to drop frame
+                    Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
+                    return false
+                }
+                
+                // Update timing for FPS calculation
+                lastFrameTimeNs = System.nanoTime()
+                
+                if (frameCount.get() == 1L) {
+                    Log.i(TAG, "First frame queued with size: $bufferSize bytes")
                 }
             } else {
                 // Encoder input queue full - this is normal under load
@@ -1112,7 +1136,7 @@ class RTSPServer(
         if (uvPixelStride == 2 && uvRowStride == uvWidth && uBuffer.remaining() >= uvWidth * uvHeight * 2) {
             // U buffer contains interleaved UV data in NV12 format - fast path
             val uvSize = uvWidth * uvHeight * 2
-            uBuffer.get(uvBuffer, 0, minOf(uvSize, uBuffer.remaining()))
+            uBuffer.get(uvBuffer, 0, uvSize)
             buffer.put(uvBuffer, 0, uvSize)
         } else {
             // Manual interleaving required
@@ -1126,7 +1150,7 @@ class RTSPServer(
                     if (uBuffer.position() + uPos < uBuffer.limit()) {
                         uvBuffer[uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
                     } else {
-                        uvBuffer[uvDestOffset++] = 128.toByte() // Neutral chroma
+                        uvBuffer[uvDestOffset++] = NEUTRAL_CHROMA_VALUE
                     }
                     
                     // Write V sample
@@ -1134,7 +1158,7 @@ class RTSPServer(
                     if (vBuffer.position() + vPos < vBuffer.limit()) {
                         uvBuffer[uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
                     } else {
-                        uvBuffer[uvDestOffset++] = 128.toByte() // Neutral chroma
+                        uvBuffer[uvDestOffset++] = NEUTRAL_CHROMA_VALUE
                     }
                 }
             }
@@ -1168,7 +1192,7 @@ class RTSPServer(
                 if (vBuffer.position() + vPos < vBuffer.limit()) {
                     uvBuffer[uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
                 } else {
-                    uvBuffer[uvDestOffset++] = 128.toByte()
+                    uvBuffer[uvDestOffset++] = NEUTRAL_CHROMA_VALUE
                 }
                 
                 // Write U sample second
@@ -1176,7 +1200,7 @@ class RTSPServer(
                 if (uBuffer.position() + uPos < uBuffer.limit()) {
                     uvBuffer[uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
                 } else {
-                    uvBuffer[uvDestOffset++] = 128.toByte()
+                    uvBuffer[uvDestOffset++] = NEUTRAL_CHROMA_VALUE
                 }
             }
         }
@@ -1207,7 +1231,7 @@ class RTSPServer(
                 if (uBuffer.position() + uPos < uBuffer.limit()) {
                     uvBuffer[destOffset++] = uBuffer.get(uBuffer.position() + uPos)
                 } else {
-                    uvBuffer[destOffset++] = 128.toByte()
+                    uvBuffer[destOffset++] = NEUTRAL_CHROMA_VALUE
                 }
             }
         }
@@ -1220,7 +1244,7 @@ class RTSPServer(
                 if (vBuffer.position() + vPos < vBuffer.limit()) {
                     uvBuffer[destOffset++] = vBuffer.get(vBuffer.position() + vPos)
                 } else {
-                    uvBuffer[destOffset++] = 128.toByte()
+                    uvBuffer[destOffset++] = NEUTRAL_CHROMA_VALUE
                 }
             }
         }

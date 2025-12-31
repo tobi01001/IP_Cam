@@ -76,7 +76,7 @@ Or in VLC:
 
 Before fix:
 - Codec info missing or incomplete
-- "Decodiertes Format: Links" (German for "Links" = unclear)
+- Decoded format field showing incorrect or unclear value
 - Monochrome/grey video
 
 After fix:
