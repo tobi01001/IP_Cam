@@ -933,39 +933,42 @@ class RTSPServer(
             
             // === Encode Frame ===
             // Get input buffer with timeout
-            val currentEncoder = encoder ?: throw IllegalStateException("Encoder is null after recreation attempt - this indicates a programming error")
-            val inputBufferIndex = currentEncoder.dequeueInputBuffer(TIMEOUT_US)
+            val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: run {
+                Log.e(TAG, "Encoder is null after recreation attempt - encoder initialization may have failed")
+                return false
+            }
             if (inputBufferIndex >= 0) {
-                val inputBuffer = currentEncoder.getInputBuffer(inputBufferIndex)
-                    ?: throw IllegalStateException("Input buffer is null for valid index $inputBufferIndex")
+                val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
                 
-                fillInputBuffer(inputBuffer, image)
-                
-                val presentationTimeUs = frameCount.get() * 1_000_000L / fps
-                val bufferSize = inputBuffer.remaining() // Size of data after flip()
-                
-                // Check encoder state before queueing - avoid race condition during start()
-                try {
-                    currentEncoder.queueInputBuffer(
-                        inputBufferIndex,
-                        0,
-                        bufferSize,
-                        presentationTimeUs,
-                        0
-                    )
-                    frameCount.incrementAndGet()
-                } catch (e: IllegalStateException) {
-                    // Encoder not yet in EXECUTING state (still in start())
-                    // This can happen during encoder recreation - safe to drop frame
-                    Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
-                    return false
-                }
-                
-                // Update timing for FPS calculation
-                lastFrameTimeNs = System.nanoTime()
-                
-                if (frameCount.get() == 1L) {
-                    Log.i(TAG, "First frame queued with size: $bufferSize bytes")
+                if (inputBuffer != null) {
+                    fillInputBuffer(inputBuffer, image)
+                    
+                    val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                    val bufferSize = inputBuffer.remaining() // Size of data after flip()
+                    
+                    // Check encoder state before queueing - avoid race condition during start()
+                    try {
+                        encoder?.queueInputBuffer(
+                            inputBufferIndex,
+                            0,
+                            bufferSize,
+                            presentationTimeUs,
+                            0
+                        )
+                        frameCount.incrementAndGet()
+                    } catch (e: IllegalStateException) {
+                        // Encoder not yet in EXECUTING state (still in start())
+                        // This can happen during encoder recreation - safe to drop frame
+                        Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
+                        return false
+                    }
+                    
+                    // Update timing for FPS calculation
+                    lastFrameTimeNs = System.nanoTime()
+                    
+                    if (frameCount.get() == 1L) {
+                        Log.i(TAG, "First frame queued with size: $bufferSize bytes")
+                    }
                 }
             } else {
                 // Encoder input queue full - this is normal under load
