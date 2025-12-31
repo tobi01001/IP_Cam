@@ -109,24 +109,74 @@ class RTSPServer(
         var timestamp: Long = 0
         val ssrc = (Math.random() * Int.MAX_VALUE).toInt()
         
+        // TCP interleaved mode support
+        var useTCP: Boolean = false
+        var interleavedRtpChannel: Int = 0
+        var interleavedRtcpChannel: Int = 1
+        private val tcpOutputStream: OutputStream? get() = if (useTCP && !socket.isClosed) socket.getOutputStream() else null
+        
         fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean) {
             try {
-                if (clientAddress == null || clientRtpPort == 0) {
-                    return
-                }
-                
                 val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame)
-                rtpSocket?.let { socket ->
-                    if (!socket.isClosed) {
+                
+                if (useTCP) {
+                    // TCP interleaved mode - send over RTSP socket
+                    tcpOutputStream?.let { stream ->
+                        var sentCount = 0
                         rtpPackets.forEach { packet ->
-                            val dgPacket = DatagramPacket(
-                                packet,
-                                packet.size,
-                                clientAddress,
-                                clientRtpPort
+                            // RFC 2326 Section 10.12: Interleaved Binary Data
+                            // Format: $ <channel> <length_msb> <length_lsb> <data>
+                            val header = byteArrayOf(
+                                0x24, // '$' marker
+                                interleavedRtpChannel.toByte(),
+                                (packet.size shr 8).toByte(), // length MSB
+                                (packet.size and 0xFF).toByte() // length LSB
                             )
-                            socket.send(dgPacket)
+                            synchronized(stream) {
+                                stream.write(header)
+                                stream.write(packet)
+                                stream.flush()
+                                sentCount++
+                            }
                         }
+                        if (sequenceNumber == 0) {
+                            Log.d(TAG, "TCP: Sent first ${sentCount} RTP packets for session $sessionId, keyframe=$isKeyFrame")
+                        }
+                    } ?: run {
+                        Log.w(TAG, "TCP stream not available for session $sessionId")
+                    }
+                } else {
+                    // UDP mode - send via DatagramSocket
+                    if (clientAddress == null || clientRtpPort == 0) {
+                        Log.w(TAG, "UDP: clientAddress or port not set for session $sessionId")
+                        return
+                    }
+                    
+                    val socket = rtpSocket
+                    if (socket == null) {
+                        Log.w(TAG, "UDP: rtpSocket is null for session $sessionId")
+                        return
+                    }
+                    
+                    if (socket.isClosed) {
+                        Log.w(TAG, "UDP: socket closed for session $sessionId")
+                        return
+                    }
+                    
+                    var sentCount = 0
+                    rtpPackets.forEach { packet ->
+                        val dgPacket = DatagramPacket(
+                            packet,
+                            packet.size,
+                            clientAddress,
+                            clientRtpPort
+                        )
+                        socket.send(dgPacket)
+                        sentCount++
+                    }
+                    
+                    if (sequenceNumber < 5) {
+                        Log.d(TAG, "UDP: Sent ${sentCount} RTP packets to ${clientAddress}:${clientRtpPort} for session $sessionId, keyframe=$isKeyFrame, seq=$sequenceNumber")
                     }
                 }
             } catch (e: Exception) {
@@ -525,16 +575,49 @@ class RTSPServer(
         val transport = headers["transport"] ?: ""
         
         // Parse transport header for client ports
-        // Example: RTP/AVP;unicast;client_port=5000-5001
-        // or: RTP/AVP/TCP;unicast;interleaved=0-1
+        // Example UDP: RTP/AVP;unicast;client_port=5000-5001
+        // Example TCP: RTP/AVP/TCP;unicast;interleaved=0-1
         
         try {
             if (transport.contains("TCP", ignoreCase = true) || transport.contains("interleaved")) {
-                // TCP interleaved mode - not fully supported yet, return error
-                writer.write("RTSP/1.0 461 Unsupported Transport\r\n")
-                writer.write("CSeq: $cseq\r\n")
-                writer.write("\r\n")
-                writer.flush()
+                // TCP interleaved mode
+                val interleavedPattern = Regex("interleaved=(\\d+)-(\\d+)")
+                val match = interleavedPattern.find(transport)
+                
+                if (match != null) {
+                    session.useTCP = true
+                    session.interleavedRtpChannel = match.groupValues[1].toInt()
+                    session.interleavedRtcpChannel = match.groupValues[2].toInt()
+                    session.state = SessionState.READY
+                    
+                    val responseTransport = "RTP/AVP/TCP;unicast;interleaved=${session.interleavedRtpChannel}-${session.interleavedRtcpChannel}"
+                    
+                    Log.d(TAG, "SETUP TCP transport for session ${session.sessionId}: interleaved=${session.interleavedRtpChannel}-${session.interleavedRtcpChannel}")
+                    
+                    writer.write("RTSP/1.0 200 OK\r\n")
+                    writer.write("CSeq: $cseq\r\n")
+                    writer.write("Session: ${session.sessionId}\r\n")
+                    writer.write("Transport: $responseTransport\r\n")
+                    writer.write("\r\n")
+                    writer.flush()
+                } else {
+                    // TCP requested but no interleaved channels specified, use defaults
+                    session.useTCP = true
+                    session.interleavedRtpChannel = 0
+                    session.interleavedRtcpChannel = 1
+                    session.state = SessionState.READY
+                    
+                    val responseTransport = "RTP/AVP/TCP;unicast;interleaved=0-1"
+                    
+                    Log.d(TAG, "SETUP TCP transport for session ${session.sessionId}: interleaved=0-1 (default)")
+                    
+                    writer.write("RTSP/1.0 200 OK\r\n")
+                    writer.write("CSeq: $cseq\r\n")
+                    writer.write("Session: ${session.sessionId}\r\n")
+                    writer.write("Transport: $responseTransport\r\n")
+                    writer.write("\r\n")
+                    writer.flush()
+                }
                 return
             }
             
@@ -542,6 +625,7 @@ class RTSPServer(
             val portPattern = Regex("client_port=(\\d+)-(\\d+)")
             val match = portPattern.find(transport)
             if (match != null) {
+                session.useTCP = false
                 session.clientRtpPort = match.groupValues[1].toInt()
                 session.clientRtcpPort = match.groupValues[2].toInt()
                 session.clientAddress = session.socket.inetAddress
@@ -553,6 +637,8 @@ class RTSPServer(
                 session.serverRtcpPort = session.rtcpSocket!!.localPort
                 
                 session.state = SessionState.READY
+                
+                Log.d(TAG, "SETUP UDP transport for session ${session.sessionId}: client=${session.clientRtpPort}-${session.clientRtcpPort}, server=${session.serverRtpPort}-${session.serverRtcpPort}")
                 
                 val responseTransport = "RTP/AVP;unicast;client_port=${session.clientRtpPort}-${session.clientRtcpPort};" +
                                       "server_port=${session.serverRtpPort}-${session.serverRtcpPort}"
