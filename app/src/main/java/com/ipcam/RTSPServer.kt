@@ -63,6 +63,10 @@ class RTSPServer(
     // Frame timing control
     @Volatile private var lastFrameTimeNs: Long = 0
     private val targetFrameIntervalNs = 1_000_000_000L / fps // Nanoseconds per frame
+    @Volatile private var lastDropLogTimeMs: Long = 0
+    @Volatile private var lastQueueFullLogTimeMs: Long = 0
+    private val logThrottleMs = 5000L // Log at most every 5 seconds
+    @Volatile private var streamStartTimeMs: Long = 0
     
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
@@ -781,9 +785,11 @@ class RTSPServer(
                 // Too soon for next frame - drop it
                 droppedFrameCount.incrementAndGet()
                 
-                // Log periodically (every 100 dropped frames)
-                if (droppedFrameCount.get() % 100L == 1L) {
-                    Log.d(TAG, "Frame rate limiting: dropped ${droppedFrameCount.get()} frames to maintain ${fps} fps target")
+                // Log periodically (time-based throttling to avoid spam)
+                val currentTimeMs = System.currentTimeMillis()
+                if (currentTimeMs - lastDropLogTimeMs > logThrottleMs) {
+                    Log.d(TAG, "Frame rate limiting: dropped ${droppedFrameCount.get()} total frames to maintain ${fps} fps target")
+                    lastDropLogTimeMs = currentTimeMs
                 }
                 return false
             }
@@ -815,6 +821,7 @@ class RTSPServer(
             // Log first successful frame
             if (frameCount.get() == 0L) {
                 Log.i(TAG, "Encoding first frame: ${image.width}x${image.height} @ ${fps} fps")
+                streamStartTimeMs = System.currentTimeMillis()
             }
             
             // === Encode Frame ===
@@ -843,8 +850,10 @@ class RTSPServer(
                 }
             } else {
                 // Encoder input queue full - this is normal under load
-                if (frameCount.get() % 100L == 0L) {
-                    Log.d(TAG, "Encoder input buffer unavailable (queue full), frame dropped")
+                val currentTimeMs = System.currentTimeMillis()
+                if (currentTimeMs - lastQueueFullLogTimeMs > logThrottleMs) {
+                    Log.d(TAG, "Encoder input buffer unavailable (queue full), ${droppedFrameCount.get()} total frames dropped")
+                    lastQueueFullLogTimeMs = currentTimeMs
                 }
                 droppedFrameCount.incrementAndGet()
                 return false
@@ -997,13 +1006,20 @@ class RTSPServer(
     ) {
         var uvDestOffset = 0
         
-        if (uvPixelStride == 2 && uvRowStride == width) {
-            // Already in NV12 format - fast path
+        // Note: When uvPixelStride == 2, the U and V planes are already interleaved
+        // in semi-planar format, but they're in SEPARATE buffers (U has UVUV, V has VUVU)
+        // We need to extract from both or use the fact that U buffer already contains
+        // the interleaved data if the stride matches.
+        
+        // Check if U buffer already contains properly interleaved NV12 data
+        // This happens when the camera outputs NV12 directly
+        if (uvPixelStride == 2 && uvRowStride == width && uBuffer.remaining() >= uvWidth * uvHeight * 2) {
+            // U buffer contains interleaved UV data in NV12 format - fast path
             val uvSize = uvWidth * uvHeight * 2
             uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
             buffer.put(uvDataBuffer!!, 0, uvSize)
         } else {
-            // Convert to NV12 - interleave U and V
+            // Manual interleaving required
             for (row in 0 until uvHeight) {
                 uBuffer.position(row * uvRowStride)
                 vBuffer.position(row * uvRowStride)
@@ -1300,6 +1316,18 @@ class RTSPServer(
      * Get server metrics
      */
     fun getMetrics(): ServerMetrics {
+        // Calculate actual FPS based on time elapsed
+        val actualFps = if (streamStartTimeMs > 0 && frameCount.get() > 0) {
+            val elapsedSec = (System.currentTimeMillis() - streamStartTimeMs) / 1000.0
+            if (elapsedSec > 0) {
+                (frameCount.get() / elapsedSec).toFloat()
+            } else {
+                0f
+            }
+        } else {
+            0f
+        }
+        
         return ServerMetrics(
             encoderName = encoderName,
             isHardware = isHardwareEncoder,
@@ -1310,6 +1338,7 @@ class RTSPServer(
             framesEncoded = frameCount.get(),
             droppedFrames = droppedFrameCount.get(),
             targetFps = fps,
+            actualFps = actualFps,
             lastError = lastError
         )
     }
@@ -1324,6 +1353,7 @@ class RTSPServer(
         val framesEncoded: Long,
         val droppedFrames: Long,
         val targetFps: Int,
+        val actualFps: Float,
         val lastError: String?
     )
 }
