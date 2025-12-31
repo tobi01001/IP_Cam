@@ -689,19 +689,6 @@ class RTSPServer(
             // Retrieve encoded output
             drainEncoder()
             
-            // If this was the first frame and we still don't have SPS/PPS, drain more aggressively
-            if (frameCount.get() <= 3L && (sps == null || pps == null)) {
-                // Give encoder more chances to produce format change event
-                for (i in 0 until 5) {
-                    Thread.sleep(10)
-                    drainEncoder()
-                    if (sps != null && pps != null) {
-                        Log.i(TAG, "SPS/PPS extracted after ${frameCount.get()} frames and $i extra drain attempts")
-                        break
-                    }
-                }
-            }
-            
             return true
             
         } catch (e: Exception) {
@@ -828,8 +815,15 @@ class RTSPServer(
         var iterations = 0
         val maxIterations = 10
         
+        // Use longer timeout for first few frames to catch format change event
+        val timeout = if (frameCount.get() <= 3L && (sps == null || pps == null)) {
+            10000L // 10ms timeout for first frames to ensure format change is caught
+        } else {
+            0L // Non-blocking for subsequent frames
+        }
+        
         while (iterations++ < maxIterations) {
-            val outputBufferIndex = encoder?.dequeueOutputBuffer(bufferInfo, 0) ?: MediaCodec.INFO_TRY_AGAIN_LATER
+            val outputBufferIndex = encoder?.dequeueOutputBuffer(bufferInfo, timeout) ?: MediaCodec.INFO_TRY_AGAIN_LATER
             
             when {
                 outputBufferIndex == MediaCodec.INFO_TRY_AGAIN_LATER -> break
