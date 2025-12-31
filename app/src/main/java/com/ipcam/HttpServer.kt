@@ -39,7 +39,6 @@ class HttpServer(
     
     companion object {
         private const val TAG = "HttpServer"
-        private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
         private const val JPEG_QUALITY_STREAM = 75
     }
     
@@ -105,6 +104,15 @@ class HttpServer(
                 get("/setCameraOrientation") { serveSetCameraOrientation() }
                 get("/setRotation") { serveSetRotation() }
                 get("/setResolutionOverlay") { serveSetResolutionOverlay() }
+                
+                // OSD overlay endpoints
+                get("/setDateTimeOverlay") { serveSetDateTimeOverlay() }
+                get("/setBatteryOverlay") { serveSetBatteryOverlay() }
+                get("/setFpsOverlay") { serveSetFpsOverlay() }
+                
+                // FPS control endpoints
+                get("/setMjpegFps") { serveSetMjpegFps() }
+                get("/setRtspFps") { serveSetRtspFps() }
                 
                 // Server configuration
                 get("/setMaxConnections") { serveSetMaxConnections() }
@@ -1132,7 +1140,10 @@ class HttpServer(
                         }
                     }
                     
-                    delay(STREAM_FRAME_DELAY_MS)
+                    // Use dynamic frame delay based on target MJPEG FPS
+                    val targetFps = cameraService.getTargetMjpegFps()
+                    val frameDelayMs = 1000L / targetFps
+                    delay(frameDelayMs)
                 }
             } finally {
                 cameraService.removeClient(clientId)
@@ -1455,6 +1466,133 @@ class HttpServer(
         cameraService.setShowResolutionOverlay(showOverlay)
         call.respondText(
             """{"status":"ok","message":"Resolution overlay ${if (showOverlay) "enabled" else "disabled"}","showResolutionOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetDateTimeOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowDateTimeOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"Date/time overlay ${if (showOverlay) "enabled" else "disabled"}","showDateTimeOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetBatteryOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowBatteryOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"Battery overlay ${if (showOverlay) "enabled" else "disabled"}","showBatteryOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetFpsOverlay() {
+        val value = call.parameters["value"]?.lowercase(Locale.getDefault())
+        
+        val showOverlay = when (value) {
+            "true", "1", "yes" -> true
+            "false", "0", "no", null -> false
+            else -> {
+                call.respondText(
+                    """{"status":"error","message":"Invalid value. Use true or false"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+                return
+            }
+        }
+        
+        cameraService.setShowFpsOverlay(showOverlay)
+        call.respondText(
+            """{"status":"ok","message":"FPS overlay ${if (showOverlay) "enabled" else "disabled"}","showFpsOverlay":$showOverlay}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetMjpegFps() {
+        val valueStr = call.parameters["value"]
+        
+        if (valueStr == null) {
+            call.respondText(
+                """{"status":"error","message":"Missing value parameter. Use ?value=N where N is FPS (1-60)"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val fps = valueStr.toIntOrNull()
+        if (fps == null || fps < 1 || fps > 60) {
+            call.respondText(
+                """{"status":"error","message":"FPS must be between 1 and 60"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        cameraService.setTargetMjpegFps(fps)
+        call.respondText(
+            """{"status":"ok","message":"MJPEG target FPS set to $fps","targetMjpegFps":$fps}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRtspFps() {
+        val valueStr = call.parameters["value"]
+        
+        if (valueStr == null) {
+            call.respondText(
+                """{"status":"error","message":"Missing value parameter. Use ?value=N where N is FPS (1-60)"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val fps = valueStr.toIntOrNull()
+        if (fps == null || fps < 1 || fps > 60) {
+            call.respondText(
+                """{"status":"error","message":"FPS must be between 1 and 60"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        cameraService.setTargetRtspFps(fps)
+        call.respondText(
+            """{"status":"ok","message":"RTSP target FPS set to $fps. RTSP server must be restarted for changes to take effect.","targetRtspFps":$fps,"requiresRtspRestart":true}""",
             ContentType.Application.Json
         )
     }

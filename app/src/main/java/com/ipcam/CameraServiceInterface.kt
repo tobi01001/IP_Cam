@@ -32,6 +32,19 @@ interface CameraServiceInterface {
     fun setRotation(rotation: Int)
     fun setShowResolutionOverlay(show: Boolean)
     
+    // OSD overlay settings
+    fun setShowDateTimeOverlay(show: Boolean)
+    fun getShowDateTimeOverlay(): Boolean
+    fun setShowBatteryOverlay(show: Boolean)
+    fun getShowBatteryOverlay(): Boolean
+    fun setShowFpsOverlay(show: Boolean)
+    fun getShowFpsOverlay(): Boolean
+    fun getCurrentFps(): Float
+    fun setTargetMjpegFps(fps: Int)
+    fun getTargetMjpegFps(): Int
+    fun setTargetRtspFps(fps: Int)
+    fun getTargetRtspFps(): Int
+    
     // Server operations
     fun getServerUrl(): String
     fun getActiveConnectionsCount(): Int
