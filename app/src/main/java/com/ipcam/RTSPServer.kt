@@ -39,7 +39,7 @@ class RTSPServer(
     private var width: Int = 1920,
     private var height: Int = 1080,
     private val fps: Int = 30,
-    private var bitrate: Int = calculateBitrate(width, height) // Dynamic based on resolution
+    initialBitrate: Int = calculateBitrate(width, height) // Dynamic based on resolution
 ) {
     private var serverSocket: ServerSocket? = null
     private var encoder: MediaCodec? = null
@@ -59,6 +59,11 @@ class RTSPServer(
     @Volatile private var pps: ByteArray? = null
     @Volatile private var encoderColorFormat: Int = -1
     @Volatile private var encoderColorFormatName: String = "unknown"
+    
+    // Encoder configuration (mutable for runtime changes)
+    @Volatile private var bitrate: Int = initialBitrate
+    @Volatile private var bitrateMode: Int = MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+    @Volatile private var bitrateModeName: String = "VBR"
     
     // Frame timing control
     @Volatile private var lastFrameTimeNs: Long = 0
@@ -436,16 +441,13 @@ class RTSPServer(
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // I-frame every 2 seconds
-            format.setInteger(
-                MediaFormat.KEY_BITRATE_MODE,
-                MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-            )
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
             
             // Set baseline profile for maximum compatibility
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
             
-            Log.i(TAG, "Encoder configuration: ${width}x${height} @ ${fps}fps, bitrate=${bitrate}, format=$encoderColorFormatName")
+            Log.i(TAG, "Encoder configuration: ${width}x${height} @ ${fps}fps, bitrate=${bitrate} bps (${bitrate / 1_000_000} Mbps), mode=$bitrateModeName, format=$encoderColorFormatName")
             Log.d(TAG, "Full MediaFormat: $format")
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder?.start()
@@ -1422,6 +1424,7 @@ class RTSPServer(
             colorFormatHex = if (encoderColorFormat != -1) "0x${Integer.toHexString(encoderColorFormat)}" else "unknown",
             resolution = "${width}x${height}",
             bitrateMbps = bitrate / 1_000_000f,
+            bitrateMode = bitrateModeName,
             activeSessions = sessions.size,
             playingSessions = sessions.values.count { it.state == SessionState.PLAYING },
             framesEncoded = frameCount.get(),
@@ -1432,6 +1435,52 @@ class RTSPServer(
         )
     }
     
+    /**
+     * Set bitrate at runtime (requires encoder recreation)
+     */
+    fun setBitrate(newBitrate: Int): Boolean {
+        if (newBitrate <= 0) {
+            Log.e(TAG, "Invalid bitrate: $newBitrate")
+            return false
+        }
+        
+        Log.i(TAG, "Changing bitrate from $bitrate to $newBitrate bps")
+        bitrate = newBitrate
+        
+        // Recreate encoder if it's already running
+        if (encoder != null && isEncoding.get()) {
+            return recreateEncoder(width, height)
+        }
+        
+        return true
+    }
+    
+    /**
+     * Set bitrate mode at runtime (VBR/CBR/CQ)
+     */
+    fun setBitrateMode(mode: String): Boolean {
+        val newMode = when (mode.uppercase()) {
+            "VBR" -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+            "CBR" -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR
+            "CQ" -> MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ
+            else -> {
+                Log.e(TAG, "Invalid bitrate mode: $mode")
+                return false
+            }
+        }
+        
+        Log.i(TAG, "Changing bitrate mode from $bitrateModeName to $mode")
+        bitrateMode = newMode
+        bitrateModeName = mode.uppercase()
+        
+        // Recreate encoder if it's already running
+        if (encoder != null && isEncoding.get()) {
+            return recreateEncoder(width, height)
+        }
+        
+        return true
+    }
+    
     data class ServerMetrics(
         val encoderName: String,
         val isHardware: Boolean,
@@ -1439,6 +1488,7 @@ class RTSPServer(
         val colorFormatHex: String,
         val resolution: String,
         val bitrateMbps: Float,
+        val bitrateMode: String,
         val activeSessions: Int,
         val playingSessions: Int,
         val framesEncoded: Long,

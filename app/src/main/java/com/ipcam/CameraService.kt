@@ -1699,7 +1699,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 width = resolution.width,
                 height = resolution.height,
                 fps = 30,
-                bitrate = 2_000_000 // 2 Mbps
+                initialBitrate = RTSPServer.calculateBitrate(resolution.width, resolution.height)
             )
             
             if (rtspServer?.start() != true) {
@@ -1763,6 +1763,30 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun getRTSPUrl(): String {
         val ipAddress = getServerUrl().substringAfter("http://").substringBefore(":")
         return "rtsp://$ipAddress:8554/stream"
+    }
+    
+    /**
+     * Set RTSP bitrate
+     */
+    override fun setRTSPBitrate(bitrate: Int): Boolean {
+        if (!rtspEnabled || rtspServer == null) {
+            Log.w(TAG, "Cannot set RTSP bitrate: RTSP not enabled")
+            return false
+        }
+        
+        return rtspServer?.setBitrate(bitrate) ?: false
+    }
+    
+    /**
+     * Set RTSP bitrate mode (VBR/CBR/CQ)
+     */
+    override fun setRTSPBitrateMode(mode: String): Boolean {
+        if (!rtspEnabled || rtspServer == null) {
+            Log.w(TAG, "Cannot set RTSP bitrate mode: RTSP not enabled")
+            return false
+        }
+        
+        return rtspServer?.setBitrateMode(mode) ?: false
     }
     
     // ==================== End RTSP Streaming Control ====================
