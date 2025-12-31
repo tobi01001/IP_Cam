@@ -1035,9 +1035,8 @@ class RTSPServer(
             val uvHeight = height / 2
             val uvWidth = width / 2
             
-            if (uvDataBuffer == null) {
-                uvDataBuffer = ByteArray(uvWidth * uvHeight * 2)
-            }
+            // Allocate local UV buffer to avoid race conditions with encoder recreation
+            val localUvBuffer = ByteArray(uvWidth * uvHeight * 2)
             if (uvRowBuffer == null || uvRowBuffer!!.size < uvRowStride) {
                 uvRowBuffer = ByteArray(uvRowStride)
             }
@@ -1049,20 +1048,20 @@ class RTSPServer(
             when (encoderColorFormat) {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> {
                     // NV12: Y plane + interleaved UV (UVUVUV...)
-                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride, localUvBuffer)
                 }
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> {
                     // NV21: Y plane + interleaved VU (VUVUVU...)
-                    convertToNV21(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                    convertToNV21(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride, localUvBuffer)
                 }
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> {
                     // I420: Y plane + U plane + V plane
-                    convertToI420(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                    convertToI420(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride, localUvBuffer)
                 }
                 else -> {
                     // COLOR_FormatYUV420Flexible or unknown - try NV12 as most common
                     Log.w(TAG, "Unknown color format, assuming NV12")
-                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride, localUvBuffer)
                 }
             }
             
@@ -1088,7 +1087,8 @@ class RTSPServer(
         uvWidth: Int,
         uvHeight: Int,
         uvRowStride: Int,
-        uvPixelStride: Int
+        uvPixelStride: Int,
+        uvBuffer: ByteArray
     ) {
         var uvDestOffset = 0
         
@@ -1103,8 +1103,8 @@ class RTSPServer(
         if (uvPixelStride == 2 && uvRowStride == uvWidth && uBuffer.remaining() >= uvWidth * uvHeight * 2) {
             // U buffer contains interleaved UV data in NV12 format - fast path
             val uvSize = uvWidth * uvHeight * 2
-            uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
-            buffer.put(uvDataBuffer!!, 0, uvSize)
+            uBuffer.get(uvBuffer, 0, minOf(uvSize, uBuffer.remaining()))
+            buffer.put(uvBuffer, 0, uvSize)
         } else {
             // Manual interleaving required
             for (row in 0 until uvHeight) {
@@ -1115,21 +1115,21 @@ class RTSPServer(
                     // Write U sample
                     val uPos = col * uvPixelStride
                     if (uBuffer.position() + uPos < uBuffer.limit()) {
-                        uvDataBuffer!![uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                        uvBuffer[uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
                     } else {
-                        uvDataBuffer!![uvDestOffset++] = 128.toByte() // Neutral chroma
+                        uvBuffer[uvDestOffset++] = 128.toByte() // Neutral chroma
                     }
                     
                     // Write V sample
                     val vPos = col * uvPixelStride
                     if (vBuffer.position() + vPos < vBuffer.limit()) {
-                        uvDataBuffer!![uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                        uvBuffer[uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
                     } else {
-                        uvDataBuffer!![uvDestOffset++] = 128.toByte() // Neutral chroma
+                        uvBuffer[uvDestOffset++] = 128.toByte() // Neutral chroma
                     }
                 }
             }
-            buffer.put(uvDataBuffer!!, 0, uvDestOffset)
+            buffer.put(uvBuffer, 0, uvDestOffset)
         }
     }
     
@@ -1143,7 +1143,8 @@ class RTSPServer(
         uvWidth: Int,
         uvHeight: Int,
         uvRowStride: Int,
-        uvPixelStride: Int
+        uvPixelStride: Int,
+        uvBuffer: ByteArray
     ) {
         var uvDestOffset = 0
         
@@ -1156,21 +1157,21 @@ class RTSPServer(
                 // Write V sample first (NV21)
                 val vPos = col * uvPixelStride
                 if (vBuffer.position() + vPos < vBuffer.limit()) {
-                    uvDataBuffer!![uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                    uvBuffer[uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
                 } else {
-                    uvDataBuffer!![uvDestOffset++] = 128.toByte()
+                    uvBuffer[uvDestOffset++] = 128.toByte()
                 }
                 
                 // Write U sample second
                 val uPos = col * uvPixelStride
                 if (uBuffer.position() + uPos < uBuffer.limit()) {
-                    uvDataBuffer!![uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                    uvBuffer[uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
                 } else {
-                    uvDataBuffer!![uvDestOffset++] = 128.toByte()
+                    uvBuffer[uvDestOffset++] = 128.toByte()
                 }
             }
         }
-        buffer.put(uvDataBuffer!!, 0, uvDestOffset)
+        buffer.put(uvBuffer, 0, uvDestOffset)
     }
     
     /**
@@ -1183,7 +1184,8 @@ class RTSPServer(
         uvWidth: Int,
         uvHeight: Int,
         uvRowStride: Int,
-        uvPixelStride: Int
+        uvPixelStride: Int,
+        uvBuffer: ByteArray
     ) {
         // I420: separate U and V planes
         var destOffset = 0
@@ -1194,9 +1196,9 @@ class RTSPServer(
             for (col in 0 until uvWidth) {
                 val uPos = col * uvPixelStride
                 if (uBuffer.position() + uPos < uBuffer.limit()) {
-                    uvDataBuffer!![destOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                    uvBuffer[destOffset++] = uBuffer.get(uBuffer.position() + uPos)
                 } else {
-                    uvDataBuffer!![destOffset++] = 128.toByte()
+                    uvBuffer[destOffset++] = 128.toByte()
                 }
             }
         }
@@ -1207,14 +1209,14 @@ class RTSPServer(
             for (col in 0 until uvWidth) {
                 val vPos = col * uvPixelStride
                 if (vBuffer.position() + vPos < vBuffer.limit()) {
-                    uvDataBuffer!![destOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                    uvBuffer[destOffset++] = vBuffer.get(vBuffer.position() + vPos)
                 } else {
-                    uvDataBuffer!![destOffset++] = 128.toByte()
+                    uvBuffer[destOffset++] = 128.toByte()
                 }
             }
         }
         
-        buffer.put(uvDataBuffer!!, 0, destOffset)
+        buffer.put(uvBuffer, 0, destOffset)
     }
     
     /**
