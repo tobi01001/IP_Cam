@@ -56,6 +56,8 @@ class RTSPServer(
     @Volatile private var lastError: String? = null
     @Volatile private var sps: ByteArray? = null
     @Volatile private var pps: ByteArray? = null
+    @Volatile private var encoderColorFormat: Int = -1
+    @Volatile private var encoderColorFormatName: String = "unknown"
     
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
@@ -315,6 +317,10 @@ class RTSPServer(
                 return false
             }
             
+            encoderColorFormat = colorFormat
+            encoderColorFormatName = getColorFormatName(colorFormat)
+            Log.i(TAG, "Using color format: $encoderColorFormatName (0x${Integer.toHexString(colorFormat)})")
+            
             val format = MediaFormat.createVideoFormat(
                 MediaFormat.MIMETYPE_VIDEO_AVC,
                 width,
@@ -330,7 +336,12 @@ class RTSPServer(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
             )
             
-            Log.d(TAG, "Configuring encoder with format: $format")
+            // Set baseline profile for maximum compatibility
+            format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+            format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            
+            Log.i(TAG, "Encoder configuration: ${width}x${height} @ ${fps}fps, bitrate=${bitrate}, format=$encoderColorFormatName")
+            Log.d(TAG, "Full MediaFormat: $format")
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder?.start()
             Log.i(TAG, "Encoder started successfully: $encoderName (hardware: $isHardwareEncoder)")
@@ -405,17 +416,33 @@ class RTSPServer(
                 val capabilities = codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
                 val colorFormats = capabilities.colorFormats
                 
+                Log.d(TAG, "Available color formats for $encoderName:")
+                colorFormats.forEach { format ->
+                    Log.d(TAG, "  - ${getColorFormatName(format)} (0x${Integer.toHexString(format)})")
+                }
+                
+                // Prefer NV12 (YUV420 semi-planar) as it's most common and efficient
+                for (format in colorFormats) {
+                    if (format == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                        Log.i(TAG, "Selected preferred format: COLOR_FormatYUV420SemiPlanar (NV12)")
+                        return format
+                    }
+                }
+                
+                // Try other supported formats
                 for (format in colorFormats) {
                     when (format) {
-                        MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar,
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
                         MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> {
+                            Log.i(TAG, "Selected format: ${getColorFormatName(format)}")
                             return format
                         }
                     }
                 }
                 
+                // Fallback to first available format
                 if (colorFormats.isNotEmpty()) {
+                    Log.w(TAG, "Using fallback format: ${getColorFormatName(colorFormats[0])}")
                     return colorFormats[0]
                 }
             }
@@ -423,6 +450,21 @@ class RTSPServer(
             Log.e(TAG, "Error getting color format", e)
         }
         return -1
+    }
+    
+    /**
+     * Get human-readable name for color format
+     */
+    private fun getColorFormatName(format: Int): String {
+        return when (format) {
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> "COLOR_FormatYUV420Flexible"
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> "COLOR_FormatYUV420Planar (I420)"
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> "COLOR_FormatYUV420SemiPlanar (NV12)"
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedPlanar -> "COLOR_FormatYUV420PackedPlanar"
+            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> "COLOR_FormatYUV420PackedSemiPlanar (NV21)"
+            0x7F420888 -> "COLOR_FormatYUV420Flexible (Android)"
+            else -> "Unknown (0x${Integer.toHexString(format)})"
+        }
     }
     
     /**
@@ -791,6 +833,7 @@ class RTSPServer(
     
     /**
      * Fill input buffer with YUV data
+     * Converts YUV_420_888 from camera to encoder's expected format (NV12/I420)
      */
     private fun fillInputBuffer(buffer: ByteBuffer, image: ImageProxy) {
         try {
@@ -816,6 +859,15 @@ class RTSPServer(
             val uvRowStride = uPlane.rowStride
             val uvPixelStride = uPlane.pixelStride
             
+            // Log format details on first frame
+            if (frameCount.get() == 0L) {
+                Log.i(TAG, "YUV_420_888 format details:")
+                Log.i(TAG, "  Y: ${width}x${height}, rowStride=$yRowStride, pixelStride=$yPixelStride")
+                Log.i(TAG, "  U: ${width/2}x${height/2}, rowStride=$uvRowStride, pixelStride=$uvPixelStride")
+                Log.i(TAG, "  V: ${width/2}x${height/2}, rowStride=$uvRowStride, pixelStride=$uvPixelStride")
+                Log.i(TAG, "  Encoder expects: $encoderColorFormatName")
+            }
+            
             // Initialize reusable buffers
             if (yDataBuffer == null) {
                 yDataBuffer = ByteArray(width * height)
@@ -824,31 +876,41 @@ class RTSPServer(
                 yRowBuffer = ByteArray(yRowStride)
             }
             
-            // Copy Y plane
+            // === Copy Y plane ===
             yBuffer.rewind()
             if (yRowStride == width && yPixelStride == 1) {
+                // Contiguous Y plane - fast path
                 val ySize = width * height
                 yBuffer.get(yDataBuffer!!, 0, ySize)
                 buffer.put(yDataBuffer!!, 0, ySize)
             } else {
+                // Non-contiguous Y plane - copy row by row
                 var destOffset = 0
                 for (row in 0 until height) {
                     yBuffer.position(row * yRowStride)
                     val bytesToRead = minOf(yRowStride, yBuffer.remaining())
                     yBuffer.get(yRowBuffer!!, 0, bytesToRead)
-                    System.arraycopy(yRowBuffer!!, 0, yDataBuffer!!, destOffset, width)
+                    
+                    if (yPixelStride == 1) {
+                        // Packed pixels - simple copy
+                        System.arraycopy(yRowBuffer!!, 0, yDataBuffer!!, destOffset, width)
+                    } else {
+                        // Sparse pixels - extract every nth pixel
+                        for (col in 0 until width) {
+                            yDataBuffer!![destOffset + col] = yRowBuffer!![col * yPixelStride]
+                        }
+                    }
                     destOffset += width
                 }
                 buffer.put(yDataBuffer!!, 0, width * height)
             }
             
-            // Copy UV planes interleaved
+            // === Copy UV planes ===
             val uvHeight = height / 2
             val uvWidth = width / 2
-            val uvSize = uvWidth * uvHeight * 2
             
             if (uvDataBuffer == null) {
-                uvDataBuffer = ByteArray(uvSize)
+                uvDataBuffer = ByteArray(uvWidth * uvHeight * 2)
             }
             if (uvRowBuffer == null || uvRowBuffer!!.size < uvRowStride) {
                 uvRowBuffer = ByteArray(uvRowStride)
@@ -857,44 +919,168 @@ class RTSPServer(
             uBuffer.rewind()
             vBuffer.rewind()
             
-            if (uvPixelStride == 2 && uvRowStride == width) {
-                uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
-                buffer.put(uvDataBuffer!!, 0, uvSize)
-            } else {
-                var uvDestOffset = 0
-                for (row in 0 until uvHeight) {
-                    uBuffer.position(row * uvRowStride)
-                    vBuffer.position(row * uvRowStride)
-                    
-                    if (uBuffer.remaining() > 0 && vBuffer.remaining() > 0) {
-                        val bytesToRead = minOf(uvRowStride, uBuffer.remaining())
-                        uBuffer.get(uvRowBuffer!!, 0, bytesToRead)
-                        vBuffer.position(row * uvRowStride)
-                        
-                        for (col in 0 until uvWidth) {
-                            val uIndex = col * uvPixelStride
-                            val vIndex = col * uvPixelStride
-                            
-                            if (uIndex < uvRowBuffer!!.size && uvDestOffset < uvDataBuffer!!.size) {
-                                uvDataBuffer!![uvDestOffset++] = uvRowBuffer!![uIndex]
-                            }
-                            
-                            vBuffer.position(row * uvRowStride + vIndex)
-                            if (vBuffer.hasRemaining() && uvDestOffset < uvDataBuffer!!.size) {
-                                uvDataBuffer!![uvDestOffset++] = vBuffer.get()
-                            }
-                        }
-                    }
+            // Convert based on encoder's expected format
+            when (encoderColorFormat) {
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar -> {
+                    // NV12: Y plane + interleaved UV (UVUVUV...)
+                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
                 }
-                buffer.put(uvDataBuffer!!, 0, minOf(uvDestOffset, uvSize))
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420PackedSemiPlanar -> {
+                    // NV21: Y plane + interleaved VU (VUVUVU...)
+                    convertToNV21(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                }
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar -> {
+                    // I420: Y plane + U plane + V plane
+                    convertToI420(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                }
+                else -> {
+                    // COLOR_FormatYUV420Flexible or unknown - try NV12 as most common
+                    Log.w(TAG, "Unknown color format, assuming NV12")
+                    convertToNV12(buffer, uBuffer, vBuffer, uvWidth, uvHeight, uvRowStride, uvPixelStride)
+                }
             }
             
             buffer.flip()
+            
+            if (frameCount.get() == 0L) {
+                Log.i(TAG, "Filled input buffer: ${buffer.remaining()} bytes")
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Error filling input buffer", e)
             lastError = "Buffer fill failed: ${e.message}"
         }
+    }
+    
+    /**
+     * Convert YUV_420_888 UV planes to NV12 format (interleaved UVUV)
+     */
+    private fun convertToNV12(
+        buffer: ByteBuffer,
+        uBuffer: ByteBuffer,
+        vBuffer: ByteBuffer,
+        uvWidth: Int,
+        uvHeight: Int,
+        uvRowStride: Int,
+        uvPixelStride: Int
+    ) {
+        var uvDestOffset = 0
+        
+        if (uvPixelStride == 2 && uvRowStride == width) {
+            // Already in NV12 format - fast path
+            val uvSize = uvWidth * uvHeight * 2
+            uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
+            buffer.put(uvDataBuffer!!, 0, uvSize)
+        } else {
+            // Convert to NV12 - interleave U and V
+            for (row in 0 until uvHeight) {
+                uBuffer.position(row * uvRowStride)
+                vBuffer.position(row * uvRowStride)
+                
+                for (col in 0 until uvWidth) {
+                    // Write U sample
+                    val uPos = col * uvPixelStride
+                    if (uBuffer.position() + uPos < uBuffer.limit()) {
+                        uvDataBuffer!![uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                    } else {
+                        uvDataBuffer!![uvDestOffset++] = 128.toByte() // Neutral chroma
+                    }
+                    
+                    // Write V sample
+                    val vPos = col * uvPixelStride
+                    if (vBuffer.position() + vPos < vBuffer.limit()) {
+                        uvDataBuffer!![uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                    } else {
+                        uvDataBuffer!![uvDestOffset++] = 128.toByte() // Neutral chroma
+                    }
+                }
+            }
+            buffer.put(uvDataBuffer!!, 0, uvDestOffset)
+        }
+    }
+    
+    /**
+     * Convert YUV_420_888 UV planes to NV21 format (interleaved VUVU)
+     */
+    private fun convertToNV21(
+        buffer: ByteBuffer,
+        uBuffer: ByteBuffer,
+        vBuffer: ByteBuffer,
+        uvWidth: Int,
+        uvHeight: Int,
+        uvRowStride: Int,
+        uvPixelStride: Int
+    ) {
+        var uvDestOffset = 0
+        
+        // Convert to NV21 - interleave V and U (reverse of NV12)
+        for (row in 0 until uvHeight) {
+            uBuffer.position(row * uvRowStride)
+            vBuffer.position(row * uvRowStride)
+            
+            for (col in 0 until uvWidth) {
+                // Write V sample first (NV21)
+                val vPos = col * uvPixelStride
+                if (vBuffer.position() + vPos < vBuffer.limit()) {
+                    uvDataBuffer!![uvDestOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                } else {
+                    uvDataBuffer!![uvDestOffset++] = 128.toByte()
+                }
+                
+                // Write U sample second
+                val uPos = col * uvPixelStride
+                if (uBuffer.position() + uPos < uBuffer.limit()) {
+                    uvDataBuffer!![uvDestOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                } else {
+                    uvDataBuffer!![uvDestOffset++] = 128.toByte()
+                }
+            }
+        }
+        buffer.put(uvDataBuffer!!, 0, uvDestOffset)
+    }
+    
+    /**
+     * Convert YUV_420_888 UV planes to I420 format (planar U then V)
+     */
+    private fun convertToI420(
+        buffer: ByteBuffer,
+        uBuffer: ByteBuffer,
+        vBuffer: ByteBuffer,
+        uvWidth: Int,
+        uvHeight: Int,
+        uvRowStride: Int,
+        uvPixelStride: Int
+    ) {
+        // I420: separate U and V planes
+        var destOffset = 0
+        
+        // Copy U plane
+        for (row in 0 until uvHeight) {
+            uBuffer.position(row * uvRowStride)
+            for (col in 0 until uvWidth) {
+                val uPos = col * uvPixelStride
+                if (uBuffer.position() + uPos < uBuffer.limit()) {
+                    uvDataBuffer!![destOffset++] = uBuffer.get(uBuffer.position() + uPos)
+                } else {
+                    uvDataBuffer!![destOffset++] = 128.toByte()
+                }
+            }
+        }
+        
+        // Copy V plane
+        for (row in 0 until uvHeight) {
+            vBuffer.position(row * uvRowStride)
+            for (col in 0 until uvWidth) {
+                val vPos = col * uvPixelStride
+                if (vBuffer.position() + vPos < vBuffer.limit()) {
+                    uvDataBuffer!![destOffset++] = vBuffer.get(vBuffer.position() + vPos)
+                } else {
+                    uvDataBuffer!![destOffset++] = 128.toByte()
+                }
+            }
+        }
+        
+        buffer.put(uvDataBuffer!!, 0, destOffset)
     }
     
     /**
@@ -1086,6 +1272,8 @@ class RTSPServer(
         return ServerMetrics(
             encoderName = encoderName,
             isHardware = isHardwareEncoder,
+            colorFormat = encoderColorFormatName,
+            colorFormatHex = if (encoderColorFormat != -1) "0x${Integer.toHexString(encoderColorFormat)}" else "unknown",
             activeSessions = sessions.size,
             playingSessions = sessions.values.count { it.state == SessionState.PLAYING },
             framesEncoded = frameCount.get(),
@@ -1096,6 +1284,8 @@ class RTSPServer(
     data class ServerMetrics(
         val encoderName: String,
         val isHardware: Boolean,
+        val colorFormat: String,
+        val colorFormatHex: String,
         val activeSessions: Int,
         val playingSessions: Int,
         val framesEncoded: Long,

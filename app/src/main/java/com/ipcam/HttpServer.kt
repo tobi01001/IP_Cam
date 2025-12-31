@@ -931,6 +931,7 @@ class HttpServer(
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: green;">✓ RTSP Enabled</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port + '<br>' +
                                         'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
@@ -973,6 +974,7 @@ class HttpServer(
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: green;">✓ RTSP Active</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
+                                        'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
                                         'Frames Encoded: ' + data.framesEncoded + '<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
@@ -1463,9 +1465,11 @@ class HttpServer(
             val metrics = cameraService.getRTSPMetrics()
             val rtspUrl = cameraService.getRTSPUrl()
             val encoderName = metrics?.encoderName?.replace("\"", "\\\"")?.replace("\n", "\\n") ?: "unknown"
+            val colorFormat = metrics?.colorFormat?.replace("\"", "\\\"") ?: "unknown"
+            val colorFormatHex = metrics?.colorFormatHex ?: "unknown"
             
             call.respondText(
-                """{"status":"ok","message":"RTSP streaming enabled","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","message":"RTSP streaming enabled","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics?.isHardware ?: false},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
@@ -1498,8 +1502,10 @@ class HttpServer(
         
         if (rtspEnabled && metrics != null) {
             val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
+            val colorFormat = metrics.colorFormat.replace("\"", "\\\"")
+            val colorFormatHex = metrics.colorFormatHex
             call.respondText(
-                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
