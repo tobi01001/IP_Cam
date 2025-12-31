@@ -1013,7 +1013,8 @@ class RTSPServer(
         
         // Check if U buffer already contains properly interleaved NV12 data
         // This happens when the camera outputs NV12 directly
-        if (uvPixelStride == 2 && uvRowStride == width && uBuffer.remaining() >= uvWidth * uvHeight * 2) {
+        // UV planes are half the resolution of Y plane, so rowStride should be width/2 for packed UV
+        if (uvPixelStride == 2 && uvRowStride == uvWidth && uBuffer.remaining() >= uvWidth * uvHeight * 2) {
             // U buffer contains interleaved UV data in NV12 format - fast path
             val uvSize = uvWidth * uvHeight * 2
             uBuffer.get(uvDataBuffer!!, 0, minOf(uvSize, uBuffer.remaining()))
@@ -1316,8 +1317,10 @@ class RTSPServer(
      * Get server metrics
      */
     fun getMetrics(): ServerMetrics {
-        // Calculate actual FPS based on time elapsed
-        val actualFps = if (streamStartTimeMs > 0 && frameCount.get() > 0) {
+        // Calculate encoded FPS (successful encodes) based on time elapsed
+        // Note: This shows encoding rate, not input frame rate
+        // Input frame rate would be higher when including dropped frames
+        val encodedFps = if (streamStartTimeMs > 0 && frameCount.get() > 0) {
             val elapsedSec = (System.currentTimeMillis() - streamStartTimeMs) / 1000.0
             if (elapsedSec > 0) {
                 (frameCount.get() / elapsedSec).toFloat()
@@ -1338,7 +1341,7 @@ class RTSPServer(
             framesEncoded = frameCount.get(),
             droppedFrames = droppedFrameCount.get(),
             targetFps = fps,
-            actualFps = actualFps,
+            encodedFps = encodedFps, // Rate of successful encodes (excludes drops)
             lastError = lastError
         )
     }
@@ -1353,7 +1356,7 @@ class RTSPServer(
         val framesEncoded: Long,
         val droppedFrames: Long,
         val targetFps: Int,
-        val actualFps: Float,
+        val encodedFps: Float, // Actual encoding rate (successful frames/sec)
         val lastError: String?
     )
 }

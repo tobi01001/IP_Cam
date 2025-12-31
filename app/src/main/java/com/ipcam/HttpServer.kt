@@ -971,13 +971,16 @@ class HttpServer(
                             .then(response => response.json())
                             .then(data => {
                                 if (data.rtspEnabled) {
-                                    const actualFps = data.actualFps > 0 ? data.actualFps.toFixed(1) : '0.0';
+                                    const encodedFps = data.encodedFps > 0 ? data.encodedFps.toFixed(1) : '0.0';
+                                    const dropRate = data.framesEncoded > 0 
+                                        ? (data.droppedFrames / (data.framesEncoded + data.droppedFrames) * 100).toFixed(1)
+                                        : '0.0';
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: green;">✓ RTSP Active</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
                                         'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
-                                        'Frame Rate: ' + actualFps + ' fps (target: ' + data.targetFps + ' fps)<br>' +
-                                        'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped<br>' +
+                                        'Encoding Rate: ' + encodedFps + ' fps (target: ' + data.targetFps + ' fps)<br>' +
+                                        'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped (' + dropRate + '%)<br>' +
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port;
@@ -1507,7 +1510,7 @@ class HttpServer(
             val colorFormat = metrics.colorFormat.replace("\"", "\\\"")
             val colorFormatHex = metrics.colorFormatHex
             call.respondText(
-                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"actualFps":${metrics.actualFps},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
