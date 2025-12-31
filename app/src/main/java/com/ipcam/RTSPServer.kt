@@ -39,7 +39,7 @@ class RTSPServer(
     private var width: Int = 1920,
     private var height: Int = 1080,
     private val fps: Int = 30,
-    private val bitrate: Int = 2_000_000 // 2 Mbps
+    private var bitrate: Int = calculateBitrate(width, height) // Dynamic based on resolution
 ) {
     private var serverSocket: ServerSocket? = null
     private var encoder: MediaCodec? = null
@@ -79,6 +79,28 @@ class RTSPServer(
         private const val TIMEOUT_US = 10_000L
         private const val RTP_VERSION = 2
         private const val RTP_PT_H264 = 96 // Dynamic payload type for H.264
+        
+        /**
+         * Calculate appropriate bitrate based on resolution
+         * Uses industry-standard bitrate guidelines for H.264 streaming
+         */
+        fun calculateBitrate(width: Int, height: Int): Int {
+            val pixels = width * height
+            return when {
+                // 4K: 2160p (3840x2160)
+                pixels >= 3840 * 2160 -> 12_000_000  // 12 Mbps
+                // 1440p (2560x1440)
+                pixels >= 2560 * 1440 -> 8_000_000   // 8 Mbps
+                // 1080p (1920x1080)
+                pixels >= 1920 * 1080 -> 5_000_000   // 5 Mbps
+                // 720p (1280x720)
+                pixels >= 1280 * 720 -> 3_000_000    // 3 Mbps
+                // 480p (854x480 or 640x480)
+                pixels >= 640 * 480 -> 1_500_000     // 1.5 Mbps
+                // Lower resolutions
+                else -> 1_000_000                     // 1 Mbps
+            }
+        }
         
         /**
          * Check if hardware H.264 encoder is available
@@ -451,6 +473,10 @@ class RTSPServer(
         // Update dimensions
         width = newWidth
         height = newHeight
+        
+        // Recalculate bitrate for new resolution
+        bitrate = calculateBitrate(width, height)
+        Log.i(TAG, "Adjusted bitrate for ${width}x${height}: $bitrate bps (${bitrate / 1_000_000} Mbps)")
         
         // Recreate buffers
         yDataBuffer = null
@@ -1412,6 +1438,8 @@ class RTSPServer(
             isHardware = isHardwareEncoder,
             colorFormat = encoderColorFormatName,
             colorFormatHex = if (encoderColorFormat != -1) "0x${Integer.toHexString(encoderColorFormat)}" else "unknown",
+            resolution = "${width}x${height}",
+            bitrateMbps = bitrate / 1_000_000f,
             activeSessions = sessions.size,
             playingSessions = sessions.values.count { it.state == SessionState.PLAYING },
             framesEncoded = frameCount.get(),
@@ -1427,6 +1455,8 @@ class RTSPServer(
         val isHardware: Boolean,
         val colorFormat: String,
         val colorFormatHex: String,
+        val resolution: String,
+        val bitrateMbps: Float,
         val activeSessions: Int,
         val playingSessions: Int,
         val framesEncoded: Long,

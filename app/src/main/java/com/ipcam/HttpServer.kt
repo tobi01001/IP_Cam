@@ -975,12 +975,15 @@ class HttpServer(
                                     const dropRate = data.framesEncoded > 0 
                                         ? (data.droppedFrames / (data.framesEncoded + data.droppedFrames) * 100).toFixed(1)
                                         : '0.0';
+                                    const bandwidthMbps = (data.bitrateMbps * encodedFps / data.targetFps).toFixed(2);
                                     document.getElementById('rtspStatus').innerHTML = 
                                         '<strong style="color: green;">✓ RTSP Active</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
                                         'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
+                                        'Resolution: ' + data.resolution + ' @ ' + data.bitrateMbps.toFixed(1) + ' Mbps<br>' +
                                         'Encoding Rate: ' + encodedFps + ' fps (target: ' + data.targetFps + ' fps)<br>' +
                                         'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped (' + dropRate + '%)<br>' +
+                                        'Bandwidth: ~' + bandwidthMbps + ' Mbps (actual)<br>' +
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port;
@@ -1509,8 +1512,10 @@ class HttpServer(
             val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
             val colorFormat = metrics.colorFormat.replace("\"", "\\\"")
             val colorFormatHex = metrics.colorFormatHex
+            val resolution = metrics.resolution
+            val bitrateMbps = metrics.bitrateMbps
             call.respondText(
-                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
