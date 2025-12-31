@@ -71,9 +71,6 @@ class RTSPServer(
     private val logThrottleMs = 5000L // Log at most every 5 seconds
     @Volatile private var streamStartTimeMs: Long = 0
     
-    // Synchronization lock for encoder lifecycle operations
-    private val encoderLock = Any()
-    
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
     private var uvDataBuffer: ByteArray? = null
@@ -898,29 +895,23 @@ class RTSPServer(
         try {
             // === Encoder Initialization/Recreation ===
             // Check if encoder needs to be (re)created due to resolution mismatch
-            // Use synchronization to prevent race conditions during encoder recreation
             if (encoder == null || image.width != width || image.height != height) {
-                synchronized(encoderLock) {
-                    // Double-check inside synchronized block
-                    if (encoder == null || image.width != width || image.height != height) {
-                        if (encoder != null) {
-                            Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
-                            try {
-                                encoder?.stop()
-                                encoder?.release()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Error stopping old encoder", e)
-                            }
-                            encoder = null
-                            sps = null
-                            pps = null
-                        }
-                        
-                        // Recreate encoder with actual frame dimensions
-                        if (!recreateEncoder(image.width, image.height)) {
-                            return false
-                        }
+                if (encoder != null) {
+                    Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
+                    try {
+                        encoder?.stop()
+                        encoder?.release()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error stopping old encoder", e)
                     }
+                    encoder = null
+                    sps = null
+                    pps = null
+                }
+                
+                // Recreate encoder with actual frame dimensions
+                if (!recreateEncoder(image.width, image.height)) {
+                    return false
                 }
             }
             
