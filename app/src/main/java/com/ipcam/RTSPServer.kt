@@ -42,7 +42,7 @@ class RTSPServer(
     initialBitrate: Int = calculateBitrate(width, height) // Dynamic based on resolution
 ) {
     private var serverSocket: ServerSocket? = null
-    private var encoder: MediaCodec? = null
+    @Volatile private var encoder: MediaCodec? = null
     private val sessions = ConcurrentHashMap<String, RTSPSession>()
     private val sessionIdCounter = AtomicInteger(0)
     private val isRunning = AtomicBoolean(false)
