@@ -48,6 +48,7 @@ class RTSPServer(
     private val isRunning = AtomicBoolean(false)
     private val isEncoding = AtomicBoolean(false)
     private val frameCount = AtomicLong(0)
+    private val droppedFrameCount = AtomicLong(0)
     private var serverJob: Job? = null
     private val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
@@ -58,6 +59,10 @@ class RTSPServer(
     @Volatile private var pps: ByteArray? = null
     @Volatile private var encoderColorFormat: Int = -1
     @Volatile private var encoderColorFormatName: String = "unknown"
+    
+    // Frame timing control
+    @Volatile private var lastFrameTimeNs: Long = 0
+    private val targetFrameIntervalNs = 1_000_000_000L / fps // Nanoseconds per frame
     
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
@@ -763,11 +768,29 @@ class RTSPServer(
      */
     fun encodeFrame(image: ImageProxy): Boolean {
         if (!isEncoding.get()) {
-            Log.d(TAG, "Encoder not ready: isEncoding=${isEncoding.get()}")
             return false
         }
         
         try {
+            // === Frame Rate Control ===
+            // Drop frames to maintain target FPS and reduce encoding load
+            val currentTimeNs = System.nanoTime()
+            val timeSinceLastFrameNs = currentTimeNs - lastFrameTimeNs
+            
+            if (lastFrameTimeNs > 0 && timeSinceLastFrameNs < targetFrameIntervalNs) {
+                // Too soon for next frame - drop it
+                droppedFrameCount.incrementAndGet()
+                
+                // Log periodically (every 100 dropped frames)
+                if (droppedFrameCount.get() % 100L == 1L) {
+                    Log.d(TAG, "Frame rate limiting: dropped ${droppedFrameCount.get()} frames to maintain ${fps} fps target")
+                }
+                return false
+            }
+            
+            lastFrameTimeNs = currentTimeNs
+            
+            // === Encoder Initialization/Recreation ===
             // Check if encoder needs to be (re)created due to resolution mismatch
             if (encoder == null || image.width != width || image.height != height) {
                 if (encoder != null) {
@@ -791,10 +814,11 @@ class RTSPServer(
             
             // Log first successful frame
             if (frameCount.get() == 0L) {
-                Log.i(TAG, "Encoding first frame: ${image.width}x${image.height}")
+                Log.i(TAG, "Encoding first frame: ${image.width}x${image.height} @ ${fps} fps")
             }
             
-            // Get input buffer
+            // === Encode Frame ===
+            // Get input buffer with timeout
             val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
             if (inputBufferIndex >= 0) {
                 val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
@@ -814,9 +838,16 @@ class RTSPServer(
                     frameCount.incrementAndGet()
                     
                     if (frameCount.get() == 1L) {
-                        Log.d(TAG, "First frame queued with size: $bufferSize bytes")
+                        Log.i(TAG, "First frame queued with size: $bufferSize bytes")
                     }
                 }
+            } else {
+                // Encoder input queue full - this is normal under load
+                if (frameCount.get() % 100L == 0L) {
+                    Log.d(TAG, "Encoder input buffer unavailable (queue full), frame dropped")
+                }
+                droppedFrameCount.incrementAndGet()
+                return false
             }
             
             // Retrieve encoded output
@@ -1277,6 +1308,8 @@ class RTSPServer(
             activeSessions = sessions.size,
             playingSessions = sessions.values.count { it.state == SessionState.PLAYING },
             framesEncoded = frameCount.get(),
+            droppedFrames = droppedFrameCount.get(),
+            targetFps = fps,
             lastError = lastError
         )
     }
@@ -1289,6 +1322,8 @@ class RTSPServer(
         val activeSessions: Int,
         val playingSessions: Int,
         val framesEncoded: Long,
+        val droppedFrames: Long,
+        val targetFps: Int,
         val lastError: String?
     )
 }
