@@ -256,6 +256,7 @@ class RTSPServer(
      */
     private fun initializeEncoder(): Boolean {
         try {
+            Log.d(TAG, "Initializing encoder for ${width}x${height}")
             encoder = selectBestEncoder()
             
             val colorFormat = getSupportedColorFormat()
@@ -279,8 +280,10 @@ class RTSPServer(
                 MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
             )
             
+            Log.d(TAG, "Configuring encoder with format: $format")
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder?.start()
+            Log.i(TAG, "Encoder started successfully: $encoderName (hardware: $isHardwareEncoder)")
             
             isEncoding.set(true)
             
@@ -462,25 +465,31 @@ class RTSPServer(
     private suspend fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
+        Log.d(TAG, "DESCRIBE request received, waiting for SPS/PPS...")
+        
         // Wait briefly for SPS/PPS to be available (encoder needs to start first)
         var retries = 0
-        while ((sps == null || pps == null) && retries < 100) {
-            kotlinx.coroutines.delay(50)
+        val maxRetries = 150 // 150 * 100ms = 15 seconds max wait
+        while ((sps == null || pps == null) && retries < maxRetries) {
+            if (retries % 10 == 0) {
+                Log.d(TAG, "Waiting for SPS/PPS... attempt ${retries}/${maxRetries}, encoder=${encoder != null}, encoding=${isEncoding.get()}, frames=${frameCount.get()}")
+            }
+            kotlinx.coroutines.delay(100)
             retries++
         }
         
         if (sps == null || pps == null) {
-            Log.w(TAG, "SPS/PPS not available after waiting, sending error")
+            Log.w(TAG, "SPS/PPS not available after ${retries * 100}ms. Encoder=${encoder != null}, Encoding=${isEncoding.get()}, Frames=${frameCount.get()}")
             writer.write("RTSP/1.0 500 Internal Server Error\r\n")
             writer.write("CSeq: $cseq\r\n")
             writer.write("Content-Type: text/plain\r\n")
             writer.write("\r\n")
-            writer.write("Encoder not ready. Please wait for camera to start streaming.\r\n")
+            writer.write("Encoder not ready. SPS=${sps != null}, PPS=${pps != null}, Frames=${frameCount.get()}. Please ensure camera is streaming.\r\n")
             writer.flush()
             return
         }
         
-        Log.d(TAG, "SPS/PPS available, generating SDP")
+        Log.i(TAG, "SPS/PPS available after ${retries * 100}ms, generating SDP")
         
         // Generate SDP (Session Description Protocol)
         val spsBase64 = android.util.Base64.encodeToString(sps!!, android.util.Base64.NO_WRAP)
@@ -679,6 +688,19 @@ class RTSPServer(
             
             // Retrieve encoded output
             drainEncoder()
+            
+            // If this was the first frame and we still don't have SPS/PPS, drain more aggressively
+            if (frameCount.get() <= 3L && (sps == null || pps == null)) {
+                // Give encoder more chances to produce format change event
+                for (i in 0 until 5) {
+                    Thread.sleep(10)
+                    drainEncoder()
+                    if (sps != null && pps != null) {
+                        Log.i(TAG, "SPS/PPS extracted after ${frameCount.get()} frames and $i extra drain attempts")
+                        break
+                    }
+                }
+            }
             
             return true
             
