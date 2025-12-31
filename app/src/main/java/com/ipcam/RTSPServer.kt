@@ -287,6 +287,9 @@ class RTSPServer(
         }
         
         try {
+            // Detect encoder and color format early for web UI display
+            detectEncoderCapabilities()
+            
             // Mark encoding as enabled (encoder will be created on first frame)
             isEncoding.set(true)
             
@@ -300,6 +303,7 @@ class RTSPServer(
             }
             
             Log.i(TAG, "RTSP server started on port $port")
+            Log.i(TAG, "Encoder: $encoderName (hardware: $isHardwareEncoder), Color format: $encoderColorFormatName")
             Log.i(TAG, "Encoder will be initialized on first frame")
             
             return true
@@ -309,6 +313,78 @@ class RTSPServer(
             lastError = "Server start failed: ${e.message}"
             cleanup()
             return false
+        }
+    }
+    
+    /**
+     * Detect encoder capabilities early for web UI display
+     * This doesn't actually create the encoder, just queries capabilities
+     */
+    private fun detectEncoderCapabilities() {
+        try {
+            // Select best encoder (sets encoderName and isHardwareEncoder)
+            val codecList = MediaCodecList(MediaCodecList.REGULAR_CODECS)
+            
+            for (codecInfo in codecList.codecInfos) {
+                if (!codecInfo.isEncoder) continue
+                if (!codecInfo.supportedTypes.contains(MediaFormat.MIMETYPE_VIDEO_AVC)) continue
+                
+                if (!codecInfo.name.contains("OMX.google", ignoreCase = true) &&
+                    !codecInfo.name.contains("c2.android", ignoreCase = true)) {
+                    encoderName = codecInfo.name
+                    isHardwareEncoder = true
+                    
+                    // Detect color format
+                    val capabilities = codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    val colorFormats = capabilities.colorFormats
+                    
+                    Log.d(TAG, "Available color formats for $encoderName:")
+                    colorFormats.forEach { format ->
+                        Log.d(TAG, "  - ${getColorFormatName(format)} (0x${Integer.toHexString(format)})")
+                    }
+                    
+                    // Prefer NV12 (YUV420 semi-planar)
+                    for (format in colorFormats) {
+                        if (format == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+                            encoderColorFormat = format
+                            encoderColorFormatName = getColorFormatName(format)
+                            Log.i(TAG, "Selected preferred format: $encoderColorFormatName")
+                            return
+                        }
+                    }
+                    
+                    // Try other supported formats
+                    for (format in colorFormats) {
+                        when (format) {
+                            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar,
+                            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible -> {
+                                encoderColorFormat = format
+                                encoderColorFormatName = getColorFormatName(format)
+                                Log.i(TAG, "Selected format: $encoderColorFormatName")
+                                return
+                            }
+                        }
+                    }
+                    
+                    // Fallback to first available
+                    if (colorFormats.isNotEmpty()) {
+                        encoderColorFormat = colorFormats[0]
+                        encoderColorFormatName = getColorFormatName(colorFormats[0])
+                        Log.w(TAG, "Using fallback format: $encoderColorFormatName")
+                    }
+                    return
+                }
+            }
+            
+            // Software encoder fallback
+            Log.w(TAG, "Hardware encoder not found, will use software fallback")
+            encoderName = "software"
+            isHardwareEncoder = false
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error detecting encoder capabilities", e)
+            encoderName = "detection failed"
+            isHardwareEncoder = false
         }
     }
     
