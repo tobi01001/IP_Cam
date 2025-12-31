@@ -54,4 +54,6 @@ interface CameraServiceInterface {
     fun isRTSPEnabled(): Boolean
     fun getRTSPMetrics(): RTSPServer.ServerMetrics?
     fun getRTSPUrl(): String
+    fun setRTSPBitrate(bitrate: Int): Boolean
+    fun setRTSPBitrateMode(mode: String): Boolean
 }
