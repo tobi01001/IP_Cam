@@ -1999,8 +1999,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before sending state
         updateCpuUsage()
         
-        return """
-        {
+        return """{
             "camera": "$cameraName",
             "resolution": "$resolutionLabel",
             "cameraOrientation": "$cameraOrientation",
@@ -2018,8 +2017,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "adaptiveQualityEnabled": $adaptiveQualityEnabled,
             "flashlightAvailable": ${isFlashlightAvailable()},
             "flashlightOn": ${isFlashlightEnabled()}
-        }
-        """.trimIndent()
+        }""".trimIndent()
     }
     
     override fun recordBytesSent(clientId: Long, bytes: Long) {
