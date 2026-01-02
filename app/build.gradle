@@ -13,7 +13,8 @@ def getGitCommitHash() {
             standardOutput = stdout
             ignoreExitValue = true
         }
-        return stdout.toString().trim() ?: "unknown"
+        def result = stdout.toString().trim()
+        return result.isEmpty() ? "unknown" : result
     } catch (Exception e) {
         return "unknown"
     }
@@ -27,7 +28,8 @@ def getGitBranch() {
             standardOutput = stdout
             ignoreExitValue = true
         }
-        return stdout.toString().trim() ?: "unknown"
+        def result = stdout.toString().trim()
+        return result.isEmpty() ? "unknown" : result
     } catch (Exception e) {
         return "unknown"
     }

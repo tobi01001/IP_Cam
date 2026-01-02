@@ -35,7 +35,21 @@ if echo "$response" | grep -q '"version"'; then
     echo "================================================"
     echo "Version details:"
     echo "================================================"
-    echo "$response" | python3 -c "import sys, json; data = json.load(sys.stdin); v = data.get('version', {}); print(f\"Version Name: {v.get('versionName', 'N/A')}\"); print(f\"Version Code: {v.get('versionCode', 'N/A')}\"); print(f\"Branch: {v.get('branch', 'N/A')}\"); print(f\"Commit Hash: {v.get('commitHash', 'N/A')}\"); print(f\"Build Number: {v.get('buildNumber', 'N/A')}\"); print(f\"Build Timestamp: {v.get('buildTimestamp', 'N/A')}\");" 2>/dev/null
+    # Extract and display version info
+    echo "$response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    v = data.get('version', {})
+    print(f\"Version Name: {v.get('versionName', 'N/A')}\")
+    print(f\"Version Code: {v.get('versionCode', 'N/A')}\")
+    print(f\"Branch: {v.get('branch', 'N/A')}\")
+    print(f\"Commit Hash: {v.get('commitHash', 'N/A')}\")
+    print(f\"Build Number: {v.get('buildNumber', 'N/A')}\")
+    print(f\"Build Timestamp: {v.get('buildTimestamp', 'N/A')}\")
+except:
+    print('Error parsing version info')
+" 2>/dev/null
     echo ""
     echo "✅ SUCCESS: Version system is working correctly!"
 else
