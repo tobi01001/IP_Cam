@@ -87,6 +87,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
     private var lastBatteryUpdate: Long = 0
     @Volatile private var batteryUpdatePending: Boolean = false
+    // Battery threshold for wake lock management (20%)
+    private val BATTERY_THRESHOLD_PERCENT = 20
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -1444,28 +1446,76 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastFrameJpegBytes = null
         }
         serviceScope.cancel()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wifiLock?.let { if (it.isHeld) it.release() }
+        releaseLocks() // Use the new releaseLocks() method
     }
     
+    /**
+     * Acquire wake locks for optimal streaming performance.
+     * Only acquires locks when battery level is above threshold (20%) to prevent
+     * excessive battery drain when battery is low.
+     * 
+     * PARTIAL_WAKE_LOCK: Keeps CPU running for camera processing and streaming
+     * WIFI_MODE_FULL_HIGH_PERF: Prevents WiFi from entering power save mode for consistent streaming
+     */
     private fun acquireLocks() {
-        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-        if (wakeLock?.isHeld != true) {
-            wakeLock = powerManager.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "$TAG:WakeLock"
-            ).apply {
-                acquire()
+        // Check battery level before acquiring locks
+        val batteryInfo = getBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // Only acquire locks if battery > 20% OR device is charging
+        val shouldHoldLocks = batteryLevel > BATTERY_THRESHOLD_PERCENT || isCharging
+        
+        if (shouldHoldLocks) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            if (wakeLock?.isHeld != true) {
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "$TAG:WakeLock"
+                ).apply {
+                    acquire()
+                    Log.i(TAG, "Wake lock acquired (battery: $batteryLevel%, charging: $isCharging)")
+                }
+            }
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            if (wifiLock?.isHeld != true) {
+                wifiLock = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                    "$TAG:WifiLock"
+                ).apply {
+                    acquire()
+                    Log.i(TAG, "WiFi lock acquired (battery: $batteryLevel%, charging: $isCharging)")
+                }
+            }
+        } else {
+            // Release locks when battery is low and not charging
+            releaseLocks()
+            Log.w(TAG, "Wake locks not acquired due to low battery (battery: $batteryLevel%, threshold: $BATTERY_THRESHOLD_PERCENT%)")
+        }
+    }
+    
+    /**
+     * Release wake locks to conserve battery
+     */
+    private fun releaseLocks() {
+        val wasHeld = wakeLock?.isHeld == true || wifiLock?.isHeld == true
+        
+        wakeLock?.let { 
+            if (it.isHeld) {
+                it.release()
+                Log.i(TAG, "Wake lock released")
             }
         }
-        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        if (wifiLock?.isHeld != true) {
-            wifiLock = wifiManager.createWifiLock(
-                WifiManager.WIFI_MODE_FULL_HIGH_PERF,
-                "$TAG:WifiLock"
-            ).apply {
-                acquire()
+        wifiLock?.let { 
+            if (it.isHeld) {
+                it.release()
+                Log.i(TAG, "WiFi lock released")
             }
+        }
+        
+        if (wasHeld) {
+            val batteryInfo = getBatteryInfo()
+            Log.i(TAG, "All locks released (battery: ${batteryInfo.level}%, charging: ${batteryInfo.isCharging})")
         }
     }
     
@@ -1493,6 +1543,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         requestBindCamera()
                     }
                     needsRecovery = true
+                }
+                
+                // Check battery level and manage wake locks accordingly
+                // Check every watchdog cycle to respond quickly to battery changes
+                val batteryInfo = getBatteryInfo()
+                val batteryLevel = batteryInfo.level
+                val isCharging = batteryInfo.isCharging
+                val shouldHoldLocks = batteryLevel > BATTERY_THRESHOLD_PERCENT || isCharging
+                val areLocksHeld = wakeLock?.isHeld == true && wifiLock?.isHeld == true
+                
+                if (shouldHoldLocks && !areLocksHeld) {
+                    // Battery recovered or device started charging - acquire locks
+                    Log.i(TAG, "Watchdog: Battery level acceptable ($batteryLevel%), acquiring wake locks")
+                    acquireLocks()
+                } else if (!shouldHoldLocks && areLocksHeld) {
+                    // Battery dropped below threshold and not charging - release locks
+                    Log.w(TAG, "Watchdog: Battery low ($batteryLevel%) and not charging, releasing wake locks to conserve power")
+                    releaseLocks()
                 }
                 
                 // Exponential backoff for retry delay
