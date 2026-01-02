@@ -99,10 +99,10 @@ class H264PreviewEncoder(
     fun stop() {
         isRunning = false
         
-        // Wait for drain thread to finish
+        // Wait for drain thread to finish with longer timeout
         drainThread?.interrupt()
         try {
-            drainThread?.join(1000)
+            drainThread?.join(5000) // 5 second timeout for graceful shutdown
         } catch (e: InterruptedException) {
             Log.w(TAG, "Interrupted while waiting for drain thread")
         }
@@ -131,7 +131,8 @@ class H264PreviewEncoder(
             
             while (isRunning) {
                 try {
-                    val outputBufferId = encoder?.dequeueOutputBuffer(bufferInfo, 10_000) ?: -1
+                    // Use 1 second timeout for responsive shutdown
+                    val outputBufferId = encoder?.dequeueOutputBuffer(bufferInfo, 1_000) ?: -1
                     
                     when {
                         outputBufferId >= 0 -> {

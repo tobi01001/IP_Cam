@@ -587,7 +587,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                                     Log.d(TAG, "H.264 encoder surface connected to camera")
                                 } else {
                                     request.willNotProvideSurface()
-                                    Log.w(TAG, "H.264 encoder surface not available")
+                                    Log.w(TAG, "H.264 encoder surface not available - encoder may have failed to initialize or been stopped")
                                 }
                             }
                         }

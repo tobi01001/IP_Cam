@@ -1440,17 +1440,39 @@ class RTSPServer(
             if (startCodeLength > 0) {
                 // Find next start code
                 var nextOffset = offset + startCodeLength
-                while (nextOffset < data.size - 3) {
-                    if ((data[nextOffset] == 0.toByte() && 
-                         data[nextOffset + 1] == 0.toByte() && 
-                         data[nextOffset + 2] == 0.toByte() && 
-                         data[nextOffset + 3] == 1.toByte()) ||
-                        (data[nextOffset] == 0.toByte() && 
-                         data[nextOffset + 1] == 0.toByte() && 
-                         data[nextOffset + 2] == 1.toByte())) {
+                // Safe bounds check: ensure we can read 4-byte start code
+                while (nextOffset <= data.size - 4) {
+                    if (data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 0.toByte() && 
+                        data[nextOffset + 3] == 1.toByte()) {
+                        break
+                    }
+                    // Check for 3-byte start code only if 4-byte didn't match
+                    if (nextOffset <= data.size - 3 &&
+                        data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 1.toByte()) {
                         break
                     }
                     nextOffset++
+                }
+                
+                // If we stopped before data.size, we might have partial start code at end
+                // Check remaining bytes for 3-byte start code
+                if (nextOffset == data.size - 3) {
+                    if (data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 1.toByte()) {
+                        // Found 3-byte start code at end
+                        // nextOffset stays the same (points to start code)
+                    } else {
+                        // No start code, include rest of data
+                        nextOffset = data.size
+                    }
+                } else if (nextOffset > data.size - 3) {
+                    // No room for start code, include rest of data
+                    nextOffset = data.size
                 }
                 
                 // Extract NAL unit (without start code)
