@@ -79,7 +79,7 @@ class RTSPServer(
     
     companion object {
         private const val TAG = "RTSPServer"
-        private const val TIMEOUT_US = 10_000L
+        private const val TIMEOUT_US = 0L  // Non-blocking: return immediately if no buffer available
         private const val RTP_VERSION = 2
         private const val RTP_PT_H264 = 96 // Dynamic payload type for H.264
         

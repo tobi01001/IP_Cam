@@ -141,6 +141,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // RTSP server for hardware-accelerated H.264 streaming
     private var rtspServer: RTSPServer? = null
     @Volatile private var rtspEnabled: Boolean = false
+    @Volatile private var rtspBitrate: Int = -1 // Saved bitrate setting (-1 = auto/default)
+    @Volatile private var rtspBitrateMode: String = "VBR" // Saved bitrate mode setting
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -720,6 +722,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // === RTSP Pipeline (if enabled) ===
             // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
+            // NOTE: encodeFrame() is now non-blocking (uses dequeueInputBuffer with 0 timeout)
+            // This prevents RTSP encoding from blocking the camera thread and affecting MJPEG FPS
             if (rtspEnabled && rtspServer != null) {
                 try {
                     rtspServer?.encodeFrame(image)
@@ -1169,14 +1173,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         targetMjpegFps = prefs.getInt("targetMjpegFps", 10).coerceIn(1, 60)
         targetRtspFps = prefs.getInt("targetRtspFps", 30).coerceIn(1, 60)
         
+        // Adaptive quality setting
+        adaptiveQualityEnabled = prefs.getBoolean("adaptiveQualityEnabled", true)
+        
         maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
         // Load RTSP settings (with persistence)
         rtspEnabled = prefs.getBoolean("rtspEnabled", false)
-        val rtspBitrate = prefs.getInt("rtspBitrate", -1)
-        val rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
+        rtspBitrate = prefs.getInt("rtspBitrate", -1)
+        rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
         
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
@@ -1224,7 +1231,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps, rtspBitrate=$rtspBitrate, rtspBitrateMode=$rtspBitrateMode, adaptiveQuality=$adaptiveQualityEnabled")
     }
     
     private fun saveSettings() {
@@ -1243,15 +1250,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putInt("targetMjpegFps", targetMjpegFps)
             putInt("targetRtspFps", targetRtspFps)
             
+            // Adaptive quality setting
+            putBoolean("adaptiveQualityEnabled", adaptiveQualityEnabled)
+            
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
             // Save RTSP settings (with persistence for bitrate and mode)
             putBoolean("rtspEnabled", rtspEnabled)
-            rtspServer?.getMetrics()?.let { metrics ->
-                putInt("rtspBitrate", (metrics.bitrateMbps * 1_000_000).toInt())
-                putString("rtspBitrateMode", metrics.bitrateMode)
+            // Save current RTSP metrics if server is running, otherwise save stored values
+            if (rtspServer != null) {
+                rtspServer?.getMetrics()?.let { metrics ->
+                    rtspBitrate = (metrics.bitrateMbps * 1_000_000).toInt()
+                    rtspBitrateMode = metrics.bitrateMode
+                }
             }
+            putInt("rtspBitrate", rtspBitrate)
+            putString("rtspBitrateMode", rtspBitrateMode)
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1832,6 +1847,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "currentFps": $currentFps,
             "targetMjpegFps": $targetMjpegFps,
             "targetRtspFps": $targetRtspFps,
+            "adaptiveQualityEnabled": $adaptiveQualityEnabled,
             "flashlightAvailable": ${isFlashlightAvailable()},
             "flashlightOn": ${isFlashlightEnabled()}
         }
@@ -1863,6 +1879,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {
         adaptiveQualityEnabled = enabled
+        saveSettings()
         Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
     }
     
@@ -1895,13 +1912,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Size(1920, 1080)
             }
             
-            // Create RTSP server with current resolution
+            // Determine bitrate to use: saved value if valid, otherwise calculate default
+            val bitrateToUse = if (rtspBitrate > 0) {
+                Log.d(TAG, "Using saved RTSP bitrate: $rtspBitrate bps")
+                rtspBitrate
+            } else {
+                val calculated = RTSPServer.calculateBitrate(resolution.width, resolution.height)
+                Log.d(TAG, "Using calculated RTSP bitrate: $calculated bps")
+                calculated
+            }
+            
+            // Create RTSP server with saved/calculated settings
             rtspServer = RTSPServer(
                 port = 8554,
                 width = resolution.width,
                 height = resolution.height,
-                fps = 30,
-                initialBitrate = RTSPServer.calculateBitrate(resolution.width, resolution.height)
+                fps = targetRtspFps,  // Use saved target FPS instead of hardcoded 30
+                initialBitrate = bitrateToUse
             )
             
             if (rtspServer?.start() != true) {
@@ -1912,9 +1939,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return false
             }
             
+            // Apply saved bitrate mode if not default
+            if (rtspBitrateMode != "VBR") {
+                Log.d(TAG, "Applying saved RTSP bitrate mode: $rtspBitrateMode")
+                rtspServer?.setBitrateMode(rtspBitrateMode)
+            }
+            
             rtspEnabled = true
             saveSettings()
-            Log.i(TAG, "RTSP streaming enabled on port 8554")
+            Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             return true
             
         } catch (e: Exception) {
