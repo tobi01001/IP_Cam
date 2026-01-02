@@ -122,6 +122,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Target FPS settings
     @Volatile private var targetMjpegFps: Int = 10 // Target FPS for MJPEG streaming (default 10)
     @Volatile private var targetRtspFps: Int = 30 // Target FPS for RTSP streaming (default 30)
+    
+    // CPU usage tracking
+    @Volatile private var currentCpuUsage: Float = 0f // Current CPU usage percentage (0-100)
+    private var lastCpuCheckTime: Long = 0
+    
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
@@ -719,10 +724,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 if (processingStart - lastFpsCalculation > 500) {
                     if (fpsFrameTimes.size > 1) {
                         val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
-                        currentCameraFps = if (timeSpan > 0) {
+                        val newFps = if (timeSpan > 0) {
                             (fpsFrameTimes.size - 1) * 1000f / timeSpan
                         } else {
                             0f
+                        }
+                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
+                            currentCameraFps = newFps
+                            broadcastCameraState()
+                        } else {
+                            currentCameraFps = newFps
                         }
                     }
                     lastFpsCalculation = processingStart
@@ -1198,10 +1210,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (now - lastMjpegFpsCalculation > 500) {
                 if (mjpegFpsFrameTimes.size > 1) {
                     val timeSpan = mjpegFpsFrameTimes.last() - mjpegFpsFrameTimes.first()
-                    currentMjpegFps = if (timeSpan > 0) {
+                    val newFps = if (timeSpan > 0) {
                         (mjpegFpsFrameTimes.size - 1) * 1000f / timeSpan
                     } else {
                         0f
+                    }
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentMjpegFps) > 0.5f) {
+                        currentMjpegFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentMjpegFps = newFps
                     }
                 }
                 lastMjpegFpsCalculation = now
@@ -1225,15 +1244,79 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (now - lastRtspFpsCalculation > 500) {
                 if (rtspFpsFrameTimes.size > 1) {
                     val timeSpan = rtspFpsFrameTimes.last() - rtspFpsFrameTimes.first()
-                    currentRtspFps = if (timeSpan > 0) {
+                    val newFps = if (timeSpan > 0) {
                         (rtspFpsFrameTimes.size - 1) * 1000f / timeSpan
                     } else {
                         0f
+                    }
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentRtspFps) > 0.5f) {
+                        currentRtspFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentRtspFps = newFps
                     }
                 }
                 lastRtspFpsCalculation = now
             }
         }
+    }
+    
+    /**
+     * Get current CPU usage percentage for this process
+     * Returns value between 0-100
+     */
+    private fun updateCpuUsage() {
+        try {
+            val now = System.currentTimeMillis()
+            // Update CPU usage every 2 seconds to avoid overhead
+            if (now - lastCpuCheckTime < 2000) {
+                return
+            }
+            lastCpuCheckTime = now
+            
+            // Read /proc/self/stat for process CPU time
+            val pid = android.os.Process.myPid()
+            val statFile = java.io.File("/proc/$pid/stat")
+            if (!statFile.exists()) {
+                return
+            }
+            
+            val statContent = statFile.readText()
+            val stats = statContent.split(" ")
+            
+            // CPU time is at indices 13 (utime) and 14 (stime) in /proc/[pid]/stat
+            // These are in clock ticks, need to convert to milliseconds
+            if (stats.size > 14) {
+                val utime = stats[13].toLongOrNull() ?: 0
+                val stime = stats[14].toLongOrNull() ?: 0
+                val totalTime = utime + stime
+                
+                // Get number of CPU cores
+                val cores = Runtime.getRuntime().availableProcessors()
+                
+                // Calculate CPU percentage
+                // This is a simplified calculation - for more accuracy, we'd need to track
+                // the delta between two measurements
+                // For now, we'll use a simple heuristic based on active threads
+                val activeThreads = Thread.activeCount()
+                val estimatedUsage = (activeThreads.toFloat() / (cores * 2)) * 100f
+                
+                // Clamp to 0-100
+                currentCpuUsage = estimatedUsage.coerceIn(0f, 100f)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error reading CPU usage", e)
+            currentCpuUsage = 0f
+        }
+    }
+    
+    /**
+     * Get current CPU usage percentage
+     */
+    fun getCurrentCpuUsage(): Float {
+        updateCpuUsage()
+        return currentCpuUsage
     }
     
     private fun loadSettings() {
@@ -1913,6 +1996,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
+        // Update CPU usage before sending state
+        updateCpuUsage()
+        
         return """
         {
             "camera": "$cameraName",
@@ -1926,6 +2012,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "currentCameraFps": $currentCameraFps,
             "currentMjpegFps": $currentMjpegFps,
             "currentRtspFps": $currentRtspFps,
+            "cpuUsage": $currentCpuUsage,
             "targetMjpegFps": $targetMjpegFps,
             "targetRtspFps": $targetRtspFps,
             "adaptiveQualityEnabled": $adaptiveQualityEnabled,

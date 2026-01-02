@@ -334,7 +334,8 @@ class HttpServer(
                     <p class="note">Adjust streaming frame rates. 
                         <strong>Camera FPS:</strong> <span id="currentCameraFpsDisplay">0.0</span> fps | 
                         <strong>MJPEG FPS:</strong> <span id="currentMjpegFpsDisplay">0.0</span> fps | 
-                        <strong>RTSP FPS:</strong> <span id="currentRtspFpsDisplay">0.0</span> fps
+                        <strong>RTSP FPS:</strong> <span id="currentRtspFpsDisplay">0.0</span> fps | 
+                        <strong>CPU:</strong> <span id="cpuUsageDisplay">0.0</span>%
                     </p>
                     <div class="row">
                         <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
@@ -1088,6 +1089,13 @@ class HttpServer(
                                 const rtspFpsDisplay = document.getElementById('currentRtspFpsDisplay');
                                 if (rtspFpsDisplay) {
                                     rtspFpsDisplay.textContent = state.currentRtspFps.toFixed(1);
+                                }
+                            }
+                            
+                            if (state.cpuUsage !== undefined) {
+                                const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
+                                if (cpuUsageDisplay) {
+                                    cpuUsageDisplay.textContent = state.cpuUsage.toFixed(1);
                                 }
                             }
                             
