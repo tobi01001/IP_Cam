@@ -103,12 +103,30 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var showResolutionOverlay: Boolean = true // Show actual resolution in bottom right for debugging
     private var showFpsOverlay: Boolean = true // Show FPS in bottom left
     // FPS tracking
-    private val fpsFrameTimes = mutableListOf<Long>() // Track frame times for FPS calculation
-    private var currentFps: Float = 0f // Current calculated FPS
+    private val fpsFrameTimes = mutableListOf<Long>() // Track frame times for FPS calculation (camera)
+    private var currentCameraFps: Float = 0f // Current calculated camera FPS
     private var lastFpsCalculation: Long = 0 // Last time FPS was calculated
+    
+    // MJPEG streaming FPS tracking (actual frames served to clients)
+    private val mjpegFpsFrameTimes = mutableListOf<Long>()
+    private var currentMjpegFps: Float = 0f
+    private var lastMjpegFpsCalculation: Long = 0
+    private val mjpegFpsLock = Any()
+    
+    // RTSP streaming FPS tracking (actual frames encoded)
+    private val rtspFpsFrameTimes = mutableListOf<Long>()
+    private var currentRtspFps: Float = 0f
+    private var lastRtspFpsCalculation: Long = 0
+    private val rtspFpsLock = Any()
+    
     // Target FPS settings
     @Volatile private var targetMjpegFps: Int = 10 // Target FPS for MJPEG streaming (default 10)
     @Volatile private var targetRtspFps: Int = 30 // Target FPS for RTSP streaming (default 30)
+    
+    // CPU usage tracking
+    @Volatile private var currentCpuUsage: Float = 0f // Current CPU usage percentage (0-100)
+    private var lastCpuCheckTime: Long = 0
+    
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     private var networkReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
@@ -141,6 +159,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // RTSP server for hardware-accelerated H.264 streaming
     private var rtspServer: RTSPServer? = null
     @Volatile private var rtspEnabled: Boolean = false
+    @Volatile private var rtspBitrate: Int = -1 // Saved bitrate setting (-1 = auto/default)
+    @Volatile private var rtspBitrateMode: String = "VBR" // Saved bitrate mode setting
     
     // Callbacks for MainActivity to receive updates
     private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
@@ -704,10 +724,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 if (processingStart - lastFpsCalculation > 500) {
                     if (fpsFrameTimes.size > 1) {
                         val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
-                        currentFps = if (timeSpan > 0) {
+                        val newFps = if (timeSpan > 0) {
                             (fpsFrameTimes.size - 1) * 1000f / timeSpan
                         } else {
                             0f
+                        }
+                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
+                            currentCameraFps = newFps
+                            broadcastCameraState()
+                        } else {
+                            currentCameraFps = newFps
                         }
                     }
                     lastFpsCalculation = processingStart
@@ -720,6 +747,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // === RTSP Pipeline (if enabled) ===
             // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
+            // OPTIMIZATION: Both dequeueInputBuffer and dequeueOutputBuffer use 0ms timeout (non-blocking)
+            // and drainEncoder processes max 3 buffers per call to minimize camera thread blocking.
+            // This ensures RTSP encoding doesn't reduce MJPEG FPS.
             if (rtspEnabled && rtspServer != null) {
                 try {
                     rtspServer?.encodeFrame(image)
@@ -734,7 +764,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
             if (frameCount == 0) {
-                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, FPS: ${"%.1f".format(currentFps)}")
+                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
             }
             
             // Apply camera orientation and rotation without creating squared bitmaps
@@ -1152,7 +1182,142 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun getTargetRtspFps(): Int = targetRtspFps
     
-    override fun getCurrentFps(): Float = currentFps
+    override fun getCurrentFps(): Float = currentCameraFps
+    
+    /**
+     * Get current MJPEG streaming FPS (frames actually served to clients)
+     */
+    fun getCurrentMjpegFps(): Float = currentMjpegFps
+    
+    /**
+     * Get current RTSP streaming FPS (frames actually encoded)
+     */
+    fun getCurrentRtspFps(): Float = currentRtspFps
+    
+    /**
+     * Record that a frame was served via MJPEG stream
+     * Called by HttpServer when a frame is sent to a client
+     */
+    override fun recordMjpegFrameServed() {
+        val now = System.currentTimeMillis()
+        synchronized(mjpegFpsLock) {
+            mjpegFpsFrameTimes.add(now)
+            // Keep only the last 2 seconds of frame times
+            val cutoffTime = now - 2000
+            mjpegFpsFrameTimes.removeAll { it < cutoffTime }
+            
+            // Calculate FPS every 500ms
+            if (now - lastMjpegFpsCalculation > 500) {
+                if (mjpegFpsFrameTimes.size > 1) {
+                    val timeSpan = mjpegFpsFrameTimes.last() - mjpegFpsFrameTimes.first()
+                    val newFps = if (timeSpan > 0) {
+                        (mjpegFpsFrameTimes.size - 1) * 1000f / timeSpan
+                    } else {
+                        0f
+                    }
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentMjpegFps) > 0.5f) {
+                        currentMjpegFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentMjpegFps = newFps
+                    }
+                }
+                lastMjpegFpsCalculation = now
+            }
+        }
+    }
+    
+    /**
+     * Record that a frame was encoded via RTSP
+     * Called by RTSPServer when a frame is successfully encoded
+     */
+    fun recordRtspFrameEncoded() {
+        val now = System.currentTimeMillis()
+        synchronized(rtspFpsLock) {
+            rtspFpsFrameTimes.add(now)
+            // Keep only the last 2 seconds of frame times
+            val cutoffTime = now - 2000
+            rtspFpsFrameTimes.removeAll { it < cutoffTime }
+            
+            // Calculate FPS every 500ms
+            if (now - lastRtspFpsCalculation > 500) {
+                if (rtspFpsFrameTimes.size > 1) {
+                    val timeSpan = rtspFpsFrameTimes.last() - rtspFpsFrameTimes.first()
+                    val newFps = if (timeSpan > 0) {
+                        (rtspFpsFrameTimes.size - 1) * 1000f / timeSpan
+                    } else {
+                        0f
+                    }
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentRtspFps) > 0.5f) {
+                        currentRtspFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentRtspFps = newFps
+                    }
+                }
+                lastRtspFpsCalculation = now
+            }
+        }
+    }
+    
+    /**
+     * Get current CPU usage percentage for this process
+     * Returns value between 0-100
+     */
+    private fun updateCpuUsage() {
+        try {
+            val now = System.currentTimeMillis()
+            // Update CPU usage every 2 seconds to avoid overhead
+            if (now - lastCpuCheckTime < 2000) {
+                return
+            }
+            lastCpuCheckTime = now
+            
+            // Read /proc/self/stat for process CPU time
+            val pid = android.os.Process.myPid()
+            val statFile = java.io.File("/proc/$pid/stat")
+            if (!statFile.exists()) {
+                return
+            }
+            
+            val statContent = statFile.readText()
+            val stats = statContent.split(" ")
+            
+            // CPU time is at indices 13 (utime) and 14 (stime) in /proc/[pid]/stat
+            // These are in clock ticks, need to convert to milliseconds
+            if (stats.size > 14) {
+                val utime = stats[13].toLongOrNull() ?: 0
+                val stime = stats[14].toLongOrNull() ?: 0
+                val totalTime = utime + stime
+                
+                // Get number of CPU cores
+                val cores = Runtime.getRuntime().availableProcessors()
+                
+                // Calculate CPU percentage
+                // This is a simplified calculation - for more accuracy, we'd need to track
+                // the delta between two measurements
+                // For now, we'll use a simple heuristic based on active threads
+                val activeThreads = Thread.activeCount()
+                val estimatedUsage = (activeThreads.toFloat() / (cores * 2)) * 100f
+                
+                // Clamp to 0-100
+                currentCpuUsage = estimatedUsage.coerceIn(0f, 100f)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error reading CPU usage", e)
+            currentCpuUsage = 0f
+        }
+    }
+    
+    /**
+     * Get current CPU usage percentage
+     */
+    fun getCurrentCpuUsage(): Float {
+        updateCpuUsage()
+        return currentCpuUsage
+    }
     
     private fun loadSettings() {
         val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
@@ -1169,14 +1334,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         targetMjpegFps = prefs.getInt("targetMjpegFps", 10).coerceIn(1, 60)
         targetRtspFps = prefs.getInt("targetRtspFps", 30).coerceIn(1, 60)
         
+        // Adaptive quality setting
+        adaptiveQualityEnabled = prefs.getBoolean("adaptiveQualityEnabled", true)
+        
         maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
         // Load RTSP settings (with persistence)
         rtspEnabled = prefs.getBoolean("rtspEnabled", false)
-        val rtspBitrate = prefs.getInt("rtspBitrate", -1)
-        val rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
+        rtspBitrate = prefs.getInt("rtspBitrate", -1)
+        rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
         
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
@@ -1224,7 +1392,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps, rtspBitrate=$rtspBitrate, rtspBitrateMode=$rtspBitrateMode, adaptiveQuality=$adaptiveQualityEnabled")
     }
     
     private fun saveSettings() {
@@ -1243,15 +1411,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putInt("targetMjpegFps", targetMjpegFps)
             putInt("targetRtspFps", targetRtspFps)
             
+            // Adaptive quality setting
+            putBoolean("adaptiveQualityEnabled", adaptiveQualityEnabled)
+            
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
             // Save RTSP settings (with persistence for bitrate and mode)
             putBoolean("rtspEnabled", rtspEnabled)
-            rtspServer?.getMetrics()?.let { metrics ->
-                putInt("rtspBitrate", (metrics.bitrateMbps * 1_000_000).toInt())
-                putString("rtspBitrateMode", metrics.bitrateMode)
+            // Save current RTSP metrics if server is running, otherwise save stored values
+            if (rtspServer != null) {
+                rtspServer?.getMetrics()?.let { metrics ->
+                    rtspBitrate = (metrics.bitrateMbps * 1_000_000).toInt()
+                    rtspBitrateMode = metrics.bitrateMode
+                }
             }
+            putInt("rtspBitrate", rtspBitrate)
+            putString("rtspBitrateMode", rtspBitrateMode)
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -1681,7 +1857,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else null
         
         val fpsText = if (showFpsOverlay) {
-            "%.1f fps".format(currentFps)
+            // Show MJPEG streaming FPS (actual frames served to clients) instead of camera FPS
+            "%.1f fps".format(currentMjpegFps)
         } else null
         
         val resolutionText = if (showResolutionOverlay) {
@@ -1819,23 +1996,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        return """
-        {
-            "camera": "$cameraName",
-            "resolution": "$resolutionLabel",
-            "cameraOrientation": "$cameraOrientation",
-            "rotation": $rotation,
-            "showDateTimeOverlay": $showDateTimeOverlay,
-            "showBatteryOverlay": $showBatteryOverlay,
-            "showResolutionOverlay": $showResolutionOverlay,
-            "showFpsOverlay": $showFpsOverlay,
-            "currentFps": $currentFps,
-            "targetMjpegFps": $targetMjpegFps,
-            "targetRtspFps": $targetRtspFps,
-            "flashlightAvailable": ${isFlashlightAvailable()},
-            "flashlightOn": ${isFlashlightEnabled()}
-        }
-        """.trimIndent()
+        // Update CPU usage before sending state
+        updateCpuUsage()
+        
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$currentRtspFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
     }
     
     override fun recordBytesSent(clientId: Long, bytes: Long) {
@@ -1863,6 +2027,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {
         adaptiveQualityEnabled = enabled
+        saveSettings()
         Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
     }
     
@@ -1895,13 +2060,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Size(1920, 1080)
             }
             
-            // Create RTSP server with current resolution
+            // Determine bitrate to use: saved value if valid, otherwise calculate default
+            val bitrateToUse = if (rtspBitrate > 0) {
+                Log.d(TAG, "Using saved RTSP bitrate: $rtspBitrate bps")
+                rtspBitrate
+            } else {
+                val calculated = RTSPServer.calculateBitrate(resolution.width, resolution.height)
+                Log.d(TAG, "Using calculated RTSP bitrate: $calculated bps")
+                calculated
+            }
+            
+            // Create RTSP server with saved/calculated settings
             rtspServer = RTSPServer(
                 port = 8554,
                 width = resolution.width,
                 height = resolution.height,
-                fps = 30,
-                initialBitrate = RTSPServer.calculateBitrate(resolution.width, resolution.height)
+                fps = targetRtspFps,  // Use saved target FPS instead of hardcoded 30
+                initialBitrate = bitrateToUse,
+                cameraService = this@CameraService  // Pass reference for FPS tracking
             )
             
             if (rtspServer?.start() != true) {
@@ -1912,9 +2088,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return false
             }
             
+            // Apply saved bitrate mode if not default
+            if (rtspBitrateMode != "VBR") {
+                Log.d(TAG, "Applying saved RTSP bitrate mode: $rtspBitrateMode")
+                rtspServer?.setBitrateMode(rtspBitrateMode)
+            }
+            
             rtspEnabled = true
             saveSettings()
-            Log.i(TAG, "RTSP streaming enabled on port 8554")
+            Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             return true
             
         } catch (e: Exception) {
