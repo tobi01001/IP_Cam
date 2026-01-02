@@ -359,8 +359,22 @@
         android:layout_height="wrap_content"
         android:text="@string/start_server"
         android:layout_marginTop="16dp"
-        android:layout_marginBottom="16dp"
         app:layout_constraintTop_toBottomOf="@+id/flashlightButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+
+    <TextView
+        android:id="@+id/versionInfoText"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:text="@string/version_info_placeholder"
+        android:textSize="11sp"
+        android:textStyle="italic"
+        android:textColor="#666666"
+        android:gravity="center"
+        android:layout_marginTop="16dp"
+        android:layout_marginBottom="16dp"
+        app:layout_constraintTop_toBottomOf="@+id/startStopButton"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintBottom_toBottomOf="parent" />

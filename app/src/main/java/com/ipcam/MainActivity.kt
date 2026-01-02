@@ -43,6 +43,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var autoStartCheckBox: android.widget.CheckBox
     private lateinit var activeConnectionsText: TextView
     private lateinit var maxConnectionsSpinner: Spinner
+    private lateinit var versionInfoText: TextView
     // OSD overlay checkboxes
     private lateinit var showDateTimeCheckBox: android.widget.CheckBox
     private lateinit var showBatteryCheckBox: android.widget.CheckBox
@@ -187,6 +188,7 @@ class MainActivity : AppCompatActivity() {
         autoStartCheckBox = findViewById(R.id.autoStartCheckBox)
         activeConnectionsText = findViewById(R.id.activeConnectionsText)
         maxConnectionsSpinner = findViewById(R.id.maxConnectionsSpinner)
+        versionInfoText = findViewById(R.id.versionInfoText)
         // OSD overlay checkboxes
         showDateTimeCheckBox = findViewById(R.id.showDateTimeCheckBox)
         showBatteryCheckBox = findViewById(R.id.showBatteryCheckBox)
@@ -195,6 +197,9 @@ class MainActivity : AppCompatActivity() {
         // FPS controls
         currentFpsText = findViewById(R.id.currentFpsText)
         mjpegFpsSpinner = findViewById(R.id.mjpegFpsSpinner)
+        
+        // Set version information
+        versionInfoText.text = BuildInfo.getFullVersionString()
         
         setupEndpointsText()
         setupResolutionSpinner()

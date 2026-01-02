@@ -4,6 +4,45 @@ plugins {
     id 'org.jetbrains.kotlin.plugin.serialization' version '1.9.0'
 }
 
+// Helper functions to get git information
+def getGitCommitHash() {
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', '--short', 'HEAD'
+            standardOutput = stdout
+            ignoreExitValue = true
+        }
+        return stdout.toString().trim() ?: "unknown"
+    } catch (Exception e) {
+        return "unknown"
+    }
+}
+
+def getGitBranch() {
+    try {
+        def stdout = new ByteArrayOutputStream()
+        exec {
+            commandLine 'git', 'rev-parse', '--abbrev-ref', 'HEAD'
+            standardOutput = stdout
+            ignoreExitValue = true
+        }
+        return stdout.toString().trim() ?: "unknown"
+    } catch (Exception e) {
+        return "unknown"
+    }
+}
+
+def getBuildTimestamp() {
+    return new Date().format('yyyyMMdd-HHmmss', TimeZone.getTimeZone('UTC'))
+}
+
+def getBuildNumber() {
+    // Use timestamp-based build number for auto-increment
+    // Format: YYYYMMDDHHmmss as a long integer
+    return new Date().format('yyyyMMddHHmmss', TimeZone.getTimeZone('UTC')).toLong()
+}
+
 android {
     namespace 'com.ipcam'
     compileSdk 34
@@ -16,6 +55,12 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        
+        // Build configuration fields for version/build info
+        buildConfigField "String", "GIT_COMMIT_HASH", "\"${getGitCommitHash()}\""
+        buildConfigField "String", "GIT_BRANCH", "\"${getGitBranch()}\""
+        buildConfigField "String", "BUILD_TIMESTAMP", "\"${getBuildTimestamp()}\""
+        buildConfigField "long", "BUILD_NUMBER", "${getBuildNumber()}"
     }
 
     buildTypes {
@@ -33,6 +78,7 @@ android {
     }
     buildFeatures {
         viewBinding true
+        buildConfig true
     }
 }
 
