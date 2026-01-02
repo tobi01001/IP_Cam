@@ -39,7 +39,8 @@ class RTSPServer(
     private var width: Int = 1920,
     private var height: Int = 1080,
     private val fps: Int = 30,
-    initialBitrate: Int = calculateBitrate(width, height) // Dynamic based on resolution
+    initialBitrate: Int = calculateBitrate(width, height), // Dynamic based on resolution
+    private val cameraService: CameraService? = null // Optional reference for FPS tracking
 ) {
     private var serverSocket: ServerSocket? = null
     private var encoder: MediaCodec? = null
@@ -929,6 +930,9 @@ class RTSPServer(
                             0
                         )
                         frameCount.incrementAndGet()
+                        
+                        // Track RTSP FPS - frame successfully queued for encoding
+                        cameraService?.recordRtspFrameEncoded()
                     } catch (e: IllegalStateException) {
                         // Encoder not yet in EXECUTING state (still in start())
                         // This can happen during encoder recreation - safe to drop frame

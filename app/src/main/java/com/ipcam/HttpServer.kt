@@ -331,7 +331,11 @@ class HttpServer(
                         </label>
                     </div>
                     <h2>FPS Settings</h2>
-                    <p class="note">Adjust streaming frame rates. Current FPS: <span id="currentFpsDisplay">0.0</span> fps</p>
+                    <p class="note">Adjust streaming frame rates. 
+                        <strong>Camera FPS:</strong> <span id="currentCameraFpsDisplay">0.0</span> fps | 
+                        <strong>MJPEG FPS:</strong> <span id="currentMjpegFpsDisplay">0.0</span> fps | 
+                        <strong>RTSP FPS:</strong> <span id="currentRtspFpsDisplay">0.0</span> fps
+                    </p>
                     <div class="row">
                         <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
                         <select id="mjpegFpsSelect">
@@ -1066,10 +1070,24 @@ class HttpServer(
                             }
                             
                             // Update FPS displays and controls
-                            if (state.currentFps !== undefined) {
-                                const fpsDisplay = document.getElementById('currentFpsDisplay');
-                                if (fpsDisplay) {
-                                    fpsDisplay.textContent = state.currentFps.toFixed(1);
+                            if (state.currentCameraFps !== undefined) {
+                                const cameraFpsDisplay = document.getElementById('currentCameraFpsDisplay');
+                                if (cameraFpsDisplay) {
+                                    cameraFpsDisplay.textContent = state.currentCameraFps.toFixed(1);
+                                }
+                            }
+                            
+                            if (state.currentMjpegFps !== undefined) {
+                                const mjpegFpsDisplay = document.getElementById('currentMjpegFpsDisplay');
+                                if (mjpegFpsDisplay) {
+                                    mjpegFpsDisplay.textContent = state.currentMjpegFps.toFixed(1);
+                                }
+                            }
+                            
+                            if (state.currentRtspFps !== undefined) {
+                                const rtspFpsDisplay = document.getElementById('currentRtspFpsDisplay');
+                                if (rtspFpsDisplay) {
+                                    rtspFpsDisplay.textContent = state.currentRtspFps.toFixed(1);
                                 }
                             }
                             
@@ -1315,6 +1333,9 @@ class HttpServer(
                             
                             // Track bandwidth
                             cameraService.recordBytesSent(clientId, jpegBytes.size.toLong())
+                            
+                            // Track MJPEG streaming FPS
+                            cameraService.recordMjpegFrameServed()
                         } catch (e: Exception) {
                             Log.d(TAG, "Stream client $clientId disconnected")
                             break

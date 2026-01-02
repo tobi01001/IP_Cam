@@ -103,9 +103,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var showResolutionOverlay: Boolean = true // Show actual resolution in bottom right for debugging
     private var showFpsOverlay: Boolean = true // Show FPS in bottom left
     // FPS tracking
-    private val fpsFrameTimes = mutableListOf<Long>() // Track frame times for FPS calculation
-    private var currentFps: Float = 0f // Current calculated FPS
+    private val fpsFrameTimes = mutableListOf<Long>() // Track frame times for FPS calculation (camera)
+    private var currentCameraFps: Float = 0f // Current calculated camera FPS
     private var lastFpsCalculation: Long = 0 // Last time FPS was calculated
+    
+    // MJPEG streaming FPS tracking (actual frames served to clients)
+    private val mjpegFpsFrameTimes = mutableListOf<Long>()
+    private var currentMjpegFps: Float = 0f
+    private var lastMjpegFpsCalculation: Long = 0
+    private val mjpegFpsLock = Any()
+    
+    // RTSP streaming FPS tracking (actual frames encoded)
+    private val rtspFpsFrameTimes = mutableListOf<Long>()
+    private var currentRtspFps: Float = 0f
+    private var lastRtspFpsCalculation: Long = 0
+    private val rtspFpsLock = Any()
+    
     // Target FPS settings
     @Volatile private var targetMjpegFps: Int = 10 // Target FPS for MJPEG streaming (default 10)
     @Volatile private var targetRtspFps: Int = 30 // Target FPS for RTSP streaming (default 30)
@@ -706,7 +719,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 if (processingStart - lastFpsCalculation > 500) {
                     if (fpsFrameTimes.size > 1) {
                         val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
-                        currentFps = if (timeSpan > 0) {
+                        currentCameraFps = if (timeSpan > 0) {
                             (fpsFrameTimes.size - 1) * 1000f / timeSpan
                         } else {
                             0f
@@ -739,7 +752,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
             if (frameCount == 0) {
-                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, FPS: ${"%.1f".format(currentFps)}")
+                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
             }
             
             // Apply camera orientation and rotation without creating squared bitmaps
@@ -1157,7 +1170,71 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun getTargetRtspFps(): Int = targetRtspFps
     
-    override fun getCurrentFps(): Float = currentFps
+    override fun getCurrentFps(): Float = currentCameraFps
+    
+    /**
+     * Get current MJPEG streaming FPS (frames actually served to clients)
+     */
+    fun getCurrentMjpegFps(): Float = currentMjpegFps
+    
+    /**
+     * Get current RTSP streaming FPS (frames actually encoded)
+     */
+    fun getCurrentRtspFps(): Float = currentRtspFps
+    
+    /**
+     * Record that a frame was served via MJPEG stream
+     * Called by HttpServer when a frame is sent to a client
+     */
+    override fun recordMjpegFrameServed() {
+        val now = System.currentTimeMillis()
+        synchronized(mjpegFpsLock) {
+            mjpegFpsFrameTimes.add(now)
+            // Keep only the last 2 seconds of frame times
+            val cutoffTime = now - 2000
+            mjpegFpsFrameTimes.removeAll { it < cutoffTime }
+            
+            // Calculate FPS every 500ms
+            if (now - lastMjpegFpsCalculation > 500) {
+                if (mjpegFpsFrameTimes.size > 1) {
+                    val timeSpan = mjpegFpsFrameTimes.last() - mjpegFpsFrameTimes.first()
+                    currentMjpegFps = if (timeSpan > 0) {
+                        (mjpegFpsFrameTimes.size - 1) * 1000f / timeSpan
+                    } else {
+                        0f
+                    }
+                }
+                lastMjpegFpsCalculation = now
+            }
+        }
+    }
+    
+    /**
+     * Record that a frame was encoded via RTSP
+     * Called by RTSPServer when a frame is successfully encoded
+     */
+    fun recordRtspFrameEncoded() {
+        val now = System.currentTimeMillis()
+        synchronized(rtspFpsLock) {
+            rtspFpsFrameTimes.add(now)
+            // Keep only the last 2 seconds of frame times
+            val cutoffTime = now - 2000
+            rtspFpsFrameTimes.removeAll { it < cutoffTime }
+            
+            // Calculate FPS every 500ms
+            if (now - lastRtspFpsCalculation > 500) {
+                if (rtspFpsFrameTimes.size > 1) {
+                    val timeSpan = rtspFpsFrameTimes.last() - rtspFpsFrameTimes.first()
+                    currentRtspFps = if (timeSpan > 0) {
+                        (rtspFpsFrameTimes.size - 1) * 1000f / timeSpan
+                    } else {
+                        0f
+                    }
+                }
+                lastRtspFpsCalculation = now
+            }
+        }
+    }
     
     private fun loadSettings() {
         val prefs = getSharedPreferences("IPCamSettings", Context.MODE_PRIVATE)
@@ -1697,7 +1774,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else null
         
         val fpsText = if (showFpsOverlay) {
-            "%.1f fps".format(currentFps)
+            // Show MJPEG streaming FPS (actual frames served to clients) instead of camera FPS
+            "%.1f fps".format(currentMjpegFps)
         } else null
         
         val resolutionText = if (showResolutionOverlay) {
@@ -1845,7 +1923,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "showBatteryOverlay": $showBatteryOverlay,
             "showResolutionOverlay": $showResolutionOverlay,
             "showFpsOverlay": $showFpsOverlay,
-            "currentFps": $currentFps,
+            "currentCameraFps": $currentCameraFps,
+            "currentMjpegFps": $currentMjpegFps,
+            "currentRtspFps": $currentRtspFps,
             "targetMjpegFps": $targetMjpegFps,
             "targetRtspFps": $targetRtspFps,
             "adaptiveQualityEnabled": $adaptiveQualityEnabled,
@@ -1929,7 +2009,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 width = resolution.width,
                 height = resolution.height,
                 fps = targetRtspFps,  // Use saved target FPS instead of hardcoded 30
-                initialBitrate = bitrateToUse
+                initialBitrate = bitrateToUse,
+                cameraService = this@CameraService  // Pass reference for FPS tracking
             )
             
             if (rtspServer?.start() != true) {
