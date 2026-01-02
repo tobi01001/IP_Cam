@@ -1999,25 +1999,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before sending state
         updateCpuUsage()
         
-        return """{
-            "camera": "$cameraName",
-            "resolution": "$resolutionLabel",
-            "cameraOrientation": "$cameraOrientation",
-            "rotation": $rotation,
-            "showDateTimeOverlay": $showDateTimeOverlay,
-            "showBatteryOverlay": $showBatteryOverlay,
-            "showResolutionOverlay": $showResolutionOverlay,
-            "showFpsOverlay": $showFpsOverlay,
-            "currentCameraFps": $currentCameraFps,
-            "currentMjpegFps": $currentMjpegFps,
-            "currentRtspFps": $currentRtspFps,
-            "cpuUsage": $currentCpuUsage,
-            "targetMjpegFps": $targetMjpegFps,
-            "targetRtspFps": $targetRtspFps,
-            "adaptiveQualityEnabled": $adaptiveQualityEnabled,
-            "flashlightAvailable": ${isFlashlightAvailable()},
-            "flashlightOn": ${isFlashlightEnabled()}
-        }""".trimIndent()
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$currentRtspFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
     }
     
     override fun recordBytesSent(clientId: Long, bytes: Long) {
