@@ -503,6 +503,12 @@ class HttpServer(
                         <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
                         <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
                     </ul>
+                    <hr style="margin-top: 30px; margin-bottom: 15px; border: none; border-top: 1px solid #ddd;">
+                    <div style="text-align: center; color: #666; font-size: 11px; font-style: italic;">
+                        <p style="margin: 5px 0;">IP Camera Server</p>
+                        <p style="margin: 5px 0;">${BuildInfo.getVersionString()}</p>
+                        <p style="margin: 5px 0;">${BuildInfo.getBuildString()}</p>
+                    </div>
                 </div>
                 <script>
                     // Configuration constants
@@ -1402,7 +1408,15 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
-                "endpoints": $endpoints
+                "endpoints": $endpoints,
+                "version": {
+                    "versionName": "${BuildInfo.versionName}",
+                    "versionCode": ${BuildInfo.versionCode},
+                    "commitHash": "${BuildInfo.commitHash}",
+                    "branch": "${BuildInfo.branch}",
+                    "buildTimestamp": "${BuildInfo.buildTimestamp}",
+                    "buildNumber": ${BuildInfo.buildNumber}
+                }
             }
         """.trimIndent()
         

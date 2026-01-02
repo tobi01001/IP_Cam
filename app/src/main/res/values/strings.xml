@@ -61,4 +61,5 @@
     <string name="mjpeg_target_fps_label">MJPEG Target FPS:</string>
     <string name="rtsp_target_fps_label">RTSP Target FPS:</string>
     <string name="current_fps_label">Current FPS:</string>
+    <string name="version_info_placeholder">Version info</string>
 </resources>
