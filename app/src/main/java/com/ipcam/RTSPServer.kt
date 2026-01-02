@@ -1234,15 +1234,14 @@ class RTSPServer(
     private fun drainEncoder() {
         val bufferInfo = MediaCodec.BufferInfo()
         
+        // Limit iterations to prevent blocking camera thread
+        // Process at most 3 output buffers per frame to maintain throughput
         var iterations = 0
-        val maxIterations = 10
+        val maxIterations = 3
         
-        // Use longer timeout for first few frames to catch format change event
-        val timeout = if (frameCount.get() <= 3L && (sps == null || pps == null)) {
-            10000L // 10ms timeout for first frames to ensure format change is caught
-        } else {
-            0L // Non-blocking for subsequent frames
-        }
+        // Always use non-blocking timeout to prevent camera thread blocking
+        // For first few frames, we rely on multiple drain calls to catch format change
+        val timeout = 0L // Always non-blocking
         
         while (iterations++ < maxIterations) {
             val outputBufferIndex = encoder?.dequeueOutputBuffer(bufferInfo, timeout) ?: MediaCodec.INFO_TRY_AGAIN_LATER

@@ -722,8 +722,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // === RTSP Pipeline (if enabled) ===
             // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
-            // NOTE: encodeFrame() is now non-blocking (uses dequeueInputBuffer with 0 timeout)
-            // This prevents RTSP encoding from blocking the camera thread and affecting MJPEG FPS
+            // OPTIMIZATION: Both dequeueInputBuffer and dequeueOutputBuffer use 0ms timeout (non-blocking)
+            // and drainEncoder processes max 3 buffers per call to minimize camera thread blocking.
+            // This ensures RTSP encoding doesn't reduce MJPEG FPS.
             if (rtspEnabled && rtspServer != null) {
                 try {
                     rtspServer?.encodeFrame(image)
