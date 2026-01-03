@@ -35,6 +35,7 @@ import android.view.OrientationEventListener
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
+import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -71,6 +72,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private val jpegLock = Any() // Lock for JPEG bytes access
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
+    // H.264 encoder for RTSP streaming (parallel pipeline)
+    private var h264Encoder: H264PreviewEncoder? = null
+    private var videoCaptureUseCase: androidx.camera.core.Preview? = null // For H.264 encoding
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
     // Per-camera resolution memory: store resolution for each camera separately
     private var backCameraResolution: Size? = null
@@ -543,12 +547,60 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lifecycleRegistry.currentState = Lifecycle.State.STARTED
         }
         
-        val builder = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        
-        // Use ResolutionSelector instead of deprecated setTargetResolution
-        selectedResolution?.let { resolution ->
-            Log.d(TAG, "Attempting to bind camera with resolution: ${resolution.width}x${resolution.height}")
+        try {
+            Log.d(TAG, "Unbinding all use cases before rebinding...")
+            cameraProvider?.unbindAll()
+            
+            val resolution = selectedResolution ?: Size(1920, 1080)
+            Log.d(TAG, "Binding camera with resolution: ${resolution.width}x${resolution.height}")
+            
+            // === Use Case 1: Preview for H.264 Encoding (Hardware MediaCodec) ===
+            // Only create if RTSP is enabled
+            if (rtspEnabled) {
+                try {
+                    // Create H.264 encoder
+                    h264Encoder = H264PreviewEncoder(
+                        width = resolution.width,
+                        height = resolution.height,
+                        fps = targetRtspFps,
+                        bitrate = if (rtspBitrate > 0) rtspBitrate else RTSPServer.calculateBitrate(resolution.width, resolution.height),
+                        rtspServer = rtspServer
+                    )
+                    h264Encoder?.start()
+                    
+                    // Create Preview for H.264 encoder (feeds to encoder's surface)
+                    videoCaptureUseCase = androidx.camera.core.Preview.Builder()
+                        .build()
+                        .apply {
+                            // Connect to encoder's input surface
+                            setSurfaceProvider { request ->
+                                val surface = h264Encoder?.getInputSurface()
+                                if (surface != null) {
+                                    request.provideSurface(
+                                        surface,
+                                        cameraExecutor
+                                    ) { }
+                                    Log.d(TAG, "H.264 encoder surface connected to camera")
+                                } else {
+                                    request.willNotProvideSurface()
+                                    Log.w(TAG, "H.264 encoder surface not available - encoder may have failed to initialize or been stopped")
+                                }
+                            }
+                        }
+                    Log.i(TAG, "H.264 encoder created and connected")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to create H.264 encoder", e)
+                    h264Encoder = null
+                    videoCaptureUseCase = null
+                }
+            } else {
+                // RTSP disabled - clean up encoder if exists
+                h264Encoder?.stop()
+                h264Encoder = null
+                videoCaptureUseCase = null
+            }
+            
+            // === Use Case 2: ImageAnalysis for MJPEG (CPU, throttled to targetMjpegFps) ===
             val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionFilter { supportedSizes, _ ->
                     // Try to find exact match first
@@ -583,26 +635,43 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     }
                 }
                 .build()
-            builder.setResolutionSelector(resolutionSelector)
-        }
-        
-        imageAnalysis = builder.build()
-            .also {
-                it.setAnalyzer(cameraExecutor) { image ->
-                    processImage(image)
-                }
-            }
-        
-        try {
-            Log.d(TAG, "Unbinding all use cases before rebinding...")
-            cameraProvider?.unbindAll()
             
-            Log.d(TAG, "Binding camera to lifecycle...")
-            camera = cameraProvider?.bindToLifecycle(this, currentCamera, imageAnalysis)
+            val mjpegAnalysis = ImageAnalysis.Builder()
+                .setResolutionSelector(resolutionSelector)
+                // Note: ImageAnalysis doesn't support setTargetFrameRate directly
+                // Frame rate throttling is achieved via KEEP_ONLY_LATEST backpressure
+                // which naturally throttles based on processing time
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
+                
+            mjpegAnalysis.setAnalyzer(cameraExecutor) { image ->
+                processMjpegFrame(image)
+            }
+            
+            // Store reference after configuration
+            imageAnalysis = mjpegAnalysis
+            
+            // === Bind Use Cases to Lifecycle ===
+            // Build list of use cases to bind based on what's enabled
+            val useCases = mutableListOf<androidx.camera.core.UseCase>(
+                mjpegAnalysis         // Always bind MJPEG/ImageAnalysis pipeline
+            )
+            
+            // Add H.264 encoder preview if RTSP is enabled
+            videoCaptureUseCase?.let { useCases.add(it) }
+            
+            Log.d(TAG, "Binding ${useCases.size} use cases to lifecycle (ImageAnalysis${if (videoCaptureUseCase != null) " + H264 Preview" else ""})")
+            camera = cameraProvider?.bindToLifecycle(this, currentCamera, *useCases.toTypedArray())
             
             if (camera == null) {
                 Log.e(TAG, "Camera binding returned null!")
                 return
+            }
+            
+            Log.i(TAG, "Camera bound successfully with ${useCases.size} use case(s):")
+            Log.i(TAG, "  1. ImageAnalysis (MJPEG + MainActivity preview): ~$targetMjpegFps fps target")
+            if (videoCaptureUseCase != null) {
+                Log.i(TAG, "  2. Preview → H.264 Encoder (RTSP): $targetRtspFps fps target")
             }
             
             // Check if flash is available for back camera
@@ -634,6 +703,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      */
     private fun stopCamera() {
         try {
+            // Stop H.264 encoder first
+            h264Encoder?.stop()
+            h264Encoder = null
+            videoCaptureUseCase = null
+            
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
             
@@ -643,7 +717,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear camera reference
             camera = null
             
-            Log.d(TAG, "Camera stopped successfully")
+            Log.d(TAG, "Camera stopped successfully (including H.264 encoder if active)")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping camera", e)
         }
@@ -709,11 +783,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
-    private fun processImage(image: ImageProxy) {
+    /**
+     * Process MJPEG frames (CPU-based, throttled to targetMjpegFps)
+     * This is called by ImageAnalysis use case, separate from H.264 encoding
+     */
+    private fun processMjpegFrame(image: ImageProxy) {
         val processingStart = System.currentTimeMillis()
         
         try {
-            // Track FPS: add current time to frame times list
+            // Track Camera FPS (from ImageAnalysis callback rate)
             synchronized(fpsFrameTimes) {
                 fpsFrameTimes.add(processingStart)
                 // Keep only the last 2 seconds of frame times
@@ -741,52 +819,34 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
             }
             
-            // DUAL-STREAM ARCHITECTURE:
-            // 1. MJPEG Pipeline: bitmap → annotation → JPEG compression (always active)
-            // 2. RTSP Pipeline: raw YUV → H.264 encoding (optional, bandwidth-efficient)
-            
-            // === RTSP Pipeline (if enabled) ===
-            // Feed raw YUV to RTSP encoder BEFORE bitmap conversion for efficiency
-            // OPTIMIZATION: Both dequeueInputBuffer and dequeueOutputBuffer use 0ms timeout (non-blocking)
-            // and drainEncoder processes max 3 buffers per call to minimize camera thread blocking.
-            // This ensures RTSP encoding doesn't reduce MJPEG FPS.
-            if (rtspEnabled && rtspServer != null) {
-                try {
-                    rtspServer?.encodeFrame(image)
-                } catch (e: Exception) {
-                    Log.e(TAG, "RTSP encoding failed", e)
-                    // Continue with MJPEG even if RTSP fails
-                }
-            }
-            
-            // === MJPEG Pipeline (always active) ===
+            // === MJPEG Pipeline (CPU-based, throttled) ===
+            // Convert YUV to Bitmap for MJPEG
             val bitmap = imageProxyToBitmap(image)
+            
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
             if (frameCount == 0) {
-                Log.d(TAG, "Processing frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
+                Log.d(TAG, "Processing MJPEG frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
             }
             
-            // Apply camera orientation and rotation without creating squared bitmaps
+            // Apply camera orientation and rotation
             val finalBitmap = applyRotationCorrectly(bitmap)
             if (frameCount == 0) {
                 Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
             }
             
-            // Annotate bitmap here on camera executor thread to avoid Canvas/Paint operations in HTTP threads
+            // Annotate bitmap (OSD overlays)
             val annotatedBitmap = annotateBitmap(finalBitmap)
             
-            // Determine JPEG quality - use adaptive quality if enabled, otherwise use default
+            // Determine JPEG quality - use adaptive quality if enabled
             val jpegQuality = if (adaptiveQualityEnabled) {
-                // Use default client (0L) for non-client-specific compression
-                // Client-specific quality will be applied during streaming
                 val settings = adaptiveQualityManager.getClientSettings(0L)
                 settings.jpegQuality
             } else {
                 JPEG_QUALITY_STREAM
             }
             
-            // Pre-compress to JPEG for HTTP serving (avoid Bitmap.compress on HTTP threads)
+            // Pre-compress to JPEG for HTTP serving
             val encodingStart = System.currentTimeMillis()
             val jpegBytes = ByteArrayOutputStream().use { stream ->
                 annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
@@ -801,7 +861,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             synchronized(bitmapLock) {
                 val oldBitmap = lastFrameBitmap
                 lastFrameBitmap = annotatedBitmap
-                // Recycle old bitmap after updating reference, checking if not already recycled
+                // Recycle old bitmap after updating reference
                 oldBitmap?.takeIf { !it.isRecycled }?.recycle()
             }
             
@@ -814,11 +874,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             val processingTime = System.currentTimeMillis() - processingStart
             performanceMetrics.recordFrameProcessingTime(processingTime)
             
-            // Notify MainActivity if it's listening - create a copy to avoid recycling issues
+            // Track MJPEG FPS
+            recordMjpegFrameServed()
+            
+            // Notify MainActivity if it's listening
             val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
             onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Error processing image", e)
+            Log.e(TAG, "Error processing MJPEG frame", e)
             performanceMetrics.recordFrameDropped()
         } finally {
             image.close()
