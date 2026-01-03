@@ -2,43 +2,51 @@
 
 ## Overview
 
-This document describes the implementation of the three parallel CameraX pipelines architecture as specified in `CAMERA_EFFICIENCY_ANALYSIS.md`. The implementation separates camera frame processing into independent, non-blocking pipelines to achieve optimal performance.
+This document describes the implementation of parallel CameraX pipelines architecture as specified in `CAMERA_EFFICIENCY_ANALYSIS.md`. The implementation separates camera frame processing into independent, non-blocking pipelines to achieve optimal performance.
 
 ## Architecture
 
-### Three Independent Pipelines
+### Two Independent Pipelines (Actual Implementation)
+
+**Note**: The original plan called for three pipelines, but the actual implementation uses two because MainActivity uses ImageView (not PreviewView) for display, receiving frames via ImageAnalysis callbacks.
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                     CameraX Provider                         │
 └─────────────────────────────────────────────────────────────┘
                             │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐
-│   Preview     │  │   Preview       │  │ ImageAnalysis    │
-│   (App UI)    │  │   (H.264)       │  │   (MJPEG)        │
-├───────────────┤  ├─────────────────┤  ├──────────────────┤
-│ GPU-Rendered  │  │ H264Encoder     │  │ YUV → Bitmap     │
-│ SurfaceView   │  │ Surface Input   │  │ CPU Processing   │
-└───────────────┘  └─────────────────┘  └──────────────────┘
-        │                   │                   │
-        │                   │                   │
-        ▼                   ▼                   ▼
-┌───────────────┐  ┌─────────────────┐  ┌──────────────────┐
-│ MainActivity  │  │ RTSPServer      │  │ HttpServer       │
-│ PreviewView   │  │ H.264/RTP       │  │ MJPEG/HTTP       │
-└───────────────┘  └─────────────────┘  └──────────────────┘
+        ┌───────────────────┴───────────────────┐
+        │                                       │
+        ▼                                       ▼
+┌─────────────────┐                  ┌──────────────────┐
+│   Preview       │                  │ ImageAnalysis    │
+│   (H.264)       │                  │   (MJPEG)        │
+├─────────────────┤                  ├──────────────────┤
+│ H264Encoder     │                  │ YUV → Bitmap     │
+│ Surface Input   │                  │ CPU Processing   │
+│ (RTSP only)     │                  │ + App Preview    │
+└─────────────────┘                  └──────────────────┘
+        │                                       │
+        │                                       ├──────────┐
+        ▼                                       ▼          ▼
+┌─────────────────┐                  ┌──────────────────┐ ┌──────────────┐
+│ RTSPServer      │                  │ HttpServer       │ │ MainActivity │
+│ H.264/RTP       │                  │ MJPEG/HTTP       │ │ ImageView    │
+└─────────────────┘                  └──────────────────┘ └──────────────┘
 ```
 
 ### Pipeline Characteristics
 
 | Pipeline | Processing | Target FPS | CPU Usage | Purpose |
 |----------|------------|------------|-----------|---------|
-| **Preview (App UI)** | GPU | 30 fps | ~0% | Real-time camera preview in app |
 | **H.264 Encoder** | Hardware MediaCodec | 30 fps | <10% | RTSP streaming (when enabled) |
-| **MJPEG Analysis** | CPU (bitmap) | 10-15 fps | ~20-30% | HTTP MJPEG streaming |
+| **MJPEG/ImageAnalysis** | CPU (bitmap) | 10-15 fps | ~20-30% | HTTP MJPEG streaming + App preview |
+
+**Key Insight**: ImageAnalysis serves dual purpose:
+1. HTTP MJPEG streaming (pre-compressed JPEG bytes)
+2. MainActivity preview (Bitmap via callback → ImageView)
+
+This is more efficient than three separate pipelines since app preview doesn't need GPU rendering.
 
 ## Implementation Details
 
@@ -118,10 +126,7 @@ private var videoCaptureUseCase: androidx.camera.core.Preview? = null
 #### Updated bindCamera()
 ```kotlin
 private fun bindCamera() {
-    // 1. Create Preview for app UI (GPU)
-    val appPreview = Preview.Builder().build()
-    
-    // 2. Create H264Encoder + Preview for RTSP (if enabled)
+    // 1. Create H264Encoder + Preview for RTSP (if enabled)
     if (rtspEnabled) {
         h264Encoder = H264PreviewEncoder(...)
         h264Encoder?.start()
@@ -138,14 +143,14 @@ private fun bindCamera() {
             }
     }
     
-    // 3. Create ImageAnalysis for MJPEG (always enabled)
+    // 2. Create ImageAnalysis for MJPEG + App Preview
     val mjpegAnalysis = ImageAnalysis.Builder()
         .setBackpressureStrategy(STRATEGY_KEEP_ONLY_LATEST)
         .build()
     mjpegAnalysis.setAnalyzer(cameraExecutor) { processMjpegFrame(it) }
     
-    // 4. Bind all use cases
-    val useCases = mutableListOf(appPreview, mjpegAnalysis)
+    // 3. Bind use cases (1 or 2 depending on RTSP state)
+    val useCases = mutableListOf(mjpegAnalysis)
     videoCaptureUseCase?.let { useCases.add(it) }
     
     camera = cameraProvider?.bindToLifecycle(this, currentCamera, *useCases.toTypedArray())
@@ -198,11 +203,12 @@ processImage() {
 
 ### After (Parallel Processing)
 ```
-Preview → GPU rendering (0ms CPU)
-Preview → H264Encoder → RTSP (hardware, ~2ms CPU)
+Preview → H264Encoder → RTSP (hardware, ~2ms CPU, when enabled)
 ImageAnalysis → processMjpegFrame() (8-12ms CPU, throttled)
+    ├── MJPEG/HTTP serving
+    └── MainActivity ImageView display
 
-// All pipelines run independently
+// Pipelines run independently
 // No blocking or interference
 // Camera maintains 30 fps
 ```
@@ -222,22 +228,22 @@ ImageAnalysis → processMjpegFrame() (8-12ms CPU, throttled)
 
 ### 1. No Frame Drops
 - **Before**: RTSP encoding blocked MJPEG processing → 23 fps camera
-- **After**: All pipelines independent → 30 fps maintained
+- **After**: Pipelines independent → 30 fps maintained
 
 ### 2. Optimal Resource Usage
-- **GPU**: Handles app preview (zero CPU)
 - **Hardware Encoder**: Handles H.264 (minimal CPU)
-- **CPU**: Only for MJPEG (already optimized)
+- **CPU**: Only for MJPEG + app preview (already optimized)
+- **Dual Purpose**: ImageAnalysis serves both HTTP and app display
 
 ### 3. Better Scalability
-- Can add more preview consumers without affecting encoding
 - Can adjust MJPEG throttling without affecting RTSP
 - Can disable RTSP without performance penalty
+- Single ImageAnalysis for multiple consumers (HTTP + app)
 
 ### 4. Cleaner Architecture
 - **Single Source of Truth**: CameraX manages camera
 - **Separation of Concerns**: Each pipeline independent
-- **Easier Debugging**: Can isolate pipeline issues
+- **Efficient Reuse**: ImageAnalysis serves dual purpose
 
 ## Configuration
 
@@ -301,19 +307,24 @@ targetMjpegFps: Int = 10  // MJPEG processing target (via backpressure)
 
 ### 1. CameraX Use Case Limit
 CameraX supports max 3 use cases per camera. Current implementation uses:
-1. Preview (app UI)
+1. ImageAnalysis (MJPEG + app preview)
 2. Preview (H.264 encoder) - only when RTSP enabled
-3. ImageAnalysis (MJPEG)
 
-**Workaround**: If more use cases needed, can use single Preview with multiple surfaces.
+This leaves room for one additional use case if needed.
 
 ### 2. Frame Rate Throttling
 ImageAnalysis doesn't have explicit FPS control. Throttling achieved via:
 - `STRATEGY_KEEP_ONLY_LATEST` backpressure
 - Natural throttling from processing time (~100ms per frame = 10 fps)
 
-### 3. OSD Overlays on H.264
-H.264 encoder works directly on camera frames, bypassing bitmap processing.
+### 3. App Preview Method
+App uses ImageView (not PreviewView/SurfaceView) for display:
+- **Advantage**: Reuses ImageAnalysis pipeline (efficient)
+- **Limitation**: Not GPU-accelerated (but bitmap processing already CPU-bound)
+- **Note**: This is the original app design, maintained for compatibility
+
+### 4. OSD Overlays on H.264
+H.264 encoder works directly on camera frames, bypassing bitmap processing:
 - **MJPEG**: Has OSD overlays (date, battery, FPS, resolution)
 - **H.264**: No overlays (pure camera feed)
 
