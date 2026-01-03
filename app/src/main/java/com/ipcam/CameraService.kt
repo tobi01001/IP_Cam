@@ -554,11 +554,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             val resolution = selectedResolution ?: Size(1920, 1080)
             Log.d(TAG, "Binding camera with resolution: ${resolution.width}x${resolution.height}")
             
-            // === Use Case 1: Preview (GPU-accelerated for app UI) ===
-            val appPreview = androidx.camera.core.Preview.Builder()
-                .build()
-            
-            // === Use Case 2: Preview for H.264 Encoding (Hardware MediaCodec) ===
+            // === Use Case 1: Preview for H.264 Encoding (Hardware MediaCodec) ===
             // Only create if RTSP is enabled
             if (rtspEnabled) {
                 try {
@@ -604,7 +600,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 videoCaptureUseCase = null
             }
             
-            // === Use Case 3: ImageAnalysis for MJPEG (CPU, throttled to targetMjpegFps) ===
+            // === Use Case 2: ImageAnalysis for MJPEG (CPU, throttled to targetMjpegFps) ===
             val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionFilter { supportedSizes, _ ->
                     // Try to find exact match first
@@ -658,14 +654,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // === Bind Use Cases to Lifecycle ===
             // Build list of use cases to bind based on what's enabled
             val useCases = mutableListOf<androidx.camera.core.UseCase>(
-                appPreview,           // Always bind app preview
-                mjpegAnalysis         // Always bind MJPEG pipeline
+                mjpegAnalysis         // Always bind MJPEG/ImageAnalysis pipeline
             )
             
             // Add H.264 encoder preview if RTSP is enabled
             videoCaptureUseCase?.let { useCases.add(it) }
             
-            Log.d(TAG, "Binding ${useCases.size} use cases to lifecycle (Preview, ImageAnalysis${if (videoCaptureUseCase != null) ", H264" else ""})")
+            Log.d(TAG, "Binding ${useCases.size} use cases to lifecycle (ImageAnalysis${if (videoCaptureUseCase != null) " + H264 Preview" else ""})")
             camera = cameraProvider?.bindToLifecycle(this, currentCamera, *useCases.toTypedArray())
             
             if (camera == null) {
@@ -673,11 +668,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return
             }
             
-            Log.i(TAG, "Camera bound successfully with ${useCases.size} parallel pipelines:")
-            Log.i(TAG, "  1. Preview (GPU): 30 fps, zero CPU overhead")
-            Log.i(TAG, "  2. ImageAnalysis (MJPEG): ~$targetMjpegFps fps target")
+            Log.i(TAG, "Camera bound successfully with ${useCases.size} use case(s):")
+            Log.i(TAG, "  1. ImageAnalysis (MJPEG + MainActivity preview): ~$targetMjpegFps fps target")
             if (videoCaptureUseCase != null) {
-                Log.i(TAG, "  3. Preview → H.264 Encoder (RTSP): $targetRtspFps fps target")
+                Log.i(TAG, "  2. Preview → H.264 Encoder (RTSP): $targetRtspFps fps target")
             }
             
             // Check if flash is available for back camera
