@@ -829,8 +829,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Log.d(TAG, "Processing MJPEG frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
             }
             
-            // Apply camera orientation and rotation
-            val finalBitmap = applyRotationCorrectly(bitmap)
+            // Apply all transformations using single matrix (camera orientation + rotation)
+            val finalBitmap = transformBitmap(bitmap)
             if (frameCount == 0) {
                 Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
             }
@@ -889,7 +889,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
-    private fun applyRotationCorrectly(bitmap: Bitmap): Bitmap {
+    /**
+     * Transform bitmap using a single matrix operation.
+     * 
+     * The "Single Matrix" Rule: All transformations (camera orientation + manual rotation)
+     * are calculated once and applied in a single Bitmap.createBitmap() call.
+     * This significantly reduces memory churn and GC pressure by avoiding multiple
+     * bitmap allocations and intermediate recycle() calls.
+     * 
+     * Benefits:
+     * - Single bitmap allocation instead of multiple
+     * - No intermediate bitmap recycling (eliminates IllegalStateException risk)
+     * - Faster processing with single matrix application
+     * - Lower memory pressure and GC overhead
+     */
+    private fun transformBitmap(bitmap: Bitmap): Bitmap {
         // Calculate total rotation: camera orientation + manual rotation
         val baseRotation = when (cameraOrientation) {
             "portrait" -> 90
@@ -899,73 +913,36 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         val totalRotation = (baseRotation + rotation) % 360
         
+        // Early return if no transformation needed
         if (totalRotation == 0) {
             return bitmap
         }
         
-        // Use a properly sized matrix to avoid creating squared bitmaps
+        // Create single transformation matrix
         val matrix = Matrix()
         matrix.postRotate(totalRotation.toFloat())
         
         return try {
-            // Create bitmap with exact dimensions needed for rotated image
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
-            if (rotated != bitmap) {
+            // Apply all transformations in a SINGLE Bitmap.createBitmap() call
+            // This is the key optimization: one allocation, one operation
+            val transformed = Bitmap.createBitmap(
+                bitmap, 
+                0, 
+                0, 
+                bitmap.width, 
+                bitmap.height, 
+                matrix, 
+                false  // false = use nearest-neighbor for speed
+            )
+            
+            // Only recycle original if a new bitmap was created
+            if (transformed != bitmap) {
                 bitmap.recycle()
             }
-            rotated
+            
+            transformed
         } catch (e: Exception) {
-            Log.e(TAG, "Error rotating bitmap", e)
-            bitmap
-        }
-    }
-    
-    private fun applyCameraOrientation(bitmap: Bitmap): Bitmap {
-        // Determine the base rotation needed to achieve the desired camera orientation
-        // Camera sensor is typically landscape-oriented by default
-        val baseRotation = when (cameraOrientation) {
-            "portrait" -> 90 // Rotate to portrait
-            "landscape" -> 0 // Keep landscape (default sensor orientation)
-            else -> 0
-        }
-        
-        if (baseRotation == 0) {
-            return bitmap
-        }
-        
-        val matrix = Matrix()
-        matrix.postRotate(baseRotation.toFloat())
-        
-        return try {
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            if (rotated != bitmap) {
-                bitmap.recycle()
-            }
-            rotated
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying camera orientation", e)
-            bitmap
-        }
-    }
-    
-    private fun applyRotation(bitmap: Bitmap): Bitmap {
-        // Apply the user-specified rotation on top of the camera orientation
-        if (rotation == 0) {
-            return bitmap
-        }
-        
-        val matrix = Matrix()
-        matrix.postRotate(rotation.toFloat())
-        
-        return try {
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            // Only recycle the original if a new bitmap was created
-            if (rotated != bitmap) {
-                bitmap.recycle()
-            }
-            rotated
-        } catch (e: Exception) {
-            Log.e(TAG, "Error rotating bitmap", e)
+            Log.e(TAG, "Error transforming bitmap", e)
             bitmap
         }
     }
