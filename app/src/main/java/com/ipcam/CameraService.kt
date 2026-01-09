@@ -1414,7 +1414,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Get current RTSP streaming FPS (frames actually encoded)
      */
-    fun getCurrentRtspFps(): Float = currentRtspFps
+    fun getCurrentRtspFps(): Float {
+        // Return actual encoder output rate instead of frame queue rate
+        return rtspServer?.getMetrics()?.encodedFps ?: 0f
+    }
     
     /**
      * Record that a frame was served via MJPEG stream
@@ -2269,8 +2272,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before sending state
         updateCpuUsage()
         
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
         // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$currentRtspFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
     }
     
     /**
@@ -2285,6 +2291,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before comparing state
         updateCpuUsage()
         
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
         // Build map of current values
         val currentState = mapOf<String, Any>(
             "camera" to cameraName,
@@ -2297,7 +2306,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "showFpsOverlay" to showFpsOverlay,
             "currentCameraFps" to currentCameraFps,
             "currentMjpegFps" to currentMjpegFps,
-            "currentRtspFps" to currentRtspFps,
+            "currentRtspFps" to rtspEncodedFps,
             "cpuUsage" to currentCpuUsage,
             "targetMjpegFps" to targetMjpegFps,
             "targetRtspFps" to targetRtspFps,
@@ -2350,6 +2359,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
         synchronized(broadcastLock) {
             lastBroadcastState.clear()
             lastBroadcastState["camera"] = cameraName
@@ -2362,7 +2374,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastBroadcastState["showFpsOverlay"] = showFpsOverlay
             lastBroadcastState["currentCameraFps"] = currentCameraFps
             lastBroadcastState["currentMjpegFps"] = currentMjpegFps
-            lastBroadcastState["currentRtspFps"] = currentRtspFps
+            lastBroadcastState["currentRtspFps"] = rtspEncodedFps
             lastBroadcastState["cpuUsage"] = currentCpuUsage
             lastBroadcastState["targetMjpegFps"] = targetMjpegFps
             lastBroadcastState["targetRtspFps"] = targetRtspFps
