@@ -925,13 +925,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         } else {
                             0f
                         }
-                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
-                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
-                            currentCameraFps = newFps
-                            broadcastCameraState()
-                        } else {
-                            currentCameraFps = newFps
-                        }
+                        // Update FPS value but don't broadcast (FPS is status, not a setting)
+                        // WebApp will fetch current FPS via /status endpoint
+                        currentCameraFps = newFps
                     }
                     lastFpsCalculation = processingStart
                 }
@@ -1434,13 +1430,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } else {
                         0f
                     }
-                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
-                    if (kotlin.math.abs(newFps - currentMjpegFps) > 0.5f) {
-                        currentMjpegFps = newFps
-                        broadcastCameraState()
-                    } else {
-                        currentMjpegFps = newFps
-                    }
+                    // Update FPS value but don't broadcast (FPS is status, not a setting)
+                    // WebApp will fetch current FPS via /status endpoint
+                    currentMjpegFps = newFps
                 }
                 lastMjpegFpsCalculation = now
             }
@@ -1468,13 +1460,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } else {
                         0f
                     }
-                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
-                    if (kotlin.math.abs(newFps - currentRtspFps) > 0.5f) {
-                        currentRtspFps = newFps
-                        broadcastCameraState()
-                    } else {
-                        currentRtspFps = newFps
-                    }
+                    // Update FPS value but don't broadcast (FPS is status, not a setting)
+                    // WebApp will fetch current FPS via /status endpoint
+                    currentRtspFps = newFps
                 }
                 lastRtspFpsCalculation = now
             }
