@@ -111,7 +111,7 @@ Your expertise centers on five critical areas for IP camera applications:
 - Monitor thermal state, request battery exemption
 
 ### Camera Framework
-- CameraX (primary, API 24+), Camera2 API (advanced), MediaCodec (hardware encoding)
+- CameraX (primary, API 30+), Camera2 API (advanced), MediaCodec (hardware encoding)
 
 ## Architecture Patterns
 
@@ -186,7 +186,7 @@ CameraService (ForegroundService)
 ```kotlin
 android {
     defaultConfig {
-        minSdk = 24  // Android 7.0+
+        minSdk = 30  // Android 11+
         targetSdk = 34  // Android 14
     }
 }

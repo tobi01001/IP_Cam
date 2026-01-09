@@ -175,7 +175,7 @@ FPS limiting occurs only during streaming output, not during raw camera processi
 
 ## Compatibility
 
-- **Android Version**: Works on all supported Android versions (API 24+)
+- **Android Version**: Works on all supported Android versions (API 30+)
 - **Devices**: Tested on various devices with different battery capacities
 - **Performance Impact**: Negligible CPU overhead for battery monitoring (checked every ~1 second)
 

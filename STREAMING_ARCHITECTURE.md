@@ -1379,7 +1379,7 @@ This section provides detailed technical information about hardware-accelerated 
 
 #### MediaCodec Hardware Acceleration
 
-**Yes, hardware encoding is widely available on Android devices** through the `MediaCodec` API, which has been part of Android since API level 16 (Android 4.1). Modern devices (especially since Android 7.0+) have reliable hardware encoder support.
+**Yes, hardware encoding is widely available on Android devices** through the `MediaCodec` API, which has been part of Android since API level 16 (Android 4.1). Modern devices (especially since Android 11+) have reliable and mature hardware encoder support.
 
 **Checking Hardware Encoder Availability:**
 

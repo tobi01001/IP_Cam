@@ -320,30 +320,29 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun checkBatteryOptimization() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
-            val packageName = packageName
-            
-            if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
-                AlertDialog.Builder(this)
-                    .setTitle("Battery Optimization")
-                    .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
-                    .setPositiveButton("Disable Optimization") { _, _ ->
-                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-                            data = Uri.parse("package:$packageName")
-                        }
-                        try {
-                            startActivity(intent)
-                        } catch (e: Exception) {
-                            Toast.makeText(this, "Could not open battery settings", Toast.LENGTH_SHORT).show()
-                        }
+        // API 30+ always supports battery optimization APIs (introduced in API 23)
+        val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val packageName = packageName
+        
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+            AlertDialog.Builder(this)
+                .setTitle("Battery Optimization")
+                .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
+                .setPositiveButton("Disable Optimization") { _, _ ->
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:$packageName")
                     }
-                    .setNegativeButton("Skip") { dialog, _ ->
-                        dialog.dismiss()
+                    try {
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        Toast.makeText(this, "Could not open battery settings", Toast.LENGTH_SHORT).show()
                     }
-                    .create()
-                    .show()
-            }
+                }
+                .setNegativeButton("Skip") { dialog, _ ->
+                    dialog.dismiss()
+                }
+                .create()
+                .show()
         }
     }
     

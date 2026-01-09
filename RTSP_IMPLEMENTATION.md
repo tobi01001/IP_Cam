@@ -30,9 +30,7 @@ HLS streaming was fundamentally broken on many Android devices due to MediaMuxer
 | **Latency** | 6-12 seconds | 500ms-1s |
 | **Implementation** | Complex (segments, playlists) | Standard RTSP protocol |
 
-**Root Cause of HLS Failure**: MediaMuxer on API 24-25 and some API 26+ devices creates standard MP4 (moov-at-end) instead of fragmented MP4 or MPEG-TS. Standard MP4 is incompatible with HLS as it requires the entire file to be downloaded before playback.
-
-**RTSP Solution**: Bypasses MediaMuxer entirely by extracting NAL units directly from MediaCodec and sending them over RTP. This works on all Android devices with hardware H.264 encoding support (virtually all modern devices).
+**RTSP Solution**: Bypasses MediaMuxer entirely by extracting NAL units directly from MediaCodec and sending them over RTP. This works on all Android devices with hardware H.264 encoding support (all modern Android 11+ devices).
 
 ## Architecture
 
