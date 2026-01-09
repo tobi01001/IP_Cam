@@ -280,8 +280,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
-        // Don't start HTTP server automatically in onCreate - wait for explicit start request
-        startCamera()
+        // Delay camera start slightly to ensure foreground service is fully established
+        // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
+        // The foreground service needs to be in STARTED state before accessing camera
+        serviceScope.launch {
+            delay(500) // Give foreground service time to fully initialize
+            startCamera()
+        }
         
         // Auto-start RTSP if it was enabled in settings
         // This ensures RTSP persists across app/service restarts
@@ -289,7 +294,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "RTSP was enabled in settings, starting RTSP server...")
             serviceScope.launch {
                 // Delay slightly to let camera initialize first
-                delay(1000)
+                delay(1500) // Increased delay to account for camera init delay
                 enableRTSPStreaming()
             }
         }
@@ -826,20 +831,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val processingStart = System.currentTimeMillis()
         
         try {
-            // === MJPEG FPS Throttling ===
-            // Skip frame if not enough time has passed since last processed frame
-            val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
-            val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
-            
-            if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
-                // Skip this frame to maintain target FPS
-                // Must close image to avoid resource leak
-                return
-            }
-            
-            lastMjpegFrameProcessedTimeMs = processingStart
-            
-            // Track Camera FPS (from ImageAnalysis callback rate)
+            // Track Camera FPS FIRST (from ImageAnalysis callback rate - ALL frames including skipped)
             synchronized(fpsFrameTimes) {
                 fpsFrameTimes.add(processingStart)
                 // Keep only the last 2 seconds of frame times
@@ -866,6 +858,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     lastFpsCalculation = processingStart
                 }
             }
+            
+            // === MJPEG FPS Throttling ===
+            // Skip frame if not enough time has passed since last processed frame
+            val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
+            val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
+            
+            if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
+                // Skip this frame to maintain target MJPEG FPS
+                // Camera FPS already tracked above, so this only affects MJPEG stream FPS
+                return
+            }
+            
+            lastMjpegFrameProcessedTimeMs = processingStart
             
             // === MJPEG Pipeline (CPU-based, throttled) ===
             // Convert YUV to Bitmap for MJPEG
