@@ -456,6 +456,12 @@ class RTSPServer(
             
             isEncoding.set(true)
             
+            // Reset stream start time when encoder is (re)initialized
+            // This ensures accurate FPS calculation after encoder recreation
+            // (e.g., resolution changes, bitrate updates, etc.)
+            streamStartTimeMs = 0
+            Log.d(TAG, "Stream start time reset for accurate FPS calculation")
+            
             return true
             
         } catch (e: Exception) {
