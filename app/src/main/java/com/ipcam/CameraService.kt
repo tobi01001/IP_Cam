@@ -1292,32 +1292,42 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     // FPS settings
     override fun setTargetMjpegFps(fps: Int) {
-        targetMjpegFps = fps.coerceIn(1, 60)
-        // Note: MJPEG FPS throttling is applied in processMjpegFrame()
-        // No need to rebind camera - frame skipping handles the throttling
-        saveSettings()
-        broadcastCameraState()
-        onCameraStateChangedCallback?.invoke(currentCamera)
-        Log.d(TAG, "Target MJPEG FPS set to $targetMjpegFps (throttling applied in frame processing)")
+        val newFps = fps.coerceIn(1, 60)
+        
+        // Only update if value actually changed to avoid unnecessary broadcasts
+        if (targetMjpegFps != newFps) {
+            targetMjpegFps = newFps
+            // Note: MJPEG FPS throttling is applied in processMjpegFrame()
+            // No need to rebind camera - frame skipping handles the throttling
+            saveSettings()
+            broadcastCameraState()
+            onCameraStateChangedCallback?.invoke(currentCamera)
+            Log.d(TAG, "Target MJPEG FPS set to $targetMjpegFps (throttling applied in frame processing)")
+        }
     }
     
     override fun getTargetMjpegFps(): Int = targetMjpegFps
     
     override fun setTargetRtspFps(fps: Int) {
         val oldFps = targetRtspFps
-        targetRtspFps = fps.coerceIn(1, 60)
+        val newFps = fps.coerceIn(1, 60)
         
-        // If FPS changed and RTSP is enabled, need to rebind camera to recreate encoder with new FPS
-        if (oldFps != targetRtspFps && rtspEnabled) {
-            Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding camera to apply change")
+        // Only update if value actually changed
+        if (oldFps != newFps) {
+            targetRtspFps = newFps
             saveSettings()
-            broadcastCameraState()
-            onCameraStateChangedCallback?.invoke(currentCamera)
-            requestBindCamera()
-        } else {
-            saveSettings()
-            broadcastCameraState()
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            
+            // If FPS changed and RTSP is enabled, need to rebind camera to recreate encoder with new FPS
+            if (rtspEnabled) {
+                Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding camera to apply change")
+                broadcastCameraState()
+                onCameraStateChangedCallback?.invoke(currentCamera)
+                requestBindCamera()
+            } else {
+                // RTSP not enabled, just broadcast the setting change
+                broadcastCameraState()
+                onCameraStateChangedCallback?.invoke(currentCamera)
+            }
         }
     }
     
@@ -2261,6 +2271,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             rtspEnabled = true
+            
+            // Reset RTSP FPS counter when enabling to start fresh
+            currentRtspFps = 0f
+            synchronized(rtspFpsLock) {
+                rtspFpsFrameTimes.clear()
+            }
+            
             saveSettings()
             Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
@@ -2293,6 +2310,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             rtspEnabled = false
             rtspServer?.stop()
             rtspServer = null
+            
+            // Reset RTSP FPS counter to avoid showing stale values
+            currentRtspFps = 0f
+            synchronized(rtspFpsLock) {
+                rtspFpsFrameTimes.clear()
+            }
+            
             saveSettings()
             Log.i(TAG, "RTSP streaming disabled")
             
