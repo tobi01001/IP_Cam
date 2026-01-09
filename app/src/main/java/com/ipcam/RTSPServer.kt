@@ -1356,6 +1356,147 @@ class RTSPServer(
     }
     
     /**
+     * Update codec configuration (SPS/PPS) from pre-encoded H.264 stream
+     * Called by H264PreviewEncoder when codec config is available
+     */
+    fun updateCodecConfig(configData: ByteArray) {
+        // Parse SPS and PPS from codec config
+        val nalUnits = parseNALUnitsFromBuffer(configData)
+        
+        nalUnits.forEach { nal ->
+            if (nal.isEmpty()) return@forEach
+            val nalType = nal[0].toInt() and 0x1F
+            when (nalType) {
+                7 -> {
+                    // SPS (Sequence Parameter Set)
+                    sps = nal
+                    Log.i(TAG, "SPS updated from pre-encoded stream: ${nal.size} bytes")
+                }
+                8 -> {
+                    // PPS (Picture Parameter Set)
+                    pps = nal
+                    Log.i(TAG, "PPS updated from pre-encoded stream: ${nal.size} bytes")
+                }
+            }
+        }
+    }
+    
+    /**
+     * Send pre-encoded H.264 frame to all RTSP clients
+     * Called by H264PreviewEncoder with encoded NAL units
+     */
+    fun sendH264Frame(
+        nalUnitData: ByteArray,
+        presentationTimeUs: Long,
+        isKeyFrame: Boolean
+    ) {
+        if (sessions.isEmpty()) return
+        
+        // Parse NAL units from frame
+        val nalUnits = parseNALUnitsFromBuffer(nalUnitData)
+        
+        // Update frame count
+        frameCount.incrementAndGet()
+        
+        // Track FPS
+        cameraService?.recordRtspFrameEncoded()
+        
+        // Send each NAL unit to all playing sessions
+        nalUnits.forEach { nalUnit ->
+            if (nalUnit.isNotEmpty()) {
+                sessions.values.forEach { session ->
+                    if (session.state == SessionState.PLAYING) {
+                        session.sendRTP(nalUnit, isKeyFrame)
+                    }
+                }
+            }
+        }
+    }
+    
+    /**
+     * Parse NAL units from byte array (handles Annex B format with start codes)
+     * Used for pre-encoded H.264 streams from H264PreviewEncoder
+     */
+    private fun parseNALUnitsFromBuffer(data: ByteArray): List<ByteArray> {
+        val nalUnits = mutableListOf<ByteArray>()
+        var offset = 0
+        
+        while (offset < data.size) {
+            // Check for start code (0x00 0x00 0x00 0x01 or 0x00 0x00 0x01)
+            var startCodeLength = 0
+            if (offset + 3 < data.size && 
+                data[offset] == 0.toByte() && 
+                data[offset + 1] == 0.toByte() && 
+                data[offset + 2] == 0.toByte() && 
+                data[offset + 3] == 1.toByte()) {
+                startCodeLength = 4
+            } else if (offset + 2 < data.size && 
+                       data[offset] == 0.toByte() && 
+                       data[offset + 1] == 0.toByte() && 
+                       data[offset + 2] == 1.toByte()) {
+                startCodeLength = 3
+            }
+            
+            if (startCodeLength > 0) {
+                // Find next start code
+                var nextOffset = offset + startCodeLength
+                // Safe bounds check: ensure we can read 4-byte start code
+                while (nextOffset <= data.size - 4) {
+                    if (data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 0.toByte() && 
+                        data[nextOffset + 3] == 1.toByte()) {
+                        break
+                    }
+                    // Check for 3-byte start code only if 4-byte didn't match
+                    if (nextOffset <= data.size - 3 &&
+                        data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 1.toByte()) {
+                        break
+                    }
+                    nextOffset++
+                }
+                
+                // If we stopped before data.size, we might have partial start code at end
+                // Check remaining bytes for 3-byte start code
+                if (nextOffset == data.size - 3) {
+                    if (data[nextOffset] == 0.toByte() && 
+                        data[nextOffset + 1] == 0.toByte() && 
+                        data[nextOffset + 2] == 1.toByte()) {
+                        // Found 3-byte start code at end
+                        // nextOffset stays the same (points to start code)
+                    } else {
+                        // No start code, include rest of data
+                        nextOffset = data.size
+                    }
+                } else if (nextOffset > data.size - 3) {
+                    // No room for start code, include rest of data
+                    nextOffset = data.size
+                }
+                
+                // Extract NAL unit (without start code)
+                val nalSize = nextOffset - (offset + startCodeLength)
+                if (nalSize > 0) {
+                    val nalUnit = data.copyOfRange(offset + startCodeLength, nextOffset)
+                    nalUnits.add(nalUnit)
+                }
+                
+                offset = nextOffset
+            } else {
+                // No start code found - might be a single NAL unit without start code
+                if (offset == 0 && nalUnits.isEmpty()) {
+                    // Entire buffer is a single NAL unit
+                    nalUnits.add(data)
+                }
+                break
+            }
+        }
+        
+        return nalUnits
+    }
+    
+    /**
      * Stop RTSP server
      */
     fun stop() {
