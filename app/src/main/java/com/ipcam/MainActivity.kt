@@ -667,6 +667,9 @@ class MainActivity : AppCompatActivity() {
         
         mjpegFpsSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                // Skip if we're programmatically updating the spinner
+                if (isUpdatingSpinners) return
+                
                 val fps = fpsOptions[position]
                 cameraService?.setTargetMjpegFps(fps)
             }
