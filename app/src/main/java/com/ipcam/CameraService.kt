@@ -280,11 +280,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
-        // Delay camera start slightly to ensure foreground service is fully established
+        // Delay camera start to ensure foreground service is fully established
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
+        // Increased delay from 500ms to 1500ms for better reliability
         serviceScope.launch {
-            delay(500) // Give foreground service time to fully initialize
+            delay(1500) // Longer delay to ensure service permissions are fully initialized
             startCamera()
         }
         
@@ -294,7 +295,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "RTSP was enabled in settings, starting RTSP server...")
             serviceScope.launch {
                 // Delay slightly to let camera initialize first
-                delay(1500) // Increased delay to account for camera init delay
+                delay(2500) // Increased delay to account for camera init delay
                 enableRTSPStreaming()
             }
         }
@@ -732,8 +733,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Notify observers that camera state has changed (binding completed)
             onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
-            Log.e(TAG, "Camera binding failed with exception", e)
+            Log.e(TAG, "Camera binding failed with exception: ${e.message}", e)
             e.printStackTrace()
+            
+            // Clear camera reference on failure to allow watchdog to retry
+            camera = null
+            
+            // Show error notification to user
+            showUserNotification(
+                "Camera Binding Failed",
+                "Failed to initialize camera: ${e.message}. The system will retry automatically."
+            )
         }
     }
     
@@ -1854,6 +1864,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     }
                 } else if (camera == null) {
                     // Camera provider exists but camera not bound
+                    // This happens after ERROR_CAMERA_DISABLED or other binding failures
                     Log.w(TAG, "Watchdog: Camera provider exists but camera not bound, binding camera...")
                     bindCamera()
                     needsRecovery = true
