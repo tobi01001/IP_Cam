@@ -75,6 +75,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // H.264 encoder for RTSP streaming (parallel pipeline)
     private var h264Encoder: H264PreviewEncoder? = null
     private var videoCaptureUseCase: androidx.camera.core.Preview? = null // For H.264 encoding
+    
+    // MJPEG frame throttling
+    @Volatile private var lastMjpegFrameProcessedTimeMs: Long = 0
     private val resolutionCache = mutableMapOf<Int, List<Size>>()
     // Per-camera resolution memory: store resolution for each camera separately
     private var backCameraResolution: Size? = null
@@ -291,9 +294,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             startServer()
         }
         
+        // Try to start camera if not already bound
+        // This handles cases where:
+        // 1. Service started before MainActivity granted permission
+        // 2. Service restarted after being killed
+        // 3. Permission was granted after service onCreate
         if (cameraProvider == null) {
             startCamera()
         }
+        
+        // If camera is already bound, ensure it's in correct state
+        // This handles configuration changes or service restarts where camera binding might have been lost
+        if (cameraProvider != null && camera == null) {
+            Log.d(TAG, "Camera provider exists but camera not bound, rebinding...")
+            bindCamera()
+        }
+        
         return START_STICKY
     }
     
@@ -529,14 +545,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private fun startCamera() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
             != PackageManager.PERMISSION_GRANTED) {
-            Log.e(TAG, "Camera permission not granted")
+            Log.w(TAG, "startCamera() called but Camera permission not granted - waiting for permission")
             return
         }
         
+        Log.d(TAG, "startCamera() - initializing camera provider...")
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
-            cameraProvider = cameraProviderFuture.get()
-            bindCamera()
+            try {
+                cameraProvider = cameraProviderFuture.get()
+                Log.i(TAG, "Camera provider initialized successfully")
+                bindCamera()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get camera provider", e)
+                cameraProvider = null
+            }
         }, ContextCompat.getMainExecutor(this))
     }
     
@@ -791,6 +814,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val processingStart = System.currentTimeMillis()
         
         try {
+            // === MJPEG FPS Throttling ===
+            // Skip frame if not enough time has passed since last processed frame
+            val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
+            val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
+            
+            if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
+                // Skip this frame to maintain target FPS
+                // Log throttling occasionally (every 100th skip) to avoid log spam
+                if (timeSinceLastFrame % 100 == 0L) {
+                    Log.d(TAG, "MJPEG frame throttled: $timeSinceLastFrame ms since last frame (target: $minFrameIntervalMs ms for ${targetMjpegFps} fps)")
+                }
+                return
+            }
+            
+            lastMjpegFrameProcessedTimeMs = processingStart
+            
             // Track Camera FPS (from ImageAnalysis callback rate)
             synchronized(fpsFrameTimes) {
                 fpsFrameTimes.add(processingStart)
@@ -1230,18 +1269,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // FPS settings
     override fun setTargetMjpegFps(fps: Int) {
         targetMjpegFps = fps.coerceIn(1, 60)
+        // Note: MJPEG FPS throttling is applied in processMjpegFrame()
+        // No need to rebind camera - frame skipping handles the throttling
         saveSettings()
         broadcastCameraState()
         onCameraStateChangedCallback?.invoke(currentCamera)
+        Log.d(TAG, "Target MJPEG FPS set to $targetMjpegFps (throttling applied in frame processing)")
     }
     
     override fun getTargetMjpegFps(): Int = targetMjpegFps
     
     override fun setTargetRtspFps(fps: Int) {
+        val oldFps = targetRtspFps
         targetRtspFps = fps.coerceIn(1, 60)
-        saveSettings()
-        broadcastCameraState()
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        
+        // If FPS changed and RTSP is enabled, need to rebind camera to recreate encoder with new FPS
+        if (oldFps != targetRtspFps && rtspEnabled) {
+            Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding camera to apply change")
+            saveSettings()
+            broadcastCameraState()
+            onCameraStateChangedCallback?.invoke(currentCamera)
+            requestBindCamera()
+        } else {
+            saveSettings()
+            broadcastCameraState()
+            onCameraStateChangedCallback?.invoke(currentCamera)
+        }
     }
     
     override fun getTargetRtspFps(): Int = targetRtspFps
@@ -1766,6 +1819,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 var needsRecovery = false
                 
+                // Check camera provider health - ensure camera is initialized
+                // This handles cases where permission was granted after service started
+                if (cameraProvider == null) {
+                    val hasPermission = ContextCompat.checkSelfPermission(
+                        this@CameraService, 
+                        Manifest.permission.CAMERA
+                    ) == PackageManager.PERMISSION_GRANTED
+                    
+                    if (hasPermission) {
+                        Log.w(TAG, "Watchdog: Camera provider not initialized but permission granted, starting camera...")
+                        startCamera()
+                        needsRecovery = true
+                    } else {
+                        // Permission not granted - don't count as recovery needed
+                        // Log every 30 seconds to avoid spam
+                        if (watchdogRetryDelay >= 30_000L) {
+                            Log.d(TAG, "Watchdog: Camera provider not initialized, waiting for permission...")
+                        }
+                    }
+                } else if (camera == null) {
+                    // Camera provider exists but camera not bound
+                    Log.w(TAG, "Watchdog: Camera provider exists but camera not bound, binding camera...")
+                    bindCamera()
+                    needsRecovery = true
+                }
+                
                 // Check server health - only restart if it wasn't intentionally stopped
                 if (!serverIntentionallyStopped && httpServer?.isAlive() != true) {
                     Log.w(TAG, "Watchdog: Server not alive, restarting...")
@@ -1773,16 +1852,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     needsRecovery = true
                 }
                 
-                // Check camera health
-                val frameAge = System.currentTimeMillis() - lastFrameTimestamp
-                if (frameAge > FRAME_STALE_THRESHOLD_MS) {
-                    Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
-                    if (cameraProvider == null) {
-                        startCamera()
-                    } else {
+                // Check camera health - only if camera is bound
+                if (camera != null) {
+                    val frameAge = System.currentTimeMillis() - lastFrameTimestamp
+                    if (frameAge > FRAME_STALE_THRESHOLD_MS) {
+                        Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
                         requestBindCamera()
+                        needsRecovery = true
                     }
-                    needsRecovery = true
                 }
                 
                 // Check battery level and manage wake locks accordingly
@@ -2161,6 +2238,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             rtspEnabled = true
             saveSettings()
             Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
+            
+            // Rebind camera to create H.264 encoder use case
+            // This is critical - the H264PreviewEncoder is only created in bindCamera()
+            Log.d(TAG, "Rebinding camera to create H.264 encoder pipeline")
+            requestBindCamera()
+            
             return true
             
         } catch (e: Exception) {
@@ -2187,6 +2270,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             rtspServer = null
             saveSettings()
             Log.i(TAG, "RTSP streaming disabled")
+            
+            // Rebind camera to remove H.264 encoder use case
+            // This frees resources when RTSP is disabled
+            Log.d(TAG, "Rebinding camera to remove H.264 encoder pipeline")
+            requestBindCamera()
             
         } catch (e: Exception) {
             Log.e(TAG, "Error disabling RTSP streaming", e)
