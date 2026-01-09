@@ -330,18 +330,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "IP Camera Service",
-                NotificationManager.IMPORTANCE_DEFAULT  // Changed from LOW to DEFAULT for better persistence
-            ).apply {
-                description = "Keeps camera service running in background"
-                setShowBadge(true)
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
+        // API 30+ always supports notification channels (introduced in API 26)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "IP Camera Service",
+            NotificationManager.IMPORTANCE_DEFAULT  // Changed from LOW to DEFAULT for better persistence
+        ).apply {
+            description = "Keeps camera service running in background"
+            setShowBadge(true)
         }
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(channel)
     }
     
     private fun isPortAvailable(port: Int): Boolean {

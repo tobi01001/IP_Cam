@@ -93,7 +93,7 @@ All requirements from the issue have been successfully addressed:
 - FOREGROUND_SERVICE_CAMERA permission (line 15)
 - Graceful handling when permissions not granted
 - Service continues even without notification visibility
-- Tested API levels 24-34
+- Tested API levels 30-34
 
 ## Additional Features Implemented
 

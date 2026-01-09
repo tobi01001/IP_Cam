@@ -164,7 +164,7 @@ Potential improvements for future versions:
 ## Compatibility
 - ✅ No breaking changes to API
 - ✅ Backward compatible with existing clients
-- ✅ Android 7.0+ (API 24+) supported
+- ✅ Android 11+ (API 30+) supported
 - ✅ Works with all existing surveillance systems (ZoneMinder, Shinobi, etc.)
 
 ## Verification
