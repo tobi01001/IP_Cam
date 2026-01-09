@@ -354,6 +354,9 @@ class HttpServer(
                     <div class="row">
                         <label for="rtspFpsSelect">RTSP Target FPS:</label>
                         <select id="rtspFpsSelect">
+                            <option value="1">1 fps</option>
+                            <option value="5">5 fps</option>
+                            <option value="10">10 fps</option>
                             <option value="15">15 fps</option>
                             <option value="20">20 fps</option>
                             <option value="24">24 fps</option>

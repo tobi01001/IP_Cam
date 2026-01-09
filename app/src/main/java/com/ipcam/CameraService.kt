@@ -927,8 +927,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             val processingTime = System.currentTimeMillis() - processingStart
             performanceMetrics.recordFrameProcessingTime(processingTime)
             
-            // Track MJPEG FPS
-            recordMjpegFrameServed()
+            // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
+            // Don't track here to avoid double-counting
             
             // Notify MainActivity if it's listening
             val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
