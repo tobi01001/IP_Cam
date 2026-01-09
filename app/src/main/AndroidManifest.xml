@@ -27,7 +27,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.IPCam"
-        tools:targetApi="30">
+        tools:targetApi="34">
         <activity
             android:name=".MainActivity"
             android:exported="true"

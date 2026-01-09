@@ -202,9 +202,9 @@ Modern Devices (API 30+)
 #EXT-X-TARGETDURATION:2
 #EXT-X-MEDIA-SEQUENCE:0
 #EXTINF:2.0,
-segment0.m4s                  ← Correct ext
+segment0.ts                   ← Correct ext
 #EXTINF:2.0,
-segment1.m4s
+segment1.ts
 ```
 
 ## Request Flow Fix

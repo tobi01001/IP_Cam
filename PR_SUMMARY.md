@@ -269,8 +269,6 @@ Results:
 - ✅ All NVR software
 - File extension: `.ts`
 - M3U8 version: 3
-- File extension: `.m4s`
-- M3U8 version: 7
 
 ---
 
