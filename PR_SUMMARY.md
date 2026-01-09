@@ -259,25 +259,16 @@ Results:
 ## Compatibility
 
 ### Device Requirements
-- **Minimum:** Android 7.0 (API 24)
-- **Recommended:** Android 8.0+ (API 26+) for MPEG-TS support
+- **Minimum:** Android 11 (API 30)
+- **Recommended:** Android 11+ (API 30+) for full MPEG-TS support
 
 ### Format Support
-**MPEG-TS (API 26+, Preferred):**
+**MPEG-TS (API 30+, Standard):**
 - ✅ All major HLS players
 - ✅ All major browsers
 - ✅ All NVR software
 - File extension: `.ts`
 - M3U8 version: 3
-
-**MP4 Fallback (API 24-25):**
-- ✅ VLC 3.0+
-- ✅ Modern browsers with MSE
-- ⚠️ Safari (may work)
-- ⚠️ Some older HLS players
-- ⚠️ Some NVR software
-- File extension: `.m4s`
-- M3U8 version: 7
 
 ---
 

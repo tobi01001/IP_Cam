@@ -32,7 +32,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 - **Performance Monitoring**: Real-time bandwidth and quality metrics
 
 ## Target Device
-Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 7.0+)
+Developed and tested for Samsung Galaxy S10+ (but should work on any Android device with camera and Android 11+)
 
 ## Documentation
 
@@ -44,7 +44,7 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 
 
 ## Requirements
-- Android 7.0 (API level 24) or higher
+- Android 11 (API level 30) or higher
 - Camera permission
 - WiFi connection
 

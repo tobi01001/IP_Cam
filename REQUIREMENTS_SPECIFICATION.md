@@ -3,9 +3,9 @@
 **Version:** 1.0  
 **Date:** 2025-12-21  
 **Document Type:** Technical Requirements Specification  
-**Target Platform:** Android 12+ (API Level 31+)
+**Target Platform:** Android 11+ (API Level 30+)
 
-**Note:** Android 12 (API 31) is the minimum supported version due to significant platform changes in foreground service management, privacy indicators, and background execution restrictions that are critical for reliable 24/7 camera operation.
+**Note:** Android 11 (API 30) is the minimum supported version to leverage modern Android features including improved foreground service management, enhanced privacy controls, scoped storage, and robust background execution capabilities that are essential for reliable 24/7 camera operation.
 
 ---
 

@@ -159,9 +159,9 @@ dependencies {
 
 ### Minimum SDK Requirements
 
-- **Min SDK:** 24 (Android 7.0) - Already configured ✅
-- **Recommended:** 26+ for optimal MediaCodec support
-- **Target SDK:** 34 (Android 14) - Already configured ✅
+- **Min SDK:** 30 (Android 11) - Configured ✅
+- **Recommended:** 30+ for optimal MediaCodec support and modern Android features
+- **Target SDK:** 34 (Android 14) - Configured ✅
 
 ---
 
