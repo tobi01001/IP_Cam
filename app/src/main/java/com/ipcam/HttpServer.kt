@@ -203,24 +203,34 @@ class HttpServer(
         val message = "event: state\ndata: $stateJson\n\n"
         
         synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
+            // Collect inactive clients for removal to avoid concurrent modification
+            val toRemove = mutableListOf<SSEClient>()
+            
+            sseClients.forEach { client ->
                 if (client.active) {
-                    try {
-                        runBlocking {
-                            client.channel.writeStringUtf8(message)
-                            client.channel.flush()
+                    // Launch coroutine for each client to avoid blocking
+                    GlobalScope.launch(Dispatchers.IO) {
+                        try {
+                            // Write with timeout to avoid hanging
+                            withTimeout(500) {
+                                client.channel.writeStringUtf8(message)
+                                client.channel.flush()
+                            }
+                        } catch (e: TimeoutCancellationException) {
+                            Log.d(TAG, "SSE client ${client.id} write timeout")
+                            client.active = false
+                        } catch (e: Exception) {
+                            Log.d(TAG, "SSE client ${client.id} write failed: ${e.message}")
+                            client.active = false
                         }
-                    } catch (e: Exception) {
-                        Log.d(TAG, "SSE client ${client.id} disconnected")
-                        client.active = false
-                        iterator.remove()
                     }
                 } else {
-                    iterator.remove()
+                    toRemove.add(client)
                 }
             }
+            
+            // Remove inactive clients
+            sseClients.removeAll(toRemove)
         }
     }
     
