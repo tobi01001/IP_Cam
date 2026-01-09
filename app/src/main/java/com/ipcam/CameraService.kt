@@ -280,8 +280,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
-        // Don't start server automatically in onCreate - wait for explicit start request
+        // Don't start HTTP server automatically in onCreate - wait for explicit start request
         startCamera()
+        
+        // Auto-start RTSP if it was enabled in settings
+        // This ensures RTSP persists across app/service restarts
+        if (rtspEnabled) {
+            Log.d(TAG, "RTSP was enabled in settings, starting RTSP server...")
+            serviceScope.launch {
+                // Delay slightly to let camera initialize first
+                delay(1000)
+                enableRTSPStreaming()
+            }
+        }
+        
         startWatchdog()
     }
     
@@ -821,10 +833,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
                 // Skip this frame to maintain target FPS
-                // Log throttling occasionally (every 100th skip) to avoid log spam
-                if (timeSinceLastFrame % 100 == 0L) {
-                    Log.d(TAG, "MJPEG frame throttled: $timeSinceLastFrame ms since last frame (target: $minFrameIntervalMs ms for ${targetMjpegFps} fps)")
-                }
+                // Must close image to avoid resource leak
                 return
             }
             
