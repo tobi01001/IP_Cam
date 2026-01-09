@@ -89,6 +89,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Camera binding state management
     @Volatile private var isBindingInProgress: Boolean = false
     private val bindingLock = Any() // Lock for binding synchronization
+    @Volatile private var lastBindRequestTime: Long = 0 // Time of last bind request
+    private var pendingBindJob: Job? = null // Job for pending bind operation
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -185,6 +187,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         // Camera rebinding debounce
+         private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
          const val EXTRA_START_SERVER = "start_server"
          // Thread pool settings for NanoHTTPD
@@ -729,6 +733,45 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
             
+            // Monitor camera state for lifecycle events
+            // This helps detect when camera is closed or in error state
+            camera?.cameraInfo?.cameraState?.observe(this) { cameraState ->
+                Log.d(TAG, "Camera state changed: ${cameraState.type}, error: ${cameraState.error?.toString() ?: "none"}")
+                
+                when (cameraState.type) {
+                    androidx.camera.core.CameraState.Type.CLOSED -> {
+                        Log.w(TAG, "Camera CLOSED state detected - camera may need rebinding")
+                        // Don't automatically rebind here to avoid infinite loops
+                        // Let the watchdog handle recovery via frame stale detection
+                    }
+                    androidx.camera.core.CameraState.Type.CLOSING -> {
+                        Log.d(TAG, "Camera closing...")
+                    }
+                    androidx.camera.core.CameraState.Type.PENDING_OPEN -> {
+                        Log.d(TAG, "Camera opening...")
+                    }
+                    androidx.camera.core.CameraState.Type.OPENING -> {
+                        Log.d(TAG, "Camera is opening...")
+                    }
+                    androidx.camera.core.CameraState.Type.OPEN -> {
+                        Log.i(TAG, "Camera is open and ready")
+                    }
+                }
+                
+                // Log any errors for debugging
+                cameraState.error?.let { error ->
+                    Log.e(TAG, "Camera error: code=${error.code}, ${error.cause?.message ?: "no cause"}", error.cause)
+                    
+                    // For critical errors, clear camera reference so watchdog can retry
+                    if (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
+                        error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
+                        error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE) {
+                        Log.e(TAG, "Critical camera error detected, clearing camera reference for recovery")
+                        camera = null
+                    }
+                }
+            }
+            
             // Notify observers that camera state has changed (binding completed)
             onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
@@ -776,20 +819,41 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Stop camera, apply settings, and restart camera.
      * This ensures settings are properly applied without conflicts.
      * Uses proper async handling to avoid blocking the main thread.
-     * Prevents overlapping bind operations.
+     * Prevents overlapping bind operations using both flag-based and time-based debouncing.
      * 
      * PRIVATE: Only CameraService methods should trigger rebinding.
      * External callers should use methods like switchCamera() or setResolutionAndRebind()
      * that encapsulate both the setting change and rebinding.
      */
     private fun requestBindCamera() {
-        // Check if a binding operation is already in progress
+        val now = System.currentTimeMillis()
+        
+        // Time-based debouncing: Check if enough time has passed since last request
         synchronized(bindingLock) {
+            val timeSinceLastRequest = now - lastBindRequestTime
+            if (timeSinceLastRequest < CAMERA_REBIND_DEBOUNCE_MS) {
+                Log.d(TAG, "requestBindCamera() debounced - too soon (${timeSinceLastRequest}ms < ${CAMERA_REBIND_DEBOUNCE_MS}ms)")
+                
+                // Cancel any pending bind job and schedule a new one
+                pendingBindJob?.cancel()
+                val remainingDelay = CAMERA_REBIND_DEBOUNCE_MS - timeSinceLastRequest
+                
+                pendingBindJob = serviceScope.launch {
+                    delay(remainingDelay)
+                    // Recursively call after delay - this time it will pass the debounce check
+                    requestBindCamera()
+                }
+                return
+            }
+            
+            // Flag-based debouncing: Check if a binding operation is already in progress
             if (isBindingInProgress) {
                 Log.d(TAG, "requestBindCamera() ignored - binding already in progress")
                 return
             }
+            
             isBindingInProgress = true
+            lastBindRequestTime = now
         }
         
         // Log stack trace to identify caller
@@ -1891,6 +1955,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     val frameAge = System.currentTimeMillis() - lastFrameTimestamp
                     if (frameAge > FRAME_STALE_THRESHOLD_MS) {
                         Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
+                        requestBindCamera()
+                        needsRecovery = true
+                    }
+                    
+                    // Check camera state - detect CLOSED state which indicates camera was released
+                    val cameraState = try {
+                        camera?.cameraInfo?.cameraState?.value
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Watchdog: Error reading camera state", e)
+                        null
+                    }
+                    
+                    if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
+                        Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
                         requestBindCamera()
                         needsRecovery = true
                     }
