@@ -188,9 +188,18 @@ class HttpServer(
     
     /**
      * Broadcast camera state changes to all SSE clients
+     * Uses delta broadcasting - only sends changed values to reduce bandwidth
+     * and prevent unnecessary UI updates
      */
     fun broadcastCameraState() {
-        val stateJson = cameraService.getCameraStateJson()
+        // Get delta JSON (only changed fields)
+        val stateJson = cameraService.getCameraStateDeltaJson()
+        
+        // If nothing changed, don't broadcast
+        if (stateJson == null) {
+            return
+        }
+        
         val message = "event: state\ndata: $stateJson\n\n"
         
         synchronized(sseClientsLock) {
@@ -988,19 +997,20 @@ class HttpServer(
                     };
                     
                     // Handle camera state updates pushed by server
-                    let lastReceivedState = null;  // Track last state to detect actual changes
+                    // Server now sends delta updates (only changed values) to reduce bandwidth
+                    let lastReceivedState = {};  // Track cumulative state
                     
                     eventSource.addEventListener('state', function(event) {
                         try {
-                            const state = JSON.parse(event.data);
-                            console.log('Received state update from server:', state);
+                            const deltaState = JSON.parse(event.data);
+                            console.log('Received delta state update from server:', deltaState);
                             
-                            // Check if this is an actual change
-                            const cameraChanged = !lastReceivedState || lastReceivedState.camera !== state.camera;
-                            const resolutionChanged = !lastReceivedState || lastReceivedState.resolution !== state.resolution;
+                            // Merge delta into cumulative state
+                            Object.assign(lastReceivedState, deltaState);
+                            const state = lastReceivedState;
                             
                             // Update resolution spinner if changed
-                            if (state.resolution && resolutionChanged) {
+                            if (deltaState.resolution !== undefined) {
                                 const formatSelect = document.getElementById('formatSelect');
                                 const options = formatSelect.options;
                                 for (let i = 0; i < options.length; i++) {
@@ -1015,8 +1025,8 @@ class HttpServer(
                                 }
                             }
                             
-                            // Update camera orientation spinner if changed
-                            if (state.cameraOrientation) {
+                            // Update camera orientation spinner if delta contains it
+                            if (deltaState.cameraOrientation !== undefined) {
                                 const orientationSelect = document.getElementById('orientationSelect');
                                 const options = orientationSelect.options;
                                 for (let i = 0; i < options.length; i++) {
@@ -1030,8 +1040,8 @@ class HttpServer(
                                 }
                             }
                             
-                            // Update rotation spinner if changed
-                            if (state.rotation !== undefined) {
+                            // Update rotation spinner if delta contains it
+                            if (deltaState.rotation !== undefined) {
                                 const rotationSelect = document.getElementById('rotationSelect');
                                 const options = rotationSelect.options;
                                 for (let i = 0; i < options.length; i++) {
@@ -1045,8 +1055,8 @@ class HttpServer(
                                 }
                             }
                             
-                            // Update resolution overlay checkbox if changed
-                            if (state.showResolutionOverlay !== undefined) {
+                            // Update resolution overlay checkbox if delta contains it
+                            if (deltaState.showResolutionOverlay !== undefined) {
                                 const checkbox = document.getElementById('resolutionOverlayCheckbox');
                                 if (checkbox.checked !== state.showResolutionOverlay) {
                                     checkbox.checked = state.showResolutionOverlay;
@@ -1054,8 +1064,8 @@ class HttpServer(
                                 }
                             }
                             
-                            // Update OSD overlay checkboxes
-                            if (state.showDateTimeOverlay !== undefined) {
+                            // Update OSD overlay checkboxes if delta contains them
+                            if (deltaState.showDateTimeOverlay !== undefined) {
                                 const checkbox = document.getElementById('dateTimeOverlayCheckbox');
                                 if (checkbox && checkbox.checked !== state.showDateTimeOverlay) {
                                     checkbox.checked = state.showDateTimeOverlay;
@@ -1063,7 +1073,7 @@ class HttpServer(
                                 }
                             }
                             
-                            if (state.showBatteryOverlay !== undefined) {
+                            if (deltaState.showBatteryOverlay !== undefined) {
                                 const checkbox = document.getElementById('batteryOverlayCheckbox');
                                 if (checkbox && checkbox.checked !== state.showBatteryOverlay) {
                                     checkbox.checked = state.showBatteryOverlay;
@@ -1071,7 +1081,7 @@ class HttpServer(
                                 }
                             }
                             
-                            if (state.showFpsOverlay !== undefined) {
+                            if (deltaState.showFpsOverlay !== undefined) {
                                 const checkbox = document.getElementById('fpsOverlayCheckbox');
                                 if (checkbox && checkbox.checked !== state.showFpsOverlay) {
                                     checkbox.checked = state.showFpsOverlay;
@@ -1079,36 +1089,36 @@ class HttpServer(
                                 }
                             }
                             
-                            // Update FPS displays and controls
-                            if (state.currentCameraFps !== undefined) {
+                            // Update FPS displays if delta contains them (live updates)
+                            if (deltaState.currentCameraFps !== undefined) {
                                 const cameraFpsDisplay = document.getElementById('currentCameraFpsDisplay');
                                 if (cameraFpsDisplay) {
                                     cameraFpsDisplay.textContent = state.currentCameraFps.toFixed(1);
                                 }
                             }
                             
-                            if (state.currentMjpegFps !== undefined) {
+                            if (deltaState.currentMjpegFps !== undefined) {
                                 const mjpegFpsDisplay = document.getElementById('currentMjpegFpsDisplay');
                                 if (mjpegFpsDisplay) {
                                     mjpegFpsDisplay.textContent = state.currentMjpegFps.toFixed(1);
                                 }
                             }
                             
-                            if (state.currentRtspFps !== undefined) {
+                            if (deltaState.currentRtspFps !== undefined) {
                                 const rtspFpsDisplay = document.getElementById('currentRtspFpsDisplay');
                                 if (rtspFpsDisplay) {
                                     rtspFpsDisplay.textContent = state.currentRtspFps.toFixed(1);
                                 }
                             }
                             
-                            if (state.cpuUsage !== undefined) {
+                            if (deltaState.cpuUsage !== undefined) {
                                 const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
                                 if (cpuUsageDisplay) {
                                     cpuUsageDisplay.textContent = state.cpuUsage.toFixed(1);
                                 }
                             }
                             
-                            if (state.targetMjpegFps !== undefined) {
+                            if (deltaState.targetMjpegFps !== undefined) {
                                 const mjpegSelect = document.getElementById('mjpegFpsSelect');
                                 if (mjpegSelect) {
                                     const options = mjpegSelect.options;
@@ -1124,7 +1134,7 @@ class HttpServer(
                                 }
                             }
                             
-                            if (state.targetRtspFps !== undefined) {
+                            if (deltaState.targetRtspFps !== undefined) {
                                 const rtspSelect = document.getElementById('rtspFpsSelect');
                                 if (rtspSelect) {
                                     const options = rtspSelect.options;
@@ -1143,20 +1153,18 @@ class HttpServer(
                             // Update flashlight button state
                             updateFlashlightButton();
                             
-                            // Reload stream if it's active to reflect changes immediately
-                            if (streamActive) {
+                            // Reload stream if it's active and settings changed (not just status)
+                            const settingsChanged = deltaState.camera || deltaState.resolution || deltaState.rotation;
+                            if (streamActive && settingsChanged) {
                                 console.log('Reloading stream to reflect state changes');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             }
                             
-                            // If camera switched or resolution actually changed, reload formats
-                            if (cameraChanged) {
+                            // If camera switched, reload formats
+                            if (deltaState.camera !== undefined) {
                                 console.log('Camera changed, reloading formats');
                                 loadFormats();
                             }
-                            
-                            // Store current state for next comparison
-                            lastReceivedState = state;
                             
                         } catch (e) {
                             console.error('Failed to handle state update:', e);

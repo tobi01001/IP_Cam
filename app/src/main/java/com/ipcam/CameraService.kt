@@ -98,6 +98,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var batteryUpdatePending: Boolean = false
     // Battery threshold for wake lock management (20%)
     private val BATTERY_THRESHOLD_PERCENT = 20
+    // State tracking for delta broadcasting (only send changed values via SSE)
+    private val lastBroadcastState = mutableMapOf<String, Any>()
+    private val broadcastLock = Any() // Lock for broadcast state synchronization
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -925,9 +928,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         } else {
                             0f
                         }
-                        // Update FPS value but don't broadcast (FPS is status, not a setting)
-                        // WebApp will fetch current FPS via /status endpoint
-                        currentCameraFps = newFps
+                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
+                            currentCameraFps = newFps
+                            broadcastCameraState()
+                        } else {
+                            currentCameraFps = newFps
+                        }
                     }
                     lastFpsCalculation = processingStart
                 }
@@ -1430,9 +1437,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } else {
                         0f
                     }
-                    // Update FPS value but don't broadcast (FPS is status, not a setting)
-                    // WebApp will fetch current FPS via /status endpoint
-                    currentMjpegFps = newFps
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentMjpegFps) > 0.5f) {
+                        currentMjpegFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentMjpegFps = newFps
+                    }
                 }
                 lastMjpegFpsCalculation = now
             }
@@ -1460,9 +1471,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } else {
                         0f
                     }
-                    // Update FPS value but don't broadcast (FPS is status, not a setting)
-                    // WebApp will fetch current FPS via /status endpoint
-                    currentRtspFps = newFps
+                    // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                    if (kotlin.math.abs(newFps - currentRtspFps) > 0.5f) {
+                        currentRtspFps = newFps
+                        broadcastCameraState()
+                    } else {
+                        currentRtspFps = newFps
+                    }
                 }
                 lastRtspFpsCalculation = now
             }
@@ -2254,7 +2269,77 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before sending state
         updateCpuUsage()
         
+        // Full state JSON - used for /status endpoint and initial SSE connection
         return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$currentRtspFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
+    }
+    
+    /**
+     * Get camera state JSON with only changed values (delta broadcasting)
+     * This reduces bandwidth and prevents unnecessary UI updates for unchanged values
+     * Returns null if nothing has changed since last broadcast
+     */
+    fun getCameraStateDeltaJson(): String? {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
+        
+        // Update CPU usage before comparing state
+        updateCpuUsage()
+        
+        // Build map of current values
+        val currentState = mapOf<String, Any>(
+            "camera" to cameraName,
+            "resolution" to resolutionLabel,
+            "cameraOrientation" to cameraOrientation,
+            "rotation" to rotation,
+            "showDateTimeOverlay" to showDateTimeOverlay,
+            "showBatteryOverlay" to showBatteryOverlay,
+            "showResolutionOverlay" to showResolutionOverlay,
+            "showFpsOverlay" to showFpsOverlay,
+            "currentCameraFps" to currentCameraFps,
+            "currentMjpegFps" to currentMjpegFps,
+            "currentRtspFps" to currentRtspFps,
+            "cpuUsage" to currentCpuUsage,
+            "targetMjpegFps" to targetMjpegFps,
+            "targetRtspFps" to targetRtspFps,
+            "adaptiveQualityEnabled" to adaptiveQualityEnabled,
+            "flashlightAvailable" to isFlashlightAvailable(),
+            "flashlightOn" to isFlashlightEnabled()
+        )
+        
+        // Find changed fields
+        val changes = mutableListOf<String>()
+        
+        synchronized(broadcastLock) {
+            currentState.forEach { (key, value) ->
+                val lastValue = lastBroadcastState[key]
+                val hasChanged = when (value) {
+                    is Float -> lastValue == null || kotlin.math.abs(value - (lastValue as? Float ?: 0f)) > 0.01f
+                    else -> lastValue != value
+                }
+                
+                if (hasChanged) {
+                    // Format value for JSON
+                    val jsonValue = when (value) {
+                        is String -> "\"$value\""
+                        is Boolean -> value.toString()
+                        is Int -> value.toString()
+                        is Float -> value.toString()
+                        else -> value.toString()
+                    }
+                    changes.add("\"$key\":$jsonValue")
+                    // Update last broadcast state
+                    lastBroadcastState[key] = value
+                }
+            }
+        }
+        
+        // If nothing changed, return null
+        if (changes.isEmpty()) {
+            return null
+        }
+        
+        // Build JSON with only changed fields
+        return "{${changes.joinToString(",")}}"
     }
     
     override fun recordBytesSent(clientId: Long, bytes: Long) {
