@@ -894,13 +894,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * The "Single Matrix" Rule: All transformations (camera orientation + manual rotation)
      * are calculated once and applied in a single Bitmap.createBitmap() call.
-     * This significantly reduces memory churn and GC pressure by avoiding multiple
-     * bitmap allocations and intermediate recycle() calls.
+     * This significantly reduces memory churn and GC pressure by avoiding intermediate
+     * bitmap allocations and recycle() calls.
      * 
      * Benefits:
-     * - Single bitmap allocation instead of multiple
+     * - Single bitmap allocation instead of multiple intermediate bitmaps
      * - No intermediate bitmap recycling (eliminates IllegalStateException risk)
-     * - Faster processing with single matrix application
+     * - Faster processing by avoiding intermediate bitmap creation
      * - Lower memory pressure and GC overhead
      */
     private fun transformBitmap(bitmap: Bitmap): Bitmap {
@@ -932,7 +932,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 bitmap.width, 
                 bitmap.height, 
                 matrix, 
-                false  // false = use nearest-neighbor for speed
+                false  // false = disable bilinear filtering for speed (uses nearest-neighbor)
             )
             
             // Only recycle original if a new bitmap was created
