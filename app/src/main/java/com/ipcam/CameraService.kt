@@ -735,7 +735,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Monitor camera state for lifecycle events
             // This helps detect when camera is closed or in error state
-            camera?.cameraInfo?.cameraState?.observe(this) { cameraState ->
+            // Use observeForever to avoid triggering multiple times on same state
+            val cameraStateObserver = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { cameraState ->
                 Log.d(TAG, "Camera state changed: ${cameraState.type}, error: ${cameraState.error?.toString() ?: "none"}")
                 
                 when (cameraState.type) {
@@ -763,14 +764,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.e(TAG, "Camera error: code=${error.code}, ${error.cause?.message ?: "no cause"}", error.cause)
                     
                     // For critical errors, clear camera reference so watchdog can retry
-                    if (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
-                        error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
-                        error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE) {
+                    // Only clear once to avoid repeated logging
+                    if (camera != null && 
+                        (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
+                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
+                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE)) {
                         Log.e(TAG, "Critical camera error detected, clearing camera reference for recovery")
                         camera = null
                     }
                 }
             }
+            
+            camera?.cameraInfo?.cameraState?.observe(this, cameraStateObserver)
             
             // Notify observers that camera state has changed (binding completed)
             onCameraStateChangedCallback?.invoke(currentCamera)
@@ -1939,7 +1944,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     // Camera provider exists but camera not bound
                     // This happens after ERROR_CAMERA_DISABLED or other binding failures
                     Log.w(TAG, "Watchdog: Camera provider exists but camera not bound, binding camera...")
-                    bindCamera()
+                    
+                    // CameraX requires main thread for binding operations
+                    // Post to main thread to avoid IllegalStateException
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try {
+                            bindCamera()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
+                        }
+                    }
                     needsRecovery = true
                 }
                 
