@@ -2342,6 +2342,36 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return "{${changes.joinToString(",")}}"
     }
     
+    /**
+     * Initialize last broadcast state with current values
+     * Called when a new SSE client connects to prevent sending full state again on next delta
+     */
+    fun initializeLastBroadcastState() {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
+        
+        synchronized(broadcastLock) {
+            lastBroadcastState.clear()
+            lastBroadcastState["camera"] = cameraName
+            lastBroadcastState["resolution"] = resolutionLabel
+            lastBroadcastState["cameraOrientation"] = cameraOrientation
+            lastBroadcastState["rotation"] = rotation
+            lastBroadcastState["showDateTimeOverlay"] = showDateTimeOverlay
+            lastBroadcastState["showBatteryOverlay"] = showBatteryOverlay
+            lastBroadcastState["showResolutionOverlay"] = showResolutionOverlay
+            lastBroadcastState["showFpsOverlay"] = showFpsOverlay
+            lastBroadcastState["currentCameraFps"] = currentCameraFps
+            lastBroadcastState["currentMjpegFps"] = currentMjpegFps
+            lastBroadcastState["currentRtspFps"] = currentRtspFps
+            lastBroadcastState["cpuUsage"] = currentCpuUsage
+            lastBroadcastState["targetMjpegFps"] = targetMjpegFps
+            lastBroadcastState["targetRtspFps"] = targetRtspFps
+            lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled
+            lastBroadcastState["flashlightAvailable"] = isFlashlightAvailable()
+            lastBroadcastState["flashlightOn"] = isFlashlightEnabled()
+        }
+    }
+    
     override fun recordBytesSent(clientId: Long, bytes: Long) {
         bandwidthMonitor.recordBytesSent(clientId, bytes)
     }

@@ -1452,10 +1452,14 @@ class HttpServer(
                 writeStringUtf8("data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n")
                 flush()
                 
-                // Send initial camera state
+                // Send initial camera state (full state for new clients)
                 val stateJson = cameraService.getCameraStateJson()
                 writeStringUtf8("event: state\ndata: $stateJson\n\n")
                 flush()
+                
+                // Initialize last broadcast state with current values to prevent
+                // full state from being sent again on next delta broadcast
+                cameraService.initializeLastBroadcastState()
                 
                 // Keep connection alive with periodic keepalive
                 while (client.active && isActive) {
