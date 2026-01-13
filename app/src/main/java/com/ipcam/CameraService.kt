@@ -18,8 +18,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.graphics.Rect
-import android.graphics.YuvImage
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.media.Image
@@ -689,6 +687,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 // Frame rate throttling is achieved via KEEP_ONLY_LATEST backpressure
                 // which naturally throttles based on processing time
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                // Use RGBA_8888 format to get Bitmaps directly (API 30+)
+                // This eliminates inefficient YUV→NV21→JPEG→Bitmap conversion
+                .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .build()
                 
             mjpegAnalysis.setAnalyzer(cameraExecutor) { image ->
@@ -1105,26 +1106,31 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
+        // With OUTPUT_IMAGE_FORMAT_RGBA_8888, ImageProxy provides RGBA data directly
+        // This eliminates the inefficient YUV→NV21→JPEG→Bitmap conversion
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val pixelStride = plane.pixelStride
+        val rowStride = plane.rowStride
+        val rowPadding = rowStride - pixelStride * image.width
         
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
+        // Create bitmap with exact dimensions matching the image
+        val bitmap = Bitmap.createBitmap(
+            image.width + rowPadding / pixelStride,
+            image.height,
+            Bitmap.Config.ARGB_8888
+        )
         
-        val nv21 = ByteArray(ySize + uSize + vSize)
+        // Copy buffer data to bitmap
+        buffer.rewind()
+        bitmap.copyPixelsFromBuffer(buffer)
         
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-        
-        val yuvImage = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
-        val out = ByteArrayOutputStream()
-        // Lower compression quality to reduce memory pressure and prevent SIGABRT
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), JPEG_QUALITY_CAMERA, out)
-        val imageBytes = out.toByteArray()
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        // Crop to actual image size if there's row padding
+        return if (rowPadding != 0) {
+            Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        } else {
+            bitmap
+        }
     }
     
     override fun switchCamera(cameraSelector: CameraSelector) {
