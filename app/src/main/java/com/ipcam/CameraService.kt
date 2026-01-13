@@ -97,6 +97,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private val bindingLock = Any() // Lock for binding synchronization
     @Volatile private var lastBindRequestTime: Long = 0 // Time of last bind request
     private var pendingBindJob: Job? = null // Job for pending bind operation
+    @Volatile private var hasPendingRebind: Boolean = false // Track if a rebind was requested while binding in progress
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -853,7 +854,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Stop camera, apply settings, and restart camera.
      * This ensures settings are properly applied without conflicts.
      * Uses proper async handling to avoid blocking the main thread.
-     * Prevents overlapping bind operations using both flag-based and time-based debouncing.
+     * 
+     * DEBOUNCING PROTECTION:
+     * 1. Time-based debouncing: Minimum 500ms between bind requests
+     *    - If called too soon, schedules delayed retry via coroutine Job
+     *    - Cancels previous pending job to use latest settings
+     * 2. Flag-based debouncing: Prevents overlapping bind operations
+     *    - If binding already in progress, sets pending flag for retry after completion
+     *    - Ensures camera hardware stability by serializing all bind operations
+     * 
+     * THREAD SAFETY:
+     * - All state checks and updates are synchronized via bindingLock
+     * - isBindingInProgress flag prevents concurrent camera access
+     * - hasPendingRebind flag queues requests received during binding
      * 
      * PRIVATE: Only CameraService methods should trigger rebinding.
      * External callers should use methods like switchCamera() or setResolutionAndRebind()
@@ -869,6 +882,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 Log.d(TAG, "requestBindCamera() debounced - too soon (${timeSinceLastRequest}ms < ${CAMERA_REBIND_DEBOUNCE_MS}ms)")
                 
                 // Cancel any pending bind job and schedule a new one
+                // This ensures we use the latest settings if multiple rapid requests occur
                 pendingBindJob?.cancel()
                 val remainingDelay = CAMERA_REBIND_DEBOUNCE_MS - timeSinceLastRequest
                 
@@ -882,7 +896,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Flag-based debouncing: Check if a binding operation is already in progress
             if (isBindingInProgress) {
-                Log.d(TAG, "requestBindCamera() ignored - binding already in progress")
+                Log.d(TAG, "requestBindCamera() deferred - binding already in progress, will retry after completion")
+                // Instead of silently dropping the request, mark that we have a pending rebind
+                // This ensures the latest settings are applied after the current bind completes
+                hasPendingRebind = true
                 return
             }
             
@@ -913,18 +930,48 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } catch (e: Exception) {
                         Log.e(TAG, "Error in bindCamera() from postDelayed", e)
                     } finally {
-                        // Clear the flag after binding completes or fails
-                        synchronized(bindingLock) {
+                        // Clear the flag and check for pending rebind requests
+                        val shouldRetry = synchronized(bindingLock) {
                             isBindingInProgress = false
                             Log.d(TAG, "isBindingInProgress flag cleared")
+                            
+                            // Check if another rebind was requested while we were binding
+                            val retry = hasPendingRebind
+                            if (retry) {
+                                Log.d(TAG, "Pending rebind detected, will retry after optimized delay")
+                                hasPendingRebind = false
+                            }
+                            retry
+                        }
+                        
+                        // If there was a pending rebind request, execute it now
+                        // This ensures the latest settings are applied
+                        if (shouldRetry) {
+                            // Calculate remaining debounce time to minimize unnecessary delay
+                            // Capture both time values within synchronized block to prevent race conditions
+                            serviceScope.launch {
+                                val (currentTime, lastRequestTime) = synchronized(bindingLock) {
+                                    System.currentTimeMillis() to lastBindRequestTime
+                                }
+                                val timeSinceLastBind = currentTime - lastRequestTime
+                                val remainingDelay = (CAMERA_REBIND_DEBOUNCE_MS - timeSinceLastBind).coerceAtLeast(0)
+                                
+                                if (remainingDelay > 0) {
+                                    Log.d(TAG, "Pending rebind: delaying ${remainingDelay}ms for debounce")
+                                    delay(remainingDelay)
+                                }
+                                requestBindCamera()
+                            }
                         }
                     }
                 }, 100)
             } catch (e: Exception) {
                 Log.e(TAG, "Error in requestBindCamera()", e)
                 // Clear flag if we fail before even scheduling the delayed binding
+                // Also clear pending rebind flag since we couldn't proceed
                 synchronized(bindingLock) {
                     isBindingInProgress = false
+                    hasPendingRebind = false
                 }
             }
         }
@@ -1269,6 +1316,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return bitmap
     }
     
+    /**
+     * Switch between front and back cameras.
+     * Preserves per-camera resolution settings and automatically rebinds the camera.
+     * 
+     * SAFETY: Uses requestBindCamera() which has built-in debouncing protection.
+     * Multiple rapid camera switches are safely queued and executed sequentially.
+     */
     override fun switchCamera(cameraSelector: CameraSelector) {
         // Save current camera's resolution before switching
         if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -1300,6 +1354,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Request bind but DON'T invoke callback here
         // The callback will be invoked naturally when bindCamera() completes
+        // requestBindCamera() has debouncing protection to handle rapid calls safely
         requestBindCamera()
     }
     
@@ -1417,12 +1472,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Callers must explicitly call requestBindCamera() if they want to rebind the camera.
         // If we call it here, it creates infinite loop:
         // bindCamera completes → callback → loadResolutions → setSelection → onItemSelected → setResolution → requestBindCamera → repeat
+        // Note: requestBindCamera() has debouncing protection to prevent rapid successive calls
     }
     
     /**
      * Set resolution and trigger camera rebinding.
      * This is the recommended way for external callers (MainActivity, HTTP endpoints)
      * to change resolution, as it encapsulates both the setting change and rebinding.
+     * 
+     * SAFETY: Uses requestBindCamera() which has built-in debouncing protection.
+     * Multiple rapid calls are automatically queued and executed safely.
      */
     override fun setResolutionAndRebind(resolution: Size?) {
         updateCurrentCameraResolution(resolution)
