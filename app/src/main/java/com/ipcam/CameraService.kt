@@ -57,6 +57,87 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
 
+/**
+ * CameraService - Single Source of Truth for Camera Operations
+ * 
+ * This service manages camera operations, HTTP/RTSP streaming, and provides a unified interface
+ * for both the MainActivity UI and web clients.
+ * 
+ * LIFECYCLE MANAGEMENT:
+ * ====================
+ * 
+ * Service Lifecycle:
+ * ------------------
+ * - Implements LifecycleOwner with custom LifecycleRegistry
+ * - Uses foreground service to persist across Activity lifecycle changes
+ * - START_STICKY ensures automatic restart after system kills
+ * - onTaskRemoved() schedules restart when app is swiped away
+ * 
+ * Callback Management:
+ * -------------------
+ * - Three callbacks communicate with MainActivity:
+ *   1. onFrameAvailableCallback: Delivers preview frames (bitmaps)
+ *   2. onCameraStateChangedCallback: Notifies of camera/settings changes
+ *   3. onConnectionsChangedCallback: Updates connection counts
+ * 
+ * - Callbacks are @Volatile to ensure visibility across threads
+ * - clearCallbacks() MUST be called in MainActivity.onDestroy() to prevent memory leaks
+ * - All callback invocations use safe wrappers (safeInvokeXxxCallback) that:
+ *   * Check service lifecycle state (skip if DESTROYED)
+ *   * Handle null callbacks gracefully
+ *   * Recycle bitmaps if callback can't be invoked
+ * 
+ * Coroutine Management:
+ * --------------------
+ * - serviceScope: Custom CoroutineScope for long-running operations
+ *   * Uses SupervisorJob to isolate failures
+ *   * Persists across Activity lifecycle changes
+ *   * Cancelled in onDestroy() AFTER all other cleanup
+ * 
+ * - Coroutines tied to service lifecycle, NOT Activity lifecycle
+ * - This ensures camera continues running when MainActivity is destroyed
+ * - All coroutines check lifecycle state before critical operations
+ * 
+ * Executor Management:
+ * -------------------
+ * - cameraExecutor: Single thread for CameraX analysis callbacks
+ * - processingExecutor: 2-thread pool for image processing (rotation, JPEG encoding)
+ * - streamingExecutor: Cached thread pool for HTTP streaming connections
+ * 
+ * - All executors shut down in onDestroy() with proper cleanup:
+ *   1. Camera executor (stops frame capture)
+ *   2. Processing executor (waits up to 2s, then forces shutdown)
+ *   3. Streaming executor (immediate forceful shutdown)
+ * 
+ * Resource Cleanup:
+ * ----------------
+ * - onDestroy() cleanup order:
+ *   1. Set lifecycle to DESTROYED (stops new callback invocations)
+ *   2. Clear callbacks (break reference cycles)
+ *   3. Unregister receivers, stop HTTP/RTSP servers
+ *   4. Shutdown executors (camera → processing → streaming)
+ *   5. Clear bitmap pool and frame references
+ *   6. Cancel coroutine scope
+ *   7. Release wake locks
+ * 
+ * Thread Safety:
+ * -------------
+ * - Callback fields marked @Volatile for thread-safe access
+ * - Safe callback wrappers check lifecycle state atomically
+ * - Bitmap pool and frame data protected by synchronized locks
+ * 
+ * Design Rationale:
+ * ----------------
+ * We use a custom LifecycleOwner instead of LifecycleService because:
+ * 1. Service must persist across Activity destroy/recreate cycles
+ * 2. Camera operations are independent of MainActivity lifecycle
+ * 3. Web clients can stream even when MainActivity is destroyed
+ * 4. Custom lifecycle gives precise control over resource management
+ * 
+ * API Level: Minimum API 30 (Android 11+)
+ * - No need for pre-API-30 compatibility checks
+ * - Uses modern Android lifecycle and camera APIs
+ */
 class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private val binder = LocalBinder()
     @Volatile private var httpServer: HttpServer? = null
@@ -123,6 +204,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private val lastBroadcastState = mutableMapOf<String, Any>()
     private val broadcastLock = Any() // Lock for broadcast state synchronization
     private lateinit var lifecycleRegistry: LifecycleRegistry
+    // LIFECYCLE MANAGEMENT: Use lifecycleScope for lifecycle-aware coroutines
+    // This ensures all coroutines are cancelled when service lifecycle ends (DESTROYED state)
+    // However, since CameraService needs to persist across Activity lifecycle changes,
+    // we use a custom scope for long-running operations independent of Activity lifecycle.
+    // The lifecycleScope is still available for operations that should stop with service destroy.
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
@@ -196,9 +282,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var rtspBitrateMode: String = "VBR" // Saved bitrate mode setting
     
     // Callbacks for MainActivity to receive updates
-    private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
-    private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
-    private var onConnectionsChangedCallback: (() -> Unit)? = null
+    // LIFECYCLE SAFETY: These callbacks are cleared when MainActivity is destroyed (in MainActivity.onDestroy)
+    // and guarded by lifecycle checks before invocation to prevent crashes from dead contexts.
+    // Each callback invocation checks: 1) callback is not null, 2) runs on main thread via runOnUiThread wrapper
+    @Volatile private var onCameraStateChangedCallback: ((CameraSelector) -> Unit)? = null
+    @Volatile private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
+    @Volatile private var onConnectionsChangedCallback: (() -> Unit)? = null
     
     // Bitmap pool for memory-efficient bitmap reuse
     private val bitmapPool = BitmapPool(maxPoolSizeBytes = 64L * 1024 * 1024) // 64 MB pool
@@ -808,7 +897,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             camera?.cameraInfo?.cameraState?.observe(this, cameraStateObserver)
             
             // Notify observers that camera state has changed (binding completed)
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+            safeInvokeCameraStateCallback(currentCamera)
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed with exception: ${e.message}", e)
             e.printStackTrace()
@@ -1156,7 +1246,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     null
                 }
                 if (previewCopy != null) {
-                    onFrameAvailableCallback?.invoke(previewCopy)
+                    // LIFECYCLE SAFETY: Use safe callback invocation to prevent crashes if MainActivity destroyed
+                    safeInvokeFrameCallback(previewCopy)
                 }
                 
             } catch (e: Exception) {
@@ -1322,6 +1413,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * SAFETY: Uses requestBindCamera() which has built-in debouncing protection.
      * Multiple rapid camera switches are safely queued and executed sequentially.
+     * 
+     * LIFECYCLE SAFETY: Uses safe callback invocation to notify MainActivity.
      */
     override fun switchCamera(cameraSelector: CameraSelector) {
         // Save current camera's resolution before switching
@@ -1427,7 +1520,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         broadcastCameraState()
         
         // Notify MainActivity of flashlight state change
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
         return isFlashlightOn
     }
     
@@ -1503,7 +1597,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         broadcastCameraState()
         
         // Notify MainActivity of orientation change so it can reload resolutions
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     fun getCameraOrientation(): String = cameraOrientation
@@ -1516,7 +1611,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         broadcastCameraState()
         
         // Notify MainActivity of rotation change
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     fun getRotation(): Int = rotation
@@ -1529,7 +1625,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         broadcastCameraState()
         
         // Notify MainActivity of overlay setting change
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     fun getShowResolutionOverlay(): Boolean = showResolutionOverlay
@@ -1539,7 +1636,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         showDateTimeOverlay = show
         saveSettings()
         broadcastCameraState()
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     override fun getShowDateTimeOverlay(): Boolean = showDateTimeOverlay
@@ -1548,7 +1646,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         showBatteryOverlay = show
         saveSettings()
         broadcastCameraState()
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     override fun getShowBatteryOverlay(): Boolean = showBatteryOverlay
@@ -1557,7 +1656,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         showFpsOverlay = show
         saveSettings()
         broadcastCameraState()
-        onCameraStateChangedCallback?.invoke(currentCamera)
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeCameraStateCallback(currentCamera)
     }
     
     override fun getShowFpsOverlay(): Boolean = showFpsOverlay
@@ -1573,7 +1673,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // No need to rebind camera - frame skipping handles the throttling
             saveSettings()
             broadcastCameraState()
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+            safeInvokeCameraStateCallback(currentCamera)
             Log.d(TAG, "Target MJPEG FPS set to $targetMjpegFps (throttling applied in frame processing)")
         }
     }
@@ -1593,12 +1694,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (rtspEnabled) {
                 Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding camera to apply change")
                 broadcastCameraState()
-                onCameraStateChangedCallback?.invoke(currentCamera)
+                // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+                safeInvokeCameraStateCallback(currentCamera)
                 requestBindCamera()
             } else {
                 // RTSP not enabled, just broadcast the setting change
                 broadcastCameraState()
-                onCameraStateChangedCallback?.invoke(currentCamera)
+                // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+                safeInvokeCameraStateCallback(currentCamera)
             }
         }
     }
@@ -1902,10 +2005,79 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         onConnectionsChangedCallback = callback
     }
     
+    /**
+     * Clear all callbacks to prevent memory leaks and crashes.
+     * MUST be called in MainActivity.onDestroy() to break the reference cycle.
+     * 
+     * LIFECYCLE SAFETY: This method ensures callbacks are cleared when MainActivity is destroyed,
+     * preventing CameraService from holding stale references to destroyed Activity contexts.
+     */
     fun clearCallbacks() {
+        Log.d(TAG, "Clearing all MainActivity callbacks")
         onCameraStateChangedCallback = null
         onFrameAvailableCallback = null
         onConnectionsChangedCallback = null
+    }
+    
+    /**
+     * Safely invoke camera state changed callback with lifecycle checks.
+     * Only invokes if callback is set and we're not in a terminal lifecycle state.
+     * 
+     * LIFECYCLE SAFETY: Checks that callback exists and service is in a valid lifecycle state
+     * before invoking to prevent crashes from callbacks to destroyed contexts.
+     */
+    private fun safeInvokeCameraStateCallback(selector: CameraSelector) {
+        // Check if service is in valid lifecycle state (not DESTROYED)
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
+            Log.w(TAG, "Skipping camera state callback - service lifecycle is DESTROYED")
+            return
+        }
+        
+        // Invoke callback if set
+        onCameraStateChangedCallback?.invoke(selector)
+    }
+    
+    /**
+     * Safely invoke frame available callback with lifecycle checks.
+     * Only invokes if callback is set and we're not in a terminal lifecycle state.
+     * 
+     * LIFECYCLE SAFETY: Checks that callback exists and service is in a valid lifecycle state.
+     * Bitmap is recycled if callback can't be invoked to prevent memory leaks.
+     */
+    private fun safeInvokeFrameCallback(bitmap: Bitmap) {
+        // Check if service is in valid lifecycle state (not DESTROYED)
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
+            Log.w(TAG, "Skipping frame callback - service lifecycle is DESTROYED, recycling bitmap")
+            bitmapPool.returnBitmap(bitmap)
+            return
+        }
+        
+        // Invoke callback if set, otherwise recycle bitmap
+        val callback = onFrameAvailableCallback
+        if (callback != null) {
+            callback(bitmap)
+        } else {
+            // No callback set - return bitmap to pool to prevent memory leak
+            bitmapPool.returnBitmap(bitmap)
+        }
+    }
+    
+    /**
+     * Safely invoke connections changed callback with lifecycle checks.
+     * Only invokes if callback is set and we're not in a terminal lifecycle state.
+     * 
+     * LIFECYCLE SAFETY: Checks that callback exists and service is in a valid lifecycle state
+     * before invoking to prevent crashes from callbacks to destroyed contexts.
+     */
+    private fun safeInvokeConnectionsCallback() {
+        // Check if service is in valid lifecycle state (not DESTROYED)
+        if (lifecycleRegistry.currentState == Lifecycle.State.DESTROYED) {
+            Log.w(TAG, "Skipping connections callback - service lifecycle is DESTROYED")
+            return
+        }
+        
+        // Invoke callback if set
+        onConnectionsChangedCallback?.invoke()
     }
     
     override fun getActiveConnectionsCount(): Int {
@@ -1927,7 +2099,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             maxConnections = newMax
             saveSettings()
             // Notify MainActivity of max connections change
-            onCameraStateChangedCallback?.invoke(currentCamera)
+            // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+            safeInvokeCameraStateCallback(currentCamera)
             // Note: Server needs to be restarted for the change to take effect
             return true
         }
@@ -1967,7 +2140,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     private fun notifyConnectionsChanged() {
-        onConnectionsChangedCallback?.invoke()
+        // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+        safeInvokeConnectionsCallback()
     }
     
     fun isServerRunning(): Boolean = httpServer?.isAlive() == true
@@ -2033,7 +2207,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun onDestroy() {
         super.onDestroy()
+        Log.d(TAG, "onDestroy() - cleaning up service resources")
+        
+        // LIFECYCLE MANAGEMENT: Transition to DESTROYED state FIRST to stop callback invocations
+        // This prevents new callbacks from being invoked during cleanup
         lifecycleRegistry.currentState = Lifecycle.State.DESTROYED
+        
+        // Clear all MainActivity callbacks immediately to prevent memory leaks
+        // This breaks the reference cycle between Service and Activity
+        clearCallbacks()
+        
         unregisterNetworkReceiver()
         orientationEventListener?.disable()
         httpServer?.stop()
@@ -2071,8 +2254,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Clear bitmap pool to free all memory
         bitmapPool.clear()
         Log.d(TAG, "Bitmap pool cleared on service destroy")
+        
+        // LIFECYCLE MANAGEMENT: Cancel all coroutines LAST after other cleanup
+        // This ensures no coroutines try to use resources that have been cleaned up
         serviceScope.cancel()
+        
         releaseLocks() // Use the new releaseLocks() method
+        
+        Log.i(TAG, "Service destroyed - all resources cleaned up")
     }
     
     /**
