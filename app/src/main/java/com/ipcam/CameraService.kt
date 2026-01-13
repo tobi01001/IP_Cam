@@ -56,6 +56,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * CameraService - Single Source of Truth for Camera Operations
@@ -139,12 +140,54 @@ import java.util.concurrent.atomic.AtomicInteger
  * - Uses modern Android lifecycle and camera APIs
  */
 class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
+    
+    /**
+     * ProcessedFrame - Atomic container for frame data
+     * 
+     * Ensures UI (Bitmap) and web stream (JPEG) always display the same frame by
+     * bundling them together with their timestamp. This prevents synchronization
+     * issues where the UI and web clients could show frames from different moments.
+     * 
+     * Using AtomicReference for lock-free, thread-safe updates that guarantee
+     * atomicity across all three fields simultaneously.
+     */
+    private data class ProcessedFrame(
+        val bitmap: Bitmap,      // For MainActivity preview
+        val jpegBytes: ByteArray, // Pre-compressed for HTTP streaming
+        val timestamp: Long       // Capture timestamp for staleness detection
+    ) {
+        // Override equals/hashCode to handle ByteArray properly
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+            
+            other as ProcessedFrame
+            
+            if (bitmap != other.bitmap) return false
+            if (!jpegBytes.contentEquals(other.jpegBytes)) return false
+            if (timestamp != other.timestamp) return false
+            
+            return true
+        }
+        
+        override fun hashCode(): Int {
+            var result = bitmap.hashCode()
+            result = 31 * result + jpegBytes.contentHashCode()
+            result = 31 * result + timestamp.hashCode()
+            return result
+        }
+    }
+    
     private val binder = LocalBinder()
     @Volatile private var httpServer: HttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
-    private var lastFrameBitmap: Bitmap? = null // For MainActivity preview only
-    @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
-    @Volatile private var lastFrameTimestamp: Long = 0
+    
+    // ATOMIC FRAME UPDATES: Single source of truth for frame data
+    // AtomicReference ensures the UI and web stream always display the same frame
+    // by atomically updating bitmap, JPEG bytes, and timestamp together.
+    // This eliminates race conditions from separate bitmapLock and jpegLock.
+    private val lastProcessedFrame = AtomicReference<ProcessedFrame?>(null)
+    
     private val cameraExecutor = Executors.newSingleThreadExecutor()
     // Dedicated executor for expensive image processing (rotation, annotation, JPEG compression)
     // This prevents blocking the CameraX analysis thread
@@ -155,8 +198,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     @Volatile private var cameraProvider: ProcessCameraProvider? = null
-    private val bitmapLock = Any() // Lock for bitmap access synchronization
-    private val jpegLock = Any() // Lock for JPEG bytes access
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     // H.264 encoder for RTSP streaming (parallel pipeline)
@@ -1169,7 +1210,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
                 
                 // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
-                val frameCount = lastFrameTimestamp.toInt() % 30
+                val currentFrame = lastProcessedFrame.get()
+                val frameCount = currentFrame?.timestamp?.toInt()?.rem(30) ?: 0
                 if (frameCount == 0) {
                     Log.d(TAG, "Processing MJPEG frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
                 }
@@ -1216,19 +1258,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 // Track encoding performance
                 performanceMetrics.recordFrameEncodingTime(encodingTime)
                 
-                // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
-                synchronized(bitmapLock) {
-                    val oldBitmap = lastFrameBitmap
-                    lastFrameBitmap = annotatedBitmap
-                    // Return old bitmap to pool after updating reference
-                    if (oldBitmap != null && oldBitmap != annotatedBitmap) {
-                        bitmapPool.returnBitmap(oldBitmap)
-                    }
-                }
+                // ATOMIC FRAME UPDATE: Create ProcessedFrame and atomically update reference
+                // This ensures UI and web stream always display the same frame
+                val timestamp = System.currentTimeMillis()
+                val newFrame = ProcessedFrame(
+                    bitmap = annotatedBitmap,
+                    jpegBytes = jpegBytes,
+                    timestamp = timestamp
+                )
                 
-                synchronized(jpegLock) {
-                    lastFrameJpegBytes = jpegBytes
-                    lastFrameTimestamp = System.currentTimeMillis()
+                // Atomically replace the old frame with the new one
+                val oldFrame = lastProcessedFrame.getAndSet(newFrame)
+                
+                // Return old frame's bitmap to pool if it exists and is different
+                if (oldFrame != null && oldFrame.bitmap != annotatedBitmap) {
+                    bitmapPool.returnBitmap(oldFrame.bitmap)
                 }
                 
                 // Track frame processing time
@@ -2243,14 +2287,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // 3. Streaming executor (stops client connections)
         streamingExecutor.shutdownNow() // Forcefully terminate streaming threads
         
-        synchronized(bitmapLock) {
-            // Return last frame bitmap to pool instead of recycling
-            lastFrameBitmap?.let { bitmapPool.returnBitmap(it) }
-            lastFrameBitmap = null
+        // ATOMIC FRAME CLEANUP: Clear the processed frame and return bitmap to pool
+        val oldFrame = lastProcessedFrame.getAndSet(null)
+        if (oldFrame != null) {
+            bitmapPool.returnBitmap(oldFrame.bitmap)
+            Log.d(TAG, "Last processed frame cleared and bitmap returned to pool")
         }
-        synchronized(jpegLock) {
-            lastFrameJpegBytes = null
-        }
+        
         // Clear bitmap pool to free all memory
         bitmapPool.clear()
         Log.d(TAG, "Bitmap pool cleared on service destroy")
@@ -2561,7 +2604,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 // Check camera health - only if camera is bound
                 if (camera != null) {
-                    val frameAge = System.currentTimeMillis() - lastFrameTimestamp
+                    // ATOMIC FRAME ACCESS: Get timestamp from atomic reference
+                    val currentFrame = lastProcessedFrame.get()
+                    val lastTimestamp = currentFrame?.timestamp ?: 0L
+                    val frameAge = System.currentTimeMillis() - lastTimestamp
                     if (frameAge > FRAME_STALE_THRESHOLD_MS) {
                         Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
                         requestBindCamera()
@@ -2844,9 +2890,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // ==================== CameraServiceInterface Implementation ====================
     
     override fun getLastFrameJpegBytes(): ByteArray? {
-        return synchronized(jpegLock) { 
-            lastFrameJpegBytes
-        }
+        // ATOMIC FRAME ACCESS: Retrieve JPEG bytes from atomic reference
+        // This ensures we get the JPEG bytes that correspond to the current frame
+        return lastProcessedFrame.get()?.jpegBytes
     }
     
     override fun getSelectedResolutionLabel(): String {
