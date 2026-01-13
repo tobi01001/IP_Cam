@@ -2284,7 +2284,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * This reduces bandwidth and prevents unnecessary UI updates for unchanged values
      * Returns null if nothing has changed since last broadcast
      */
-    fun getCameraStateDeltaJson(): String? {
+    override fun getCameraStateDeltaJson(): String? {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
@@ -2355,7 +2355,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Initialize last broadcast state with current values
      * Called when a new SSE client connects to prevent sending full state again on next delta
      */
-    fun initializeLastBroadcastState() {
+    override fun initializeLastBroadcastState() {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         

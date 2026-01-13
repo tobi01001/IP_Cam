@@ -193,13 +193,8 @@ class HttpServer(
      */
     fun broadcastCameraState() {
         // Get delta JSON (only changed fields)
-        val stateJson = cameraService.getCameraStateDeltaJson()
-        
-        // If nothing changed, don't broadcast
-        if (stateJson == null) {
-            return
-        }
-        
+        val stateJson = cameraService.getCameraStateDeltaJson() ?: return
+
         val message = "event: state\ndata: $stateJson\n\n"
         
         synchronized(sseClientsLock) {

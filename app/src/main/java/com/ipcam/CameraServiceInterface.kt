@@ -57,8 +57,12 @@ interface CameraServiceInterface {
     fun removeClient(clientId: Long)
     fun getDetailedStats(): String
     fun getCameraStateJson(): String
+
+    fun getCameraStateDeltaJson(): String?
     fun recordMjpegFrameServed() // Track MJPEG streaming FPS
-    
+
+    fun initializeLastBroadcastState()
+
     // Adaptive quality
     fun setAdaptiveQualityEnabled(enabled: Boolean)
     
