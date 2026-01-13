@@ -1,7 +1,7 @@
 package com.ipcam
 
 import android.graphics.Bitmap
-import android.graphics.Canvas
+import android.graphics.Canvas  // Used for bitmap copying in pool-based copy() method
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -217,10 +217,30 @@ class BitmapPool(
     }
     
     /**
-     * Calculate bitmap size in bytes
+     * Calculate bitmap size in bytes.
+     * Uses allocationByteCount which includes row padding, providing accurate memory usage.
      */
     private fun getBitmapSize(bitmap: Bitmap): Long {
         return bitmap.allocationByteCount.toLong()
+    }
+    
+    /**
+     * Recycle or return a bitmap - attempts to return to pool first, recycles if rejected.
+     * This is a convenience method that simplifies cleanup logic for bitmaps that may or
+     * may not be from the pool.
+     * 
+     * @param bitmap Bitmap to recycle or return
+     */
+    fun recycleBitmap(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) {
+            return
+        }
+        
+        // Try to return to pool first
+        if (!returnBitmap(bitmap)) {
+            // Not accepted by pool (e.g., different size, bucket full), recycle manually
+            bitmap.recycle()
+        }
     }
     
     /**

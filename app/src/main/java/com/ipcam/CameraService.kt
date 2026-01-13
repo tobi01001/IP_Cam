@@ -983,15 +983,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Note: annotateBitmap creates a new bitmap from pool, so finalBitmap can be cleaned up after
             val annotatedBitmap = annotateBitmap(finalBitmap)
             
-            // Clean up finalBitmap after annotation
-            // This handles rotated bitmaps that were created outside the pool
+            // Clean up finalBitmap after annotation using helper method
+            // This handles both pooled and non-pooled bitmaps (e.g., rotated bitmaps)
             if (annotatedBitmap != null && finalBitmap != annotatedBitmap) {
-                // Try to return to pool (will only succeed if from pool)
-                // If not from pool (e.g., rotated bitmap), it will be recycled by pool
-                if (!bitmapPool.returnBitmap(finalBitmap)) {
-                    // Not accepted by pool, recycle manually
-                    finalBitmap.recycle()
-                }
+                bitmapPool.recycleBitmap(finalBitmap)
             }
             
             if (annotatedBitmap == null) {
@@ -2153,8 +2148,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         networkReceiver = null
     }
     
+    /**
+     * Annotate bitmap with OSD overlays (date/time, battery, FPS, resolution).
+     * Creates a mutable copy from the bitmap pool for drawing annotations.
+     * 
+     * @param source Source bitmap to annotate (immutable)
+     * @return Annotated bitmap (mutable) from pool, or null if allocation fails or source is recycled
+     */
     private fun annotateBitmap(source: Bitmap): Bitmap? {
-        // Safety check: return source if already recycled
+        // Safety check: return null if already recycled
         if (source.isRecycled) {
             Log.w(TAG, "annotateBitmap called with recycled bitmap")
             return null
