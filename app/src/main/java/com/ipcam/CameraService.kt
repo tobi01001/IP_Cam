@@ -177,6 +177,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var onFrameAvailableCallback: ((Bitmap) -> Unit)? = null
     private var onConnectionsChangedCallback: (() -> Unit)? = null
     
+    // Bitmap pool for memory-efficient bitmap reuse
+    private val bitmapPool = BitmapPool(maxPoolSizeBytes = 64L * 1024 * 1024) // 64 MB pool
+    
     companion object {
          private const val TAG = "CameraService"
          private const val CHANNEL_ID = "CameraServiceChannel"
@@ -955,8 +958,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastMjpegFrameProcessedTimeMs = processingStart
             
             // === MJPEG Pipeline (CPU-based, throttled) ===
-            // Convert YUV to Bitmap for MJPEG
+            // Convert YUV to Bitmap for MJPEG (using pool for memory efficiency)
             val bitmap = imageProxyToBitmap(image)
+            if (bitmap == null) {
+                // Failed to allocate bitmap, skip this frame
+                Log.w(TAG, "Skipping MJPEG frame due to bitmap allocation failure")
+                performanceMetrics.recordFrameDropped()
+                return
+            }
             
             // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
             val frameCount = lastFrameTimestamp.toInt() % 30
@@ -972,6 +981,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Annotate bitmap (OSD overlays)
             val annotatedBitmap = annotateBitmap(finalBitmap)
+            if (annotatedBitmap == null) {
+                // Failed to annotate, return bitmap to pool and skip frame
+                Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
+                bitmapPool.returnBitmap(finalBitmap)
+                performanceMetrics.recordFrameDropped()
+                return
+            }
             
             // Determine JPEG quality - use adaptive quality if enabled
             val jpegQuality = if (adaptiveQualityEnabled) {
@@ -996,8 +1012,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             synchronized(bitmapLock) {
                 val oldBitmap = lastFrameBitmap
                 lastFrameBitmap = annotatedBitmap
-                // Recycle old bitmap after updating reference
-                oldBitmap?.takeIf { !it.isRecycled }?.recycle()
+                // Return old bitmap to pool after updating reference
+                if (oldBitmap != null && oldBitmap != annotatedBitmap) {
+                    bitmapPool.returnBitmap(oldBitmap)
+                }
             }
             
             synchronized(jpegLock) {
@@ -1012,13 +1030,29 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
             // Don't track here to avoid double-counting
             
-            // Notify MainActivity if it's listening
-            val safeConfig = annotatedBitmap.config ?: Bitmap.Config.ARGB_8888
-            onFrameAvailableCallback?.invoke(annotatedBitmap.copy(safeConfig, false))
+            // Notify MainActivity if it's listening - use pool for copying
+            val previewCopy = try {
+                bitmapPool.copy(annotatedBitmap, annotatedBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+            } catch (t: Throwable) {
+                Log.w(TAG, "Failed to copy bitmap for MainActivity preview", t)
+                null
+            }
+            if (previewCopy != null) {
+                onFrameAvailableCallback?.invoke(previewCopy)
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Error processing MJPEG frame", e)
             performanceMetrics.recordFrameDropped()
+        } catch (t: Throwable) {
+            // Catch OutOfMemoryError and other critical errors
+            Log.e(TAG, "Critical error processing MJPEG frame", t)
+            performanceMetrics.recordFrameDropped()
+            // Clear bitmap pool on OOME to free memory
+            if (t is OutOfMemoryError) {
+                Log.w(TAG, "OutOfMemoryError in frame processing, clearing bitmap pool")
+                bitmapPool.clear()
+            }
         } finally {
             image.close()
         }
@@ -1046,11 +1080,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Create bitmap with exact dimensions needed for rotated image
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
             if (rotated != bitmap) {
-                bitmap.recycle()
+                bitmapPool.returnBitmap(bitmap)
             }
             rotated
-        } catch (e: Exception) {
-            Log.e(TAG, "Error rotating bitmap", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error rotating bitmap", t)
             bitmap
         }
     }
@@ -1074,11 +1108,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return try {
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
             if (rotated != bitmap) {
-                bitmap.recycle()
+                bitmapPool.returnBitmap(bitmap)
             }
             rotated
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying camera orientation", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error applying camera orientation", t)
             bitmap
         }
     }
@@ -1094,18 +1128,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         return try {
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            // Only recycle the original if a new bitmap was created
+            // Only return the original to pool if a new bitmap was created
             if (rotated != bitmap) {
-                bitmap.recycle()
+                bitmapPool.returnBitmap(bitmap)
             }
             rotated
-        } catch (e: Exception) {
-            Log.e(TAG, "Error rotating bitmap", e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error rotating bitmap", t)
             bitmap
         }
     }
     
-    private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
+    private fun imageProxyToBitmap(image: ImageProxy): Bitmap? {
         // With OUTPUT_IMAGE_FORMAT_RGBA_8888, ImageProxy provides RGBA data directly
         // This eliminates the inefficient YUV→NV21→JPEG→Bitmap conversion
         val plane = image.planes[0]
@@ -1114,12 +1148,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * image.width
         
-        // Create bitmap with the actual image dimensions (no padding)
-        val bitmap = Bitmap.createBitmap(
-            image.width,
-            image.height,
-            Bitmap.Config.ARGB_8888
-        )
+        // Get bitmap from pool or create new (with OOME protection)
+        val bitmap = try {
+            bitmapPool.get(image.width, image.height, Bitmap.Config.ARGB_8888)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to get bitmap from pool for ${image.width}x${image.height}", t)
+            null
+        }
+        
+        if (bitmap == null) {
+            Log.e(TAG, "Unable to allocate bitmap for frame, skipping")
+            return null
+        }
         
         // If there's no row padding, we can copy directly
         if (rowPadding == 0) {
@@ -1864,12 +1904,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         cameraExecutor.shutdown()
         streamingExecutor.shutdownNow() // Forcefully terminate streaming threads
         synchronized(bitmapLock) {
-            lastFrameBitmap?.takeIf { !it.isRecycled }?.recycle()
+            // Return last frame bitmap to pool instead of recycling
+            lastFrameBitmap?.let { bitmapPool.returnBitmap(it) }
             lastFrameBitmap = null
         }
         synchronized(jpegLock) {
             lastFrameJpegBytes = null
         }
+        // Clear bitmap pool to free all memory
+        bitmapPool.clear()
+        Log.d(TAG, "Bitmap pool cleared on service destroy")
         serviceScope.cancel()
         releaseLocks() // Use the new releaseLocks() method
     }
@@ -2091,18 +2135,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         networkReceiver = null
     }
     
-    private fun annotateBitmap(source: Bitmap): Bitmap {
+    private fun annotateBitmap(source: Bitmap): Bitmap? {
         // Safety check: return source if already recycled
         if (source.isRecycled) {
             Log.w(TAG, "annotateBitmap called with recycled bitmap")
-            return source
+            return null
         }
         
+        // Use bitmap pool for memory-efficient copy with OOME protection
         val mutable = try {
-            source.copy(source.config ?: Bitmap.Config.ARGB_8888, true) ?: return source
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to copy bitmap for annotation", e)
-            return source
+            bitmapPool.copy(source, source.config ?: Bitmap.Config.ARGB_8888, true)
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to copy bitmap for annotation", t)
+            null
+        }
+        
+        if (mutable == null) {
+            Log.e(TAG, "Unable to create mutable bitmap for annotation")
+            return null
         }
         
         val canvas = Canvas(mutable)
