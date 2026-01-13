@@ -931,25 +931,34 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         Log.e(TAG, "Error in bindCamera() from postDelayed", e)
                     } finally {
                         // Clear the flag and check for pending rebind requests
+                        // Calculate completion time for proper debouncing of retry
+                        val completionTime = System.currentTimeMillis()
                         val shouldRetry = synchronized(bindingLock) {
                             isBindingInProgress = false
                             Log.d(TAG, "isBindingInProgress flag cleared")
                             
                             // Check if another rebind was requested while we were binding
-                            val retry = hasPendingRebind
-                            if (retry) {
-                                Log.d(TAG, "Pending rebind detected, will retry after brief delay")
+                            if (hasPendingRebind) {
+                                Log.d(TAG, "Pending rebind detected, will retry after ${CAMERA_REBIND_DEBOUNCE_MS}ms debounce delay")
                                 hasPendingRebind = false
+                                true
+                            } else {
+                                false
                             }
-                            retry
                         }
                         
                         // If there was a pending rebind request, execute it now
                         // This ensures the latest settings are applied
                         if (shouldRetry) {
-                            // Use a coroutine to schedule the retry with proper debouncing
+                            // Calculate remaining debounce time to minimize unnecessary delay
                             serviceScope.launch {
-                                delay(CAMERA_REBIND_DEBOUNCE_MS)
+                                val now = System.currentTimeMillis()
+                                val timeSinceCompletion = now - completionTime
+                                val remainingDelay = (CAMERA_REBIND_DEBOUNCE_MS - timeSinceCompletion).coerceAtLeast(0)
+                                
+                                if (remainingDelay > 0) {
+                                    delay(remainingDelay)
+                                }
                                 requestBindCamera()
                             }
                         }
