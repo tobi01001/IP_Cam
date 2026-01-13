@@ -939,7 +939,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                             
                             // Check if another rebind was requested while we were binding
                             if (hasPendingRebind) {
-                                Log.d(TAG, "Pending rebind detected, will retry after ${CAMERA_REBIND_DEBOUNCE_MS}ms debounce delay")
+                                Log.d(TAG, "Pending rebind detected, will retry with debounce protection")
                                 hasPendingRebind = false
                                 true
                             } else {
@@ -957,6 +957,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                                 val remainingDelay = (CAMERA_REBIND_DEBOUNCE_MS - timeSinceCompletion).coerceAtLeast(0)
                                 
                                 if (remainingDelay > 0) {
+                                    Log.d(TAG, "Pending rebind: delaying ${remainingDelay}ms for debounce")
                                     delay(remainingDelay)
                                 }
                                 requestBindCamera()
