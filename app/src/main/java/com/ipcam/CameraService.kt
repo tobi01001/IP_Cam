@@ -2065,14 +2065,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * @return true if streaming is allowed, false if battery is too critical
      */
-    fun isStreamingAllowed(): Boolean {
+    override fun isStreamingAllowed(): Boolean {
         return batteryMode != BatteryManagementMode.CRITICAL_BATTERY
     }
     
     /**
      * Get current battery mode for status reporting
      */
-    fun getBatteryMode(): String {
+    override fun getBatteryMode(): String {
         return batteryMode.name
     }
     
@@ -2082,7 +2082,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * @return true if override was successful, false if battery still too low
      */
-    fun overrideBatteryLimit(): Boolean {
+    override fun overrideBatteryLimit(): Boolean {
         val batteryInfo = getBatteryInfo()
         val batteryLevel = batteryInfo.level
         

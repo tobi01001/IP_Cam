@@ -278,6 +278,10 @@ class HttpServer(
                     #connectionsContainer tr:hover { background-color: #f5f5f5; }
                     #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
                     #connectionsContainer button:hover { background-color: #d32f2f; }
+                    .battery-status { background-color: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border-left: 4px solid #ffc107; }
+                    .battery-status.normal { background-color: #d4edda; border-left-color: #28a745; }
+                    .battery-status.low { background-color: #fff3cd; border-left-color: #ffc107; }
+                    .battery-status.critical { background-color: #f8d7da; border-left-color: #dc3545; }
                 </style>
             </head>
             <body>
@@ -287,7 +291,11 @@ class HttpServer(
                         <strong>Server Status:</strong> Running (Ktor) | 
                         <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                     </div>
-                    <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
+                    <div id="batteryStatusDisplay" class="battery-status">
+                        <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
+                        <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
+                    </div>
+                    <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
                     <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
                         <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
@@ -655,6 +663,35 @@ class HttpServer(
                                 console.error('Error updating flashlight button:', error);
                             });
                     }
+                    
+                    function updateBatteryStatusDisplay(batteryMode, streamingAllowed) {
+                        const statusDiv = document.getElementById('batteryStatusDisplay');
+                        const modeText = document.getElementById('batteryModeText');
+                        const streamingText = document.getElementById('streamingStatusText');
+                        
+                        // Update mode text with descriptive labels
+                        let modeLabel = batteryMode;
+                        let modeClass = 'normal';
+                        
+                        if (batteryMode === 'NORMAL') {
+                            modeLabel = 'Normal (Full Operation)';
+                            modeClass = 'normal';
+                        } else if (batteryMode === 'LOW_BATTERY') {
+                            modeLabel = 'Low Battery (Wakelocks Released)';
+                            modeClass = 'low';
+                        } else if (batteryMode === 'CRITICAL_BATTERY') {
+                            modeLabel = 'CRITICAL - Streaming Paused';
+                            modeClass = 'critical';
+                        }
+                        
+                        modeText.textContent = modeLabel;
+                        streamingText.textContent = streamingAllowed ? 'Active' : 'Paused (Battery Too Low)';
+                        streamingText.style.color = streamingAllowed ? '#28a745' : '#dc3545';
+                        streamingText.style.fontWeight = streamingAllowed ? 'normal' : 'bold';
+                        
+                        // Update status div styling based on mode
+                        statusDiv.className = 'battery-status ' + modeClass;
+                    }
 
                     function loadFormats() {
                         fetch('/formats')
@@ -968,7 +1005,7 @@ class HttpServer(
                     refreshConnections();
                     updateFlashlightButton();
                     
-                    // Load max connections from server status
+                    // Load max connections and battery status from server status
                     fetch('/status')
                         .then(response => response.json())
                         .then(data => {
@@ -979,6 +1016,11 @@ class HttpServer(
                                     select.selectedIndex = i;
                                     break;
                                 }
+                            }
+                            
+                            // Initialize battery status display
+                            if (data.batteryMode && data.streamingAllowed !== undefined) {
+                                updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed);
                             }
                         });
                     
@@ -1158,6 +1200,11 @@ class HttpServer(
                                 }
                             }
                             
+                            // Update battery status display
+                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined) {
+                                updateBatteryStatusDisplay(state.batteryMode, state.streamingAllowed);
+                            }
+                            
                             // Update flashlight button state
                             updateFlashlightButton();
                             
@@ -1166,6 +1213,12 @@ class HttpServer(
                             if (streamActive && settingsChanged) {
                                 console.log('Reloading stream to reflect state changes');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            }
+                            
+                            // If streaming was disabled due to battery, stop the stream
+                            if (deltaState.streamingAllowed !== undefined && !state.streamingAllowed && streamActive) {
+                                console.log('Streaming disabled due to battery, stopping stream');
+                                stopStream();
                             }
                             
                             // If camera switched, reload formats
