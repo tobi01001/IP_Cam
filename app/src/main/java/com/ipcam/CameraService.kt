@@ -94,8 +94,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
     private var lastBatteryUpdate: Long = 0
     @Volatile private var batteryUpdatePending: Boolean = false
-    // Battery threshold for wake lock management (20%)
-    private val BATTERY_THRESHOLD_PERCENT = 20
+    
+    // Enhanced Battery Management System
+    // Battery thresholds for power management
+    private val BATTERY_CRITICAL_PERCENT = 10  // Disable streaming below this
+    private val BATTERY_LOW_PERCENT = 20       // Release wakelocks below this
+    private val BATTERY_RECOVERY_PERCENT = 50  // Auto-restore above this
+    
+    // Battery management state
+    private enum class BatteryManagementMode {
+        NORMAL,          // Full operation (battery > 20% OR charging)
+        LOW_BATTERY,     // Wakelocks released (battery ≤ 20%, not charging)
+        CRITICAL_BATTERY // Streaming disabled (battery ≤ 10%, not charging)
+    }
+    
+    @Volatile private var batteryMode: BatteryManagementMode = BatteryManagementMode.NORMAL
+    @Volatile private var userOverrideBatteryLimit: Boolean = false // User can manually override critical mode if battery > 10%
     // State tracking for delta broadcasting (only send changed values via SSE)
     private val lastBroadcastState = mutableMapOf<String, Any>()
     private val broadcastLock = Any() // Lock for broadcast state synchronization
@@ -1940,23 +1954,198 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
+     * Determine battery management mode based on current battery level and charging status.
+     * Implements hysteresis to prevent flapping between states.
+     * 
+     * State transitions:
+     * - NORMAL → LOW_BATTERY: battery ≤ 20% and not charging
+     * - LOW_BATTERY → CRITICAL_BATTERY: battery ≤ 10% and not charging
+     * - CRITICAL_BATTERY → LOW_BATTERY: battery > 10% and (charging OR user override)
+     * - LOW_BATTERY → NORMAL: battery > 20% OR charging OR (battery > 50% and was in CRITICAL)
+     * - Any state → NORMAL: charging = true
+     * 
+     * @return Current battery management mode
+     */
+    private fun determineBatteryMode(batteryInfo: BatteryInfo): BatteryManagementMode {
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // If charging, always return to NORMAL mode (unless in CRITICAL and battery still very low)
+        if (isCharging) {
+            // Only restore from CRITICAL if battery > CRITICAL threshold to avoid immediate re-critical on unplug
+            return if (batteryMode == BatteryManagementMode.CRITICAL_BATTERY && batteryLevel < BATTERY_CRITICAL_PERCENT) {
+                BatteryManagementMode.CRITICAL_BATTERY
+            } else {
+                BatteryManagementMode.NORMAL
+            }
+        }
+        
+        // Not charging - apply state machine with hysteresis
+        return when (batteryMode) {
+            BatteryManagementMode.NORMAL -> {
+                when {
+                    batteryLevel <= BATTERY_CRITICAL_PERCENT -> BatteryManagementMode.CRITICAL_BATTERY
+                    batteryLevel <= BATTERY_LOW_PERCENT -> BatteryManagementMode.LOW_BATTERY
+                    else -> BatteryManagementMode.NORMAL
+                }
+            }
+            BatteryManagementMode.LOW_BATTERY -> {
+                when {
+                    batteryLevel <= BATTERY_CRITICAL_PERCENT -> BatteryManagementMode.CRITICAL_BATTERY
+                    batteryLevel > BATTERY_LOW_PERCENT -> BatteryManagementMode.NORMAL
+                    else -> BatteryManagementMode.LOW_BATTERY
+                }
+            }
+            BatteryManagementMode.CRITICAL_BATTERY -> {
+                when {
+                    // Auto-recovery: battery charged to recovery threshold
+                    batteryLevel >= BATTERY_RECOVERY_PERCENT -> {
+                        userOverrideBatteryLimit = false // Clear override on full recovery
+                        BatteryManagementMode.NORMAL
+                    }
+                    // User override: battery > 10% and user explicitly requested restore
+                    batteryLevel > BATTERY_CRITICAL_PERCENT && userOverrideBatteryLimit -> {
+                        BatteryManagementMode.LOW_BATTERY // Go to LOW mode first, not NORMAL
+                    }
+                    // Stay in critical if still below 10%
+                    else -> BatteryManagementMode.CRITICAL_BATTERY
+                }
+            }
+        }
+    }
+    
+    /**
+     * Update battery management mode and apply appropriate actions.
+     * Called periodically by watchdog to monitor battery state and adjust behavior.
+     */
+    private fun updateBatteryManagement() {
+        val batteryInfo = getBatteryInfo()
+        val newMode = determineBatteryMode(batteryInfo)
+        
+        // Only log and take action if mode changed
+        if (newMode != batteryMode) {
+            val oldMode = batteryMode
+            batteryMode = newMode
+            
+            Log.i(TAG, "Battery mode changed: $oldMode → $newMode (battery: ${batteryInfo.level}%, charging: ${batteryInfo.isCharging})")
+            
+            // Apply mode-specific actions
+            when (newMode) {
+                BatteryManagementMode.NORMAL -> {
+                    // Restore full operation
+                    acquireLocks()
+                    // Note: Camera remains running, streaming resumes automatically
+                    Log.i(TAG, "Full operation restored (battery: ${batteryInfo.level}%)")
+                }
+                BatteryManagementMode.LOW_BATTERY -> {
+                    // Release wakelocks to reduce power consumption
+                    releaseLocks()
+                    // Camera and streaming continue, but device can sleep more aggressively
+                    Log.w(TAG, "Low battery mode: wakelocks released (battery: ${batteryInfo.level}%)")
+                }
+                BatteryManagementMode.CRITICAL_BATTERY -> {
+                    // Disable streaming to preserve battery
+                    releaseLocks()
+                    // Camera frames still captured but not served to clients (handled in HttpServer)
+                    Log.e(TAG, "CRITICAL battery mode: streaming disabled to preserve battery (battery: ${batteryInfo.level}%)")
+                    
+                    // Show notification to user
+                    showUserNotification(
+                        "Critical Battery - Streaming Paused",
+                        "Battery at ${batteryInfo.level}%. IP camera streaming has been paused to preserve battery. Please charge the device or streaming will resume automatically when battery reaches 50%."
+                    )
+                }
+            }
+        }
+    }
+    
+    /**
+     * Check if streaming should be allowed based on battery management mode.
+     * Called by HttpServer to determine if streaming endpoints should serve frames or info page.
+     * 
+     * @return true if streaming is allowed, false if battery is too critical
+     */
+    override fun isStreamingAllowed(): Boolean {
+        return batteryMode != BatteryManagementMode.CRITICAL_BATTERY
+    }
+    
+    /**
+     * Get current battery mode for status reporting
+     */
+    override fun getBatteryMode(): String {
+        return batteryMode.name
+    }
+    
+    /**
+     * Get the critical battery threshold percentage
+     */
+    override fun getBatteryCriticalPercent(): Int {
+        return BATTERY_CRITICAL_PERCENT
+    }
+    
+    /**
+     * Get the low battery threshold percentage
+     */
+    override fun getBatteryLowPercent(): Int {
+        return BATTERY_LOW_PERCENT
+    }
+    
+    /**
+     * Get the recovery battery threshold percentage
+     */
+    override fun getBatteryRecoveryPercent(): Int {
+        return BATTERY_RECOVERY_PERCENT
+    }
+    
+    /**
+     * Allow user to override critical battery mode and restore streaming.
+     * Only works if battery > 10%. If battery drops below 10% again, critical mode re-activates.
+     * 
+     * @return true if override was successful, false if battery still too low
+     */
+    override fun overrideBatteryLimit(): Boolean {
+        val batteryInfo = getBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        
+        // Can only override if battery > CRITICAL threshold (strictly greater than, not equal)
+        if (batteryLevel <= BATTERY_CRITICAL_PERCENT) {
+            Log.w(TAG, "Battery override rejected: battery too low ($batteryLevel% ≤ $BATTERY_CRITICAL_PERCENT%)")
+            return false
+        }
+        
+        // Can only override from CRITICAL mode
+        if (batteryMode != BatteryManagementMode.CRITICAL_BATTERY) {
+            Log.d(TAG, "Battery override not needed: already in $batteryMode mode")
+            return true // Already operating normally
+        }
+        
+        // Set override flag and update mode
+        userOverrideBatteryLimit = true
+        updateBatteryManagement()
+        
+        Log.i(TAG, "User override battery limit: streaming restored (battery: $batteryLevel%)")
+        showUserNotification(
+            "Streaming Restored",
+            "Battery at $batteryLevel%. Streaming has been manually restored. It will pause again if battery drops below 10%."
+        )
+        
+        return true
+    }
+    
+    /**
      * Acquire wake locks for optimal streaming performance.
-     * Only acquires locks when battery level is above threshold (20%) to prevent
-     * excessive battery drain when battery is low.
+     * Only acquires locks when in NORMAL battery mode.
      * 
      * PARTIAL_WAKE_LOCK: Keeps CPU running for camera processing and streaming
      * WIFI_MODE_FULL_HIGH_PERF: Prevents WiFi from entering power save mode for consistent streaming
      */
     private fun acquireLocks() {
-        // Check battery level before acquiring locks
         val batteryInfo = getBatteryInfo()
         val batteryLevel = batteryInfo.level
         val isCharging = batteryInfo.isCharging
         
-        // Only acquire locks if battery > 20% OR device is charging
-        val shouldHoldLocks = batteryLevel > BATTERY_THRESHOLD_PERCENT || isCharging
-        
-        if (shouldHoldLocks) {
+        // Only acquire locks in NORMAL mode
+        if (batteryMode == BatteryManagementMode.NORMAL) {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             if (wakeLock?.isHeld != true) {
                 wakeLock = powerManager.newWakeLock(
@@ -1964,7 +2153,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     "$TAG:WakeLock"
                 ).apply {
                     acquire()
-                    Log.i(TAG, "Wake lock acquired (battery: $batteryLevel%, charging: $isCharging)")
+                    Log.i(TAG, "Wake lock acquired (battery: $batteryLevel%, charging: $isCharging, mode: $batteryMode)")
                 }
             }
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -1974,13 +2163,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     "$TAG:WifiLock"
                 ).apply {
                     acquire()
-                    Log.i(TAG, "WiFi lock acquired (battery: $batteryLevel%, charging: $isCharging)")
+                    Log.i(TAG, "WiFi lock acquired (battery: $batteryLevel%, charging: $isCharging, mode: $batteryMode)")
                 }
             }
         } else {
-            // Release locks when battery is low and not charging
+            // Ensure locks are released in non-NORMAL modes
             releaseLocks()
-            Log.w(TAG, "Wake locks not acquired due to low battery (battery: $batteryLevel%, threshold: $BATTERY_THRESHOLD_PERCENT%)")
+            Log.d(TAG, "Wake locks not acquired: battery mode is $batteryMode (battery: $batteryLevel%)")
         }
     }
     
@@ -2083,23 +2272,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     }
                 }
                 
-                // Check battery level and manage wake locks accordingly
-                // Check every watchdog cycle to respond quickly to battery changes
-                val batteryInfo = getBatteryInfo()
-                val batteryLevel = batteryInfo.level
-                val isCharging = batteryInfo.isCharging
-                val shouldHoldLocks = batteryLevel > BATTERY_THRESHOLD_PERCENT || isCharging
-                val areLocksHeld = wakeLock?.isHeld == true && wifiLock?.isHeld == true
-                
-                if (shouldHoldLocks && !areLocksHeld) {
-                    // Battery recovered or device started charging - acquire locks
-                    Log.i(TAG, "Watchdog: Battery level acceptable ($batteryLevel%), acquiring wake locks")
-                    acquireLocks()
-                } else if (!shouldHoldLocks && areLocksHeld) {
-                    // Battery dropped below threshold and not charging - release locks
-                    Log.w(TAG, "Watchdog: Battery low ($batteryLevel%) and not charging, releasing wake locks to conserve power")
-                    releaseLocks()
-                }
+                // Check battery level and manage power/streaming accordingly
+                // This is the main battery management check that runs every watchdog cycle
+                updateBatteryManagement()
                 
                 // Exponential backoff for retry delay
                 if (needsRecovery) {
@@ -2378,7 +2553,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
         // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()}}"""
     }
     
     /**
@@ -2414,7 +2589,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "targetRtspFps" to targetRtspFps,
             "adaptiveQualityEnabled" to adaptiveQualityEnabled,
             "flashlightAvailable" to isFlashlightAvailable(),
-            "flashlightOn" to isFlashlightEnabled()
+            "flashlightOn" to isFlashlightEnabled(),
+            "batteryMode" to batteryMode.name,
+            "streamingAllowed" to isStreamingAllowed()
         )
         
         // Find changed fields
@@ -2483,6 +2660,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled
             lastBroadcastState["flashlightAvailable"] = isFlashlightAvailable()
             lastBroadcastState["flashlightOn"] = isFlashlightEnabled()
+            lastBroadcastState["batteryMode"] = batteryMode.name
+            lastBroadcastState["streamingAllowed"] = isStreamingAllowed()
         }
     }
     

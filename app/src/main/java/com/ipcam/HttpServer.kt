@@ -128,6 +128,9 @@ class HttpServer(
                 get("/rtspStatus") { serveRTSPStatus() }
                 get("/setRTSPBitrate") { serveSetRTSPBitrate() }
                 get("/setRTSPBitrateMode") { serveSetRTSPBitrateMode() }
+                
+                // Battery management endpoints
+                get("/overrideBatteryLimit") { serveOverrideBatteryLimit() }
             }
         }
         
@@ -275,6 +278,10 @@ class HttpServer(
                     #connectionsContainer tr:hover { background-color: #f5f5f5; }
                     #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
                     #connectionsContainer button:hover { background-color: #d32f2f; }
+                    .battery-status { background-color: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border-left: 4px solid #ffc107; }
+                    .battery-status.normal { background-color: #d4edda; border-left-color: #28a745; }
+                    .battery-status.low { background-color: #fff3cd; border-left-color: #ffc107; }
+                    .battery-status.critical { background-color: #f8d7da; border-left-color: #dc3545; }
                 </style>
             </head>
             <body>
@@ -284,7 +291,11 @@ class HttpServer(
                         <strong>Server Status:</strong> Running (Ktor) | 
                         <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                     </div>
-                    <p class="note"><em>Connection count updates in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
+                    <div id="batteryStatusDisplay" class="battery-status">
+                        <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
+                        <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
+                    </div>
+                    <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
                     <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
                         <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
@@ -652,6 +663,35 @@ class HttpServer(
                                 console.error('Error updating flashlight button:', error);
                             });
                     }
+                    
+                    function updateBatteryStatusDisplay(batteryMode, streamingAllowed) {
+                        const statusDiv = document.getElementById('batteryStatusDisplay');
+                        const modeText = document.getElementById('batteryModeText');
+                        const streamingText = document.getElementById('streamingStatusText');
+                        
+                        // Update mode text with descriptive labels
+                        let modeLabel = batteryMode;
+                        let modeClass = 'normal';
+                        
+                        if (batteryMode === 'NORMAL') {
+                            modeLabel = 'Normal (Full Operation)';
+                            modeClass = 'normal';
+                        } else if (batteryMode === 'LOW_BATTERY') {
+                            modeLabel = 'Low Battery (Wakelocks Released)';
+                            modeClass = 'low';
+                        } else if (batteryMode === 'CRITICAL_BATTERY') {
+                            modeLabel = 'CRITICAL - Streaming Paused';
+                            modeClass = 'critical';
+                        }
+                        
+                        modeText.textContent = modeLabel;
+                        streamingText.textContent = streamingAllowed ? 'Active' : 'Paused (Battery Too Low)';
+                        streamingText.style.color = streamingAllowed ? '#28a745' : '#dc3545';
+                        streamingText.style.fontWeight = streamingAllowed ? 'normal' : 'bold';
+                        
+                        // Update status div styling based on mode
+                        statusDiv.className = 'battery-status ' + modeClass;
+                    }
 
                     function loadFormats() {
                         fetch('/formats')
@@ -965,7 +1005,7 @@ class HttpServer(
                     refreshConnections();
                     updateFlashlightButton();
                     
-                    // Load max connections from server status
+                    // Load max connections and battery status from server status
                     fetch('/status')
                         .then(response => response.json())
                         .then(data => {
@@ -976,6 +1016,11 @@ class HttpServer(
                                     select.selectedIndex = i;
                                     break;
                                 }
+                            }
+                            
+                            // Initialize battery status display
+                            if (data.batteryMode && data.streamingAllowed !== undefined) {
+                                updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed);
                             }
                         });
                     
@@ -1155,6 +1200,11 @@ class HttpServer(
                                 }
                             }
                             
+                            // Update battery status display
+                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined) {
+                                updateBatteryStatusDisplay(state.batteryMode, state.streamingAllowed);
+                            }
+                            
                             // Update flashlight button state
                             updateFlashlightButton();
                             
@@ -1163,6 +1213,12 @@ class HttpServer(
                             if (streamActive && settingsChanged) {
                                 console.log('Reloading stream to reflect state changes');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
+                            }
+                            
+                            // If streaming was disabled due to battery, stop the stream
+                            if (deltaState.streamingAllowed !== undefined && !state.streamingAllowed && streamActive) {
+                                console.log('Streaming disabled due to battery, stopping stream');
+                                stopStream();
                             }
                             
                             // If camera switched, reload formats
@@ -1343,6 +1399,93 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
+        // Check if streaming is allowed based on battery status
+        if (!cameraService.isStreamingAllowed()) {
+            // Serve battery-limited info page instead of stream
+            val batteryMode = cameraService.getBatteryMode()
+            val criticalPercent = cameraService.getBatteryCriticalPercent()
+            val recoveryPercent = cameraService.getBatteryRecoveryPercent()
+            val html = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>IP Camera - Streaming Paused</title>
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <meta http-equiv="refresh" content="30">
+                    <style>
+                        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f0f0f0; text-align: center; }
+                        .container { background: white; padding: 40px; border-radius: 8px; max-width: 600px; margin: 0 auto; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+                        h1 { color: #d32f2f; margin-bottom: 20px; }
+                        .warning-icon { font-size: 64px; margin-bottom: 20px; }
+                        p { font-size: 16px; line-height: 1.6; color: #333; margin: 15px 0; }
+                        .battery-info { background-color: #ffebee; padding: 15px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #d32f2f; }
+                        .action-info { background-color: #e3f2fd; padding: 15px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #2196F3; }
+                        button { background-color: #2196F3; color: white; padding: 12px 24px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; margin: 10px; }
+                        button:hover { background-color: #0b7dda; }
+                        .note { font-size: 13px; color: #666; font-style: italic; margin-top: 20px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="warning-icon">⚠️🔋</div>
+                        <h1>Streaming Paused - Critical Battery</h1>
+                        <div class="battery-info">
+                            <strong>Battery Status: $batteryMode</strong><br>
+                            Camera streaming has been automatically paused to preserve battery and prevent unexpected shutdown.
+                        </div>
+                        <p>The device battery is critically low. To ensure the device remains accessible, video streaming has been disabled until the battery can recharge.</p>
+                        <div class="action-info">
+                            <strong>What you can do:</strong>
+                            <ul style="text-align: left; margin: 10px 20px;">
+                                <li><strong>Recommended:</strong> Connect the device to a power source. Streaming will automatically resume when battery reaches $recoveryPercent%.</li>
+                                <li><strong>Manual Override:</strong> If battery is above $criticalPercent%, you can manually restore streaming using the button below. Note: Streaming will pause again if battery drops below $criticalPercent%.</li>
+                            </ul>
+                        </div>
+                        <button onclick="overrideBattery()">Manually Restore Streaming (if battery &gt; $criticalPercent%)</button>
+                        <button onclick="checkStatus()">Check Current Status</button>
+                        <p class="note">This page will automatically refresh every 30 seconds to check if normal operation has resumed.</p>
+                        <p class="note">Server remains accessible for configuration and status checks. Only video streaming is paused.</p>
+                    </div>
+                    <script>
+                        function overrideBattery() {
+                            fetch('/overrideBatteryLimit')
+                                .then(response => response.json())
+                                .then(data => {
+                                    if (data.status === 'ok') {
+                                        alert(data.message + '\\n\\nThe page will now reload to start streaming.');
+                                        window.location.reload();
+                                    } else {
+                                        alert('Override failed: ' + data.message);
+                                    }
+                                })
+                                .catch(error => {
+                                    alert('Error: ' + error);
+                                });
+                        }
+                        
+                        function checkStatus() {
+                            fetch('/status')
+                                .then(response => response.json())
+                                .then(data => {
+                                    const info = 'Battery Mode: ' + data.batteryMode + '\\n' +
+                                                'Streaming Allowed: ' + data.streamingAllowed + '\\n\\n' +
+                                                'The page will refresh automatically if streaming becomes available.';
+                                    alert(info);
+                                })
+                                .catch(error => {
+                                    alert('Error checking status: ' + error);
+                                });
+                        }
+                    </script>
+                </body>
+                </html>
+            """.trimIndent()
+            
+            call.respondText(html, ContentType.Text.Html)
+            return
+        }
+        
+        // Normal streaming logic
         val clientId = clientIdCounter.incrementAndGet()
         activeStreams.incrementAndGet()
         Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
@@ -1350,6 +1493,12 @@ class HttpServer(
         call.respondBytesWriter(ContentType.parse("multipart/x-mixed-replace; boundary=--jpgboundary")) {
             try {
                 while (isActive) {
+                    // Check if streaming is still allowed (battery might have dropped during stream)
+                    if (!cameraService.isStreamingAllowed()) {
+                        Log.d(TAG, "Stream client $clientId - streaming no longer allowed (critical battery)")
+                        break
+                    }
+                    
                     val jpegBytes = cameraService.getLastFrameJpegBytes()
                     
                     if (jpegBytes != null) {
@@ -1407,8 +1556,10 @@ class HttpServer(
         val maxConns = cameraService.getMaxConnections()
         val activeStreamCount = activeStreams.get()
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
+        val batteryMode = cameraService.getBatteryMode()
+        val streamingAllowed = cameraService.isStreamingAllowed()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
         
         val json = """
             {
@@ -1424,6 +1575,8 @@ class HttpServer(
                 "connections": "$activeConns/$maxConns",
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
+                "batteryMode": "$batteryMode",
+                "streamingAllowed": $streamingAllowed,
                 "endpoints": $endpoints,
                 "version": {
                     "versionName": "${BuildInfo.versionName}",
@@ -2052,4 +2205,30 @@ class HttpServer(
     }
     
     // ==================== End RTSP Streaming Endpoints ====================
+    
+    // ==================== Battery Management Endpoints ====================
+    
+    /**
+     * Override critical battery limit and restore streaming
+     * Only works if battery > CRITICAL threshold
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveOverrideBatteryLimit() {
+        val criticalPercent = cameraService.getBatteryCriticalPercent()
+        val success = cameraService.overrideBatteryLimit()
+        
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"Streaming restored successfully. Streaming will pause again if battery drops below $criticalPercent%.","streamingAllowed":true}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Cannot override: battery level is still too low (≤$criticalPercent%). Please charge the device or wait for battery to exceed $criticalPercent%.","streamingAllowed":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+        }
+    }
+    
+    // ==================== End Battery Management Endpoints ====================
 }

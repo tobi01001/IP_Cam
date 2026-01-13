@@ -74,4 +74,12 @@ interface CameraServiceInterface {
     fun getRTSPUrl(): String
     fun setRTSPBitrate(bitrate: Int): Boolean
     fun setRTSPBitrateMode(mode: String): Boolean
+    
+    // Battery management operations
+    fun isStreamingAllowed(): Boolean
+    fun getBatteryMode(): String
+    fun overrideBatteryLimit(): Boolean
+    fun getBatteryCriticalPercent(): Int
+    fun getBatteryLowPercent(): Int
+    fun getBatteryRecoveryPercent(): Int
 }
