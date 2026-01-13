@@ -1,6 +1,7 @@
 package com.ipcam
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
@@ -139,9 +140,14 @@ class BitmapPool(
      * Copy a bitmap using pool for memory efficiency.
      * Catches Throwable to handle OutOfMemoryError.
      * 
+     * Note: The mutable parameter is effectively ignored for pooled bitmaps since
+     * Canvas operations require mutable bitmaps anyway. Pooled bitmaps from get()
+     * are always mutable. The parameter is preserved for API consistency and used
+     * in fallback path.
+     * 
      * @param source Source bitmap to copy
      * @param config Config for the copy
-     * @param mutable Whether the copy should be mutable
+     * @param mutable Whether the copy should be mutable (used in fallback only)
      * @return Copied bitmap or null if failed
      */
     fun copy(source: Bitmap, config: Bitmap.Config, mutable: Boolean): Bitmap? {
@@ -152,6 +158,7 @@ class BitmapPool(
         
         return try {
             // Get bitmap from pool or create new
+            // Note: Pooled bitmaps are always mutable (required for Canvas operations)
             val copy = get(source.width, source.height, config)
             if (copy == null) {
                 Log.e(TAG, "Failed to get bitmap from pool for copy")
@@ -159,8 +166,8 @@ class BitmapPool(
                 return source.copy(config, mutable)
             }
             
-            // Copy pixels
-            val canvas = android.graphics.Canvas(copy)
+            // Copy pixels using Canvas
+            val canvas = Canvas(copy)
             canvas.drawBitmap(source, 0f, 0f, null)
             
             copy

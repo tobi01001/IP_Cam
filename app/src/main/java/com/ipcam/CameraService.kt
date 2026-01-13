@@ -980,11 +980,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             // Annotate bitmap (OSD overlays)
+            // Note: annotateBitmap creates a new bitmap from pool, so finalBitmap can be cleaned up after
             val annotatedBitmap = annotateBitmap(finalBitmap)
+            
+            // Clean up finalBitmap after annotation
+            // This handles rotated bitmaps that were created outside the pool
+            if (annotatedBitmap != null && finalBitmap != annotatedBitmap) {
+                // Try to return to pool (will only succeed if from pool)
+                // If not from pool (e.g., rotated bitmap), it will be recycled by pool
+                if (!bitmapPool.returnBitmap(finalBitmap)) {
+                    // Not accepted by pool, recycle manually
+                    finalBitmap.recycle()
+                }
+            }
+            
             if (annotatedBitmap == null) {
-                // Failed to annotate, return bitmap to pool and skip frame
+                // Failed to annotate, skip frame
                 Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
-                bitmapPool.returnBitmap(finalBitmap)
                 performanceMetrics.recordFrameDropped()
                 return
             }
@@ -1077,7 +1089,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         matrix.postRotate(totalRotation.toFloat())
         
         return try {
-            // Create bitmap with exact dimensions needed for rotated image
+            // NOTE: Bitmap.createBitmap with matrix creates bitmap outside pool
+            // This is acceptable because:
+            // 1. Native rotation is very efficient (hardware-accelerated)
+            // 2. Rotation happens only on resolution/orientation changes (infrequent)
+            // 3. Most frames don't need rotation (rotation == 0)
+            // 4. Alternative (manual rotation with pool) would be slower
+            // Future: Could implement pool-based rotation for frequently rotated streams
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
             if (rotated != bitmap) {
                 bitmapPool.returnBitmap(bitmap)
