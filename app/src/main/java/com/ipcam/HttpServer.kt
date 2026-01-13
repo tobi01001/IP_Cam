@@ -1403,6 +1403,8 @@ class HttpServer(
         if (!cameraService.isStreamingAllowed()) {
             // Serve battery-limited info page instead of stream
             val batteryMode = cameraService.getBatteryMode()
+            val criticalPercent = cameraService.getBatteryCriticalPercent()
+            val recoveryPercent = cameraService.getBatteryRecoveryPercent()
             val html = """
                 <!DOCTYPE html>
                 <html>
@@ -1435,11 +1437,11 @@ class HttpServer(
                         <div class="action-info">
                             <strong>What you can do:</strong>
                             <ul style="text-align: left; margin: 10px 20px;">
-                                <li><strong>Recommended:</strong> Connect the device to a power source. Streaming will automatically resume when battery reaches 50%.</li>
-                                <li><strong>Manual Override:</strong> If battery is above 10%, you can manually restore streaming using the button below. Note: Streaming will pause again if battery drops below 10%.</li>
+                                <li><strong>Recommended:</strong> Connect the device to a power source. Streaming will automatically resume when battery reaches $recoveryPercent%.</li>
+                                <li><strong>Manual Override:</strong> If battery is above $criticalPercent%, you can manually restore streaming using the button below. Note: Streaming will pause again if battery drops below $criticalPercent%.</li>
                             </ul>
                         </div>
-                        <button onclick="overrideBattery()">Manually Restore Streaming (if battery &gt; 10%)</button>
+                        <button onclick="overrideBattery()">Manually Restore Streaming (if battery &gt; $criticalPercent%)</button>
                         <button onclick="checkStatus()">Check Current Status</button>
                         <p class="note">This page will automatically refresh every 30 seconds to check if normal operation has resumed.</p>
                         <p class="note">Server remains accessible for configuration and status checks. Only video streaming is paused.</p>
@@ -2208,19 +2210,20 @@ class HttpServer(
     
     /**
      * Override critical battery limit and restore streaming
-     * Only works if battery > 10%
+     * Only works if battery > CRITICAL threshold
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveOverrideBatteryLimit() {
+        val criticalPercent = cameraService.getBatteryCriticalPercent()
         val success = cameraService.overrideBatteryLimit()
         
         if (success) {
             call.respondText(
-                """{"status":"ok","message":"Streaming restored successfully. Streaming will pause again if battery drops below 10%.","streamingAllowed":true}""",
+                """{"status":"ok","message":"Streaming restored successfully. Streaming will pause again if battery drops below $criticalPercent%.","streamingAllowed":true}""",
                 ContentType.Application.Json
             )
         } else {
             call.respondText(
-                """{"status":"error","message":"Cannot override: battery level is still too low (≤10%). Please charge the device or wait for battery to reach at least 10%.","streamingAllowed":false}""",
+                """{"status":"error","message":"Cannot override: battery level is still too low (≤$criticalPercent%). Please charge the device or wait for battery to exceed $criticalPercent%.","streamingAllowed":false}""",
                 ContentType.Application.Json,
                 HttpStatusCode.BadRequest
             )

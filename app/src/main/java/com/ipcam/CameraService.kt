@@ -1972,8 +1972,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // If charging, always return to NORMAL mode (unless in CRITICAL and battery still very low)
         if (isCharging) {
-            // Only restore from CRITICAL if battery > 10% to avoid immediate re-critical on unplug
-            return if (batteryMode == BatteryManagementMode.CRITICAL_BATTERY && batteryLevel <= 10) {
+            // Only restore from CRITICAL if battery > CRITICAL threshold to avoid immediate re-critical on unplug
+            return if (batteryMode == BatteryManagementMode.CRITICAL_BATTERY && batteryLevel < BATTERY_CRITICAL_PERCENT) {
                 BatteryManagementMode.CRITICAL_BATTERY
             } else {
                 BatteryManagementMode.NORMAL
@@ -2077,6 +2077,27 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
+     * Get the critical battery threshold percentage
+     */
+    override fun getBatteryCriticalPercent(): Int {
+        return BATTERY_CRITICAL_PERCENT
+    }
+    
+    /**
+     * Get the low battery threshold percentage
+     */
+    override fun getBatteryLowPercent(): Int {
+        return BATTERY_LOW_PERCENT
+    }
+    
+    /**
+     * Get the recovery battery threshold percentage
+     */
+    override fun getBatteryRecoveryPercent(): Int {
+        return BATTERY_RECOVERY_PERCENT
+    }
+    
+    /**
      * Allow user to override critical battery mode and restore streaming.
      * Only works if battery > 10%. If battery drops below 10% again, critical mode re-activates.
      * 
@@ -2086,7 +2107,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val batteryInfo = getBatteryInfo()
         val batteryLevel = batteryInfo.level
         
-        // Can only override if battery > 10%
+        // Can only override if battery > CRITICAL threshold (strictly greater than, not equal)
         if (batteryLevel <= BATTERY_CRITICAL_PERCENT) {
             Log.w(TAG, "Battery override rejected: battery too low ($batteryLevel% ≤ $BATTERY_CRITICAL_PERCENT%)")
             return false

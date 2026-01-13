@@ -79,4 +79,7 @@ interface CameraServiceInterface {
     fun isStreamingAllowed(): Boolean
     fun getBatteryMode(): String
     fun overrideBatteryLimit(): Boolean
+    fun getBatteryCriticalPercent(): Int
+    fun getBatteryLowPercent(): Int
+    fun getBatteryRecoveryPercent(): Int
 }
