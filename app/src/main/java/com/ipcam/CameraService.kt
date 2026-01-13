@@ -65,6 +65,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var lastFrameJpegBytes: ByteArray? = null // Pre-compressed for HTTP serving
     @Volatile private var lastFrameTimestamp: Long = 0
     private val cameraExecutor = Executors.newSingleThreadExecutor()
+    // Dedicated executor for expensive image processing (rotation, annotation, JPEG compression)
+    // This prevents blocking the CameraX analysis thread
+    private val processingExecutor = Executors.newFixedThreadPool(2) { r ->
+        Thread(r, "ImageProcessing-${System.currentTimeMillis()}").apply {
+            isDaemon = true
+            priority = Thread.NORM_PRIORITY - 1 // Slightly lower priority than camera thread
+        }
+    }
     @Volatile private var cameraProvider: ProcessCameraProvider? = null
     private val bitmapLock = Any() // Lock for bitmap access synchronization
     private val jpegLock = Any() // Lock for JPEG bytes access
@@ -925,63 +933,99 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Process MJPEG frames (CPU-based, throttled to targetMjpegFps)
      * This is called by ImageAnalysis use case, separate from H.264 encoding
-     * Uses try-with-resources pattern (Kotlin's use{}) to ensure ImageProxy is always closed
+     * 
+     * PERFORMANCE: Lightweight operations (FPS tracking, throttling) happen on the analyzer thread,
+     * while expensive operations (rotation, annotation, JPEG compression) are offloaded to a
+     * dedicated processing executor. This prevents blocking the CameraX analysis thread and
+     * keeps the frame pipeline flowing smoothly.
      */
     private fun processMjpegFrame(image: ImageProxy) {
+        val processingStart = System.currentTimeMillis()
+        
+        try {
+            // === LIGHTWEIGHT OPERATIONS ON ANALYZER THREAD ===
+            // These operations are fast and don't block the frame pipeline
+            
+            // Track Camera FPS FIRST (from ImageAnalysis callback rate - ALL frames including skipped)
+            synchronized(fpsFrameTimes) {
+                fpsFrameTimes.add(processingStart)
+                // Keep only the last 2 seconds of frame times
+                val cutoffTime = processingStart - 2000
+                fpsFrameTimes.removeAll { it < cutoffTime }
+                
+                // Calculate FPS every 500ms
+                if (processingStart - lastFpsCalculation > 500) {
+                    if (fpsFrameTimes.size > 1) {
+                        val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
+                        val newFps = if (timeSpan > 0) {
+                            (fpsFrameTimes.size - 1) * 1000f / timeSpan
+                        } else {
+                            0f
+                        }
+                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
+                            currentCameraFps = newFps
+                            broadcastCameraState()
+                        } else {
+                            currentCameraFps = newFps
+                        }
+                    }
+                    lastFpsCalculation = processingStart
+                }
+            }
+            
+            // === MJPEG FPS Throttling ===
+            // Skip frame if not enough time has passed since last processed frame
+            val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
+            val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
+            
+            if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
+                // Skip this frame to maintain target MJPEG FPS
+                // Camera FPS already tracked above, so this only affects MJPEG stream FPS
+                image.close()
+                return
+            }
+            
+            lastMjpegFrameProcessedTimeMs = processingStart
+            
+            // === OFFLOAD EXPENSIVE OPERATIONS TO PROCESSING EXECUTOR ===
+            // Submit to dedicated processing executor to avoid blocking the analyzer thread
+            // The ImageProxy must be closed by the processing task
+            try {
+                processingExecutor.execute {
+                    processImageHeavyOperations(image, processingStart)
+                }
+            } catch (e: RejectedExecutionException) {
+                // Executor queue is full or shutting down - close image and skip frame
+                Log.w(TAG, "Processing executor rejected frame, skipping")
+                image.close()
+                performanceMetrics.recordFrameDropped()
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in MJPEG frame analyzer", e)
+            image.close()
+            performanceMetrics.recordFrameDropped()
+        }
+    }
+    
+    /**
+     * Heavy image processing operations (rotation, annotation, JPEG compression)
+     * Runs on dedicated processing executor to avoid blocking CameraX analyzer thread
+     * 
+     * @param image ImageProxy to process (must be closed by this method)
+     * @param processingStart Timestamp when frame processing started
+     */
+    private fun processImageHeavyOperations(image: ImageProxy, processingStart: Long) {
         // Use Kotlin's use{} extension to ensure image.close() is always called
         // This provides automatic resource management similar to Java's try-with-resources
         image.use {
-            val processingStart = System.currentTimeMillis()
-            
             try {
-                // Track Camera FPS FIRST (from ImageAnalysis callback rate - ALL frames including skipped)
-                synchronized(fpsFrameTimes) {
-                    fpsFrameTimes.add(processingStart)
-                    // Keep only the last 2 seconds of frame times
-                    val cutoffTime = processingStart - 2000
-                    fpsFrameTimes.removeAll { it < cutoffTime }
-                    
-                    // Calculate FPS every 500ms
-                    if (processingStart - lastFpsCalculation > 500) {
-                        if (fpsFrameTimes.size > 1) {
-                            val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
-                            val newFps = if (timeSpan > 0) {
-                                (fpsFrameTimes.size - 1) * 1000f / timeSpan
-                            } else {
-                                0f
-                            }
-                            // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
-                            if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
-                                currentCameraFps = newFps
-                                broadcastCameraState()
-                            } else {
-                                currentCameraFps = newFps
-                            }
-                        }
-                        lastFpsCalculation = processingStart
-                    }
-                }
-                
-                // === MJPEG FPS Throttling ===
-                // Skip frame if not enough time has passed since last processed frame
-                val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
-                val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
-                
-                if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
-                    // Skip this frame to maintain target MJPEG FPS
-                    // Camera FPS already tracked above, so this only affects MJPEG stream FPS
-                    // Note: return exits the function AND automatically calls image.close() via use{}
-                    return
-                }
-                
-                lastMjpegFrameProcessedTimeMs = processingStart
-                
                 // === MJPEG Pipeline (CPU-based, throttled) ===
-                // Convert YUV to Bitmap for MJPEG (using pool for memory efficiency)
+                // Convert RGBA to Bitmap for MJPEG (using pool for memory efficiency)
                 val bitmap = imageProxyToBitmap(image)
                 if (bitmap == null) {
                     // Failed to allocate bitmap, skip this frame
-                    // Note: return exits the function AND automatically calls image.close() via use{}
                     Log.w(TAG, "Skipping MJPEG frame due to bitmap allocation failure")
                     performanceMetrics.recordFrameDropped()
                     return
@@ -1011,7 +1055,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 if (annotatedBitmap == null) {
                     // Failed to annotate, skip frame
-                    // Note: return exits the function AND automatically calls image.close() via use{}
                     Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
                     performanceMetrics.recordFrameDropped()
                     return
@@ -1070,11 +1113,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
                 
             } catch (e: Exception) {
-                Log.e(TAG, "Error processing MJPEG frame", e)
+                Log.e(TAG, "Error processing MJPEG frame in background", e)
                 performanceMetrics.recordFrameDropped()
             } catch (t: Throwable) {
                 // Catch OutOfMemoryError and other critical errors
-                Log.e(TAG, "Critical error processing MJPEG frame", t)
+                Log.e(TAG, "Critical error processing MJPEG frame in background", t)
                 performanceMetrics.recordFrameDropped()
                 // Clear bitmap pool on OOME to free memory
                 if (t is OutOfMemoryError) {
@@ -1936,8 +1979,28 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         orientationEventListener?.disable()
         httpServer?.stop()
         cameraProvider?.unbindAll()
+        
+        // Shutdown executors in proper order
+        // 1. Camera executor (stops frame capture)
         cameraExecutor.shutdown()
+        
+        // 2. Processing executor (stops frame processing)
+        processingExecutor.shutdown()
+        try {
+            // Wait for pending processing tasks to complete (up to 2 seconds)
+            if (!processingExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+                Log.w(TAG, "Processing executor did not terminate cleanly, forcing shutdown")
+                processingExecutor.shutdownNow()
+            }
+        } catch (e: InterruptedException) {
+            Log.w(TAG, "Interrupted while waiting for processing executor to terminate")
+            processingExecutor.shutdownNow()
+            Thread.currentThread().interrupt()
+        }
+        
+        // 3. Streaming executor (stops client connections)
         streamingExecutor.shutdownNow() // Forcefully terminate streaming threads
+        
         synchronized(bitmapLock) {
             // Return last frame bitmap to pool instead of recycling
             lastFrameBitmap?.let { bitmapPool.returnBitmap(it) }
