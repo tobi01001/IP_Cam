@@ -1114,23 +1114,41 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val rowStride = plane.rowStride
         val rowPadding = rowStride - pixelStride * image.width
         
-        // Create bitmap with exact dimensions matching the image
+        // Create bitmap with the actual image dimensions (no padding)
         val bitmap = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride,
+            image.width,
             image.height,
             Bitmap.Config.ARGB_8888
         )
         
-        // Copy buffer data to bitmap
-        buffer.rewind()
-        bitmap.copyPixelsFromBuffer(buffer)
-        
-        // Crop to actual image size if there's row padding
-        return if (rowPadding != 0) {
-            Bitmap.createBitmap(bitmap, 0, 0, image.width, image.height)
+        // If there's no row padding, we can copy directly
+        if (rowPadding == 0) {
+            buffer.rewind()
+            bitmap.copyPixelsFromBuffer(buffer)
         } else {
-            bitmap
+            // With row padding, copy row by row to exclude padding bytes
+            buffer.rewind()
+            val pixels = IntArray(image.width)
+            
+            for (row in 0 until image.height) {
+                // Position at start of this row
+                buffer.position(row * rowStride)
+                
+                // Read pixels for this row
+                for (col in 0 until image.width) {
+                    val r = buffer.get().toInt() and 0xFF
+                    val g = buffer.get().toInt() and 0xFF
+                    val b = buffer.get().toInt() and 0xFF
+                    val a = buffer.get().toInt() and 0xFF
+                    pixels[col] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                }
+                
+                // Set this row in the bitmap
+                bitmap.setPixels(pixels, 0, image.width, 0, row, image.width, 1)
+            }
         }
+        
+        return bitmap
     }
     
     override fun switchCamera(cameraSelector: CameraSelector) {
