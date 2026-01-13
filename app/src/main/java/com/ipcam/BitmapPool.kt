@@ -108,7 +108,8 @@ class BitmapPool(
             return false
         }
         
-        val key = BitmapKey(bitmap.width, bitmap.height, bitmap.config)
+        val config = bitmap.config ?: Bitmap.Config.ARGB_8888
+        val key = BitmapKey(bitmap.width, bitmap.height, config)
         val queue = pools.getOrPut(key) { ConcurrentLinkedQueue() }
         
         // Check if bucket is full
