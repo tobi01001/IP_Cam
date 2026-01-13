@@ -878,101 +878,117 @@ class RTSPServer(
     
     /**
      * Encode frame from camera
+     * 
+     * NOTE: This method is currently UNUSED in the production code.
+     * The current RTSP implementation uses H264PreviewEncoder with a Surface-based pipeline,
+     * which feeds camera frames directly to MediaCodec without going through ImageProxy.
+     * 
+     * This method is kept for potential future use or alternative encoding paths.
+     * Uses try-with-resources pattern (Kotlin's use{}) to ensure ImageProxy is always closed.
      */
     fun encodeFrame(image: ImageProxy): Boolean {
-        if (!isEncoding.get()) {
-            return false
-        }
-        
-        try {
-            // === Encoder Initialization/Recreation ===
-            // Check if encoder needs to be (re)created due to resolution mismatch
-            if (encoder == null || image.width != width || image.height != height) {
-                if (encoder != null) {
-                    Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
-                    try {
-                        encoder?.stop()
-                        encoder?.release()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error stopping old encoder", e)
-                    }
-                    encoder = null
-                    sps = null
-                    pps = null
-                }
-                
-                // Recreate encoder with actual frame dimensions
-                if (!recreateEncoder(image.width, image.height)) {
-                    return false
-                }
-            }
-            
-            // Log first successful frame
-            if (frameCount.get() == 0L) {
-                Log.i(TAG, "Encoding first frame: ${image.width}x${image.height} @ ${fps} fps")
-                streamStartTimeMs = System.currentTimeMillis()
-                lastFrameTimeNs = System.nanoTime()
-            }
-            
-            // === Encode Frame ===
-            // Get input buffer with timeout
-            val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
-            if (inputBufferIndex >= 0) {
-                val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
-                
-                if (inputBuffer != null) {
-                    fillInputBuffer(inputBuffer, image)
-                    
-                    val presentationTimeUs = frameCount.get() * 1_000_000L / fps
-                    val bufferSize = inputBuffer.remaining() // Size of data after flip()
-                    
-                    // Check encoder state before queueing - avoid race condition during start()
-                    try {
-                        encoder?.queueInputBuffer(
-                            inputBufferIndex,
-                            0,
-                            bufferSize,
-                            presentationTimeUs,
-                            0
-                        )
-                        frameCount.incrementAndGet()
-                        
-                        // Track RTSP FPS - frame successfully queued for encoding
-                        cameraService?.recordRtspFrameEncoded()
-                    } catch (e: IllegalStateException) {
-                        // Encoder not yet in EXECUTING state (still in start())
-                        // This can happen during encoder recreation - safe to drop frame
-                        Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
-                        return false
-                    }
-                    
-                    // Update timing for FPS calculation
-                    lastFrameTimeNs = System.nanoTime()
-                    
-                    if (frameCount.get() == 1L) {
-                        Log.i(TAG, "First frame queued with size: $bufferSize bytes")
-                    }
-                }
-            } else {
-                // Encoder input queue full - this is normal under load
-                val currentTimeMs = System.currentTimeMillis()
-                if (currentTimeMs - lastQueueFullLogTimeMs > logThrottleMs) {
-                    Log.d(TAG, "Encoder input buffer unavailable (queue full), ${droppedFrameCount.get()} total frames dropped")
-                    lastQueueFullLogTimeMs = currentTimeMs
-                }
-                droppedFrameCount.incrementAndGet()
+        // Use Kotlin's use{} extension to ensure image.close() is always called
+        // This provides automatic resource management similar to Java's try-with-resources
+        return image.use {
+            if (!isEncoding.get()) {
                 return false
             }
             
-            // Retrieve encoded output
-            drainEncoder()
-            
-            return true
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error encoding frame", e)
-            lastError = "Frame encoding failed: ${e.message}"
-            return false
+            try {
+                // === Encoder Initialization/Recreation ===
+                // Check if encoder needs to be (re)created due to resolution mismatch
+                if (encoder == null || image.width != width || image.height != height) {
+                    if (encoder != null) {
+                        Log.i(TAG, "Resolution changed from ${width}x${height} to ${image.width}x${image.height}, recreating encoder")
+                        try {
+                            encoder?.stop()
+                            encoder?.release()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error stopping old encoder", e)
+                        }
+                        encoder = null
+                        sps = null
+                        pps = null
+                    }
+                    
+                    // Recreate encoder with actual frame dimensions
+                    if (!recreateEncoder(image.width, image.height)) {
+                        // Note: image.close() will be called automatically by use{} when this block exits
+                        return false
+                    }
+                }
+                
+                // Log first successful frame
+                if (frameCount.get() == 0L) {
+                    Log.i(TAG, "Encoding first frame: ${image.width}x${image.height} @ ${fps} fps")
+                    streamStartTimeMs = System.currentTimeMillis()
+                    lastFrameTimeNs = System.nanoTime()
+                }
+                
+                // === Encode Frame ===
+                // Get input buffer with timeout
+                val inputBufferIndex = encoder?.dequeueInputBuffer(TIMEOUT_US) ?: -1
+                if (inputBufferIndex >= 0) {
+                    val inputBuffer = encoder?.getInputBuffer(inputBufferIndex)
+                    
+                    if (inputBuffer != null) {
+                        fillInputBuffer(inputBuffer, image)
+                        
+                        val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                        val bufferSize = inputBuffer.remaining() // Size of data after flip()
+                        
+                        // Check encoder state before queueing - avoid race condition during start()
+                        try {
+                            encoder?.queueInputBuffer(
+                                inputBufferIndex,
+                                0,
+                                bufferSize,
+                                presentationTimeUs,
+                                0
+                            )
+                            frameCount.incrementAndGet()
+                            
+                            // Track RTSP FPS - frame successfully queued for encoding
+                            cameraService?.recordRtspFrameEncoded()
+                        } catch (e: IllegalStateException) {
+                            // Encoder not yet in EXECUTING state (still in start())
+                            // This can happen during encoder recreation - safe to drop frame
+                            // Note: image.close() will be called automatically by use{} when this block exits
+                            Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
+                            return false
+                        }
+                        
+                        // Update timing for FPS calculation
+                        lastFrameTimeNs = System.nanoTime()
+                        
+                        if (frameCount.get() == 1L) {
+                            Log.i(TAG, "First frame queued with size: $bufferSize bytes")
+                        }
+                    }
+                } else {
+                    // Encoder input queue full - this is normal under load
+                    val currentTimeMs = System.currentTimeMillis()
+                    if (currentTimeMs - lastQueueFullLogTimeMs > logThrottleMs) {
+                        Log.d(TAG, "Encoder input buffer unavailable (queue full), ${droppedFrameCount.get()} total frames dropped")
+                        lastQueueFullLogTimeMs = currentTimeMs
+                    }
+                    droppedFrameCount.incrementAndGet()
+                    // Note: image.close() will be called automatically by use{} when this block exits
+                    return false
+                }
+                
+                // Retrieve encoded output
+                drainEncoder()
+                
+                return true
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error encoding frame", e)
+                lastError = "Frame encoding failed: ${e.message}"
+                return false
+            }
+            // Note: image.close() is called automatically by use{} when this block exits
+            // This happens regardless of normal completion, early return, or exception
         }
     }
     
