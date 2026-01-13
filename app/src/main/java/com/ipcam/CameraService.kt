@@ -911,157 +911,165 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Process MJPEG frames (CPU-based, throttled to targetMjpegFps)
      * This is called by ImageAnalysis use case, separate from H.264 encoding
+     * Uses try-with-resources pattern (Kotlin's use{}) to ensure ImageProxy is always closed
      */
     private fun processMjpegFrame(image: ImageProxy) {
-        val processingStart = System.currentTimeMillis()
-        
-        try {
-            // Track Camera FPS FIRST (from ImageAnalysis callback rate - ALL frames including skipped)
-            synchronized(fpsFrameTimes) {
-                fpsFrameTimes.add(processingStart)
-                // Keep only the last 2 seconds of frame times
-                val cutoffTime = processingStart - 2000
-                fpsFrameTimes.removeAll { it < cutoffTime }
-                
-                // Calculate FPS every 500ms
-                if (processingStart - lastFpsCalculation > 500) {
-                    if (fpsFrameTimes.size > 1) {
-                        val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
-                        val newFps = if (timeSpan > 0) {
-                            (fpsFrameTimes.size - 1) * 1000f / timeSpan
-                        } else {
-                            0f
+        // Use Kotlin's use{} extension to ensure image.close() is always called
+        // This provides automatic resource management similar to Java's try-with-resources
+        image.use {
+            val processingStart = System.currentTimeMillis()
+            
+            try {
+                // Track Camera FPS FIRST (from ImageAnalysis callback rate - ALL frames including skipped)
+                synchronized(fpsFrameTimes) {
+                    fpsFrameTimes.add(processingStart)
+                    // Keep only the last 2 seconds of frame times
+                    val cutoffTime = processingStart - 2000
+                    fpsFrameTimes.removeAll { it < cutoffTime }
+                    
+                    // Calculate FPS every 500ms
+                    if (processingStart - lastFpsCalculation > 500) {
+                        if (fpsFrameTimes.size > 1) {
+                            val timeSpan = fpsFrameTimes.last() - fpsFrameTimes.first()
+                            val newFps = if (timeSpan > 0) {
+                                (fpsFrameTimes.size - 1) * 1000f / timeSpan
+                            } else {
+                                0f
+                            }
+                            // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
+                            if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
+                                currentCameraFps = newFps
+                                broadcastCameraState()
+                            } else {
+                                currentCameraFps = newFps
+                            }
                         }
-                        // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
-                        if (kotlin.math.abs(newFps - currentCameraFps) > 0.5f) {
-                            currentCameraFps = newFps
-                            broadcastCameraState()
-                        } else {
-                            currentCameraFps = newFps
-                        }
+                        lastFpsCalculation = processingStart
                     }
-                    lastFpsCalculation = processingStart
                 }
-            }
-            
-            // === MJPEG FPS Throttling ===
-            // Skip frame if not enough time has passed since last processed frame
-            val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
-            val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
-            
-            if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
-                // Skip this frame to maintain target MJPEG FPS
-                // Camera FPS already tracked above, so this only affects MJPEG stream FPS
-                return
-            }
-            
-            lastMjpegFrameProcessedTimeMs = processingStart
-            
-            // === MJPEG Pipeline (CPU-based, throttled) ===
-            // Convert YUV to Bitmap for MJPEG (using pool for memory efficiency)
-            val bitmap = imageProxyToBitmap(image)
-            if (bitmap == null) {
-                // Failed to allocate bitmap, skip this frame
-                Log.w(TAG, "Skipping MJPEG frame due to bitmap allocation failure")
-                performanceMetrics.recordFrameDropped()
-                return
-            }
-            
-            // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
-            val frameCount = lastFrameTimestamp.toInt() % 30
-            if (frameCount == 0) {
-                Log.d(TAG, "Processing MJPEG frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
-            }
-            
-            // Apply camera orientation and rotation
-            val finalBitmap = applyRotationCorrectly(bitmap)
-            if (frameCount == 0) {
-                Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
-            }
-            
-            // Annotate bitmap (OSD overlays)
-            // Note: annotateBitmap creates a new bitmap from pool, so finalBitmap can be cleaned up after
-            val annotatedBitmap = annotateBitmap(finalBitmap)
-            
-            // Clean up finalBitmap after annotation using helper method
-            // This handles both pooled and non-pooled bitmaps (e.g., rotated bitmaps)
-            if (annotatedBitmap != null && finalBitmap != annotatedBitmap) {
-                bitmapPool.recycleBitmap(finalBitmap)
-            }
-            
-            if (annotatedBitmap == null) {
-                // Failed to annotate, skip frame
-                Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
-                performanceMetrics.recordFrameDropped()
-                return
-            }
-            
-            // Determine JPEG quality - use adaptive quality if enabled
-            val jpegQuality = if (adaptiveQualityEnabled) {
-                val settings = adaptiveQualityManager.getClientSettings(0L)
-                settings.jpegQuality
-            } else {
-                JPEG_QUALITY_STREAM
-            }
-            
-            // Pre-compress to JPEG for HTTP serving
-            val encodingStart = System.currentTimeMillis()
-            val jpegBytes = ByteArrayOutputStream().use { stream ->
-                annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
-                stream.toByteArray()
-            }
-            val encodingTime = System.currentTimeMillis() - encodingStart
-            
-            // Track encoding performance
-            performanceMetrics.recordFrameEncodingTime(encodingTime)
-            
-            // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
-            synchronized(bitmapLock) {
-                val oldBitmap = lastFrameBitmap
-                lastFrameBitmap = annotatedBitmap
-                // Return old bitmap to pool after updating reference
-                if (oldBitmap != null && oldBitmap != annotatedBitmap) {
-                    bitmapPool.returnBitmap(oldBitmap)
+                
+                // === MJPEG FPS Throttling ===
+                // Skip frame if not enough time has passed since last processed frame
+                val minFrameIntervalMs = (1000.0 / targetMjpegFps).toLong()
+                val timeSinceLastFrame = processingStart - lastMjpegFrameProcessedTimeMs
+                
+                if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
+                    // Skip this frame to maintain target MJPEG FPS
+                    // Camera FPS already tracked above, so this only affects MJPEG stream FPS
+                    // Note: return exits the function AND automatically calls image.close() via use{}
+                    return
                 }
-            }
-            
-            synchronized(jpegLock) {
-                lastFrameJpegBytes = jpegBytes
-                lastFrameTimestamp = System.currentTimeMillis()
-            }
-            
-            // Track frame processing time
-            val processingTime = System.currentTimeMillis() - processingStart
-            performanceMetrics.recordFrameProcessingTime(processingTime)
-            
-            // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
-            // Don't track here to avoid double-counting
-            
-            // Notify MainActivity if it's listening - use pool for copying
-            val previewCopy = try {
-                bitmapPool.copy(annotatedBitmap, annotatedBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+                
+                lastMjpegFrameProcessedTimeMs = processingStart
+                
+                // === MJPEG Pipeline (CPU-based, throttled) ===
+                // Convert YUV to Bitmap for MJPEG (using pool for memory efficiency)
+                val bitmap = imageProxyToBitmap(image)
+                if (bitmap == null) {
+                    // Failed to allocate bitmap, skip this frame
+                    // Note: return exits the function AND automatically calls image.close() via use{}
+                    Log.w(TAG, "Skipping MJPEG frame due to bitmap allocation failure")
+                    performanceMetrics.recordFrameDropped()
+                    return
+                }
+                
+                // Reduce logging frequency - only log every 30 frames (about 3 seconds at 10fps)
+                val frameCount = lastFrameTimestamp.toInt() % 30
+                if (frameCount == 0) {
+                    Log.d(TAG, "Processing MJPEG frame - ImageProxy size: ${image.width}x${image.height}, Bitmap size: ${bitmap.width}x${bitmap.height}, Camera FPS: ${"%.1f".format(currentCameraFps)}")
+                }
+                
+                // Apply camera orientation and rotation
+                val finalBitmap = applyRotationCorrectly(bitmap)
+                if (frameCount == 0) {
+                    Log.d(TAG, "After rotation - Bitmap size: ${finalBitmap.width}x${finalBitmap.height}, Total rotation: ${(when (cameraOrientation) { "portrait" -> 90; else -> 0 } + rotation) % 360}°")
+                }
+                
+                // Annotate bitmap (OSD overlays)
+                // Note: annotateBitmap creates a new bitmap from pool, so finalBitmap can be cleaned up after
+                val annotatedBitmap = annotateBitmap(finalBitmap)
+                
+                // Clean up finalBitmap after annotation using helper method
+                // This handles both pooled and non-pooled bitmaps (e.g., rotated bitmaps)
+                if (annotatedBitmap != null && finalBitmap != annotatedBitmap) {
+                    bitmapPool.recycleBitmap(finalBitmap)
+                }
+                
+                if (annotatedBitmap == null) {
+                    // Failed to annotate, skip frame
+                    // Note: return exits the function AND automatically calls image.close() via use{}
+                    Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
+                    performanceMetrics.recordFrameDropped()
+                    return
+                }
+                
+                // Determine JPEG quality - use adaptive quality if enabled
+                val jpegQuality = if (adaptiveQualityEnabled) {
+                    val settings = adaptiveQualityManager.getClientSettings(0L)
+                    settings.jpegQuality
+                } else {
+                    JPEG_QUALITY_STREAM
+                }
+                
+                // Pre-compress to JPEG for HTTP serving
+                val encodingStart = System.currentTimeMillis()
+                val jpegBytes = ByteArrayOutputStream().use { stream ->
+                    annotatedBitmap.compress(Bitmap.CompressFormat.JPEG, jpegQuality, stream)
+                    stream.toByteArray()
+                }
+                val encodingTime = System.currentTimeMillis() - encodingStart
+                
+                // Track encoding performance
+                performanceMetrics.recordFrameEncodingTime(encodingTime)
+                
+                // Update both bitmap (for MainActivity) and JPEG bytes (for HTTP serving)
+                synchronized(bitmapLock) {
+                    val oldBitmap = lastFrameBitmap
+                    lastFrameBitmap = annotatedBitmap
+                    // Return old bitmap to pool after updating reference
+                    if (oldBitmap != null && oldBitmap != annotatedBitmap) {
+                        bitmapPool.returnBitmap(oldBitmap)
+                    }
+                }
+                
+                synchronized(jpegLock) {
+                    lastFrameJpegBytes = jpegBytes
+                    lastFrameTimestamp = System.currentTimeMillis()
+                }
+                
+                // Track frame processing time
+                val processingTime = System.currentTimeMillis() - processingStart
+                performanceMetrics.recordFrameProcessingTime(processingTime)
+                
+                // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
+                // Don't track here to avoid double-counting
+                
+                // Notify MainActivity if it's listening - use pool for copying
+                val previewCopy = try {
+                    bitmapPool.copy(annotatedBitmap, annotatedBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+                } catch (t: Throwable) {
+                    Log.w(TAG, "Failed to copy bitmap for MainActivity preview", t)
+                    null
+                }
+                if (previewCopy != null) {
+                    onFrameAvailableCallback?.invoke(previewCopy)
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error processing MJPEG frame", e)
+                performanceMetrics.recordFrameDropped()
             } catch (t: Throwable) {
-                Log.w(TAG, "Failed to copy bitmap for MainActivity preview", t)
-                null
+                // Catch OutOfMemoryError and other critical errors
+                Log.e(TAG, "Critical error processing MJPEG frame", t)
+                performanceMetrics.recordFrameDropped()
+                // Clear bitmap pool on OOME to free memory
+                if (t is OutOfMemoryError) {
+                    Log.w(TAG, "OutOfMemoryError in frame processing, clearing bitmap pool")
+                    bitmapPool.clear()
+                }
             }
-            if (previewCopy != null) {
-                onFrameAvailableCallback?.invoke(previewCopy)
-            }
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error processing MJPEG frame", e)
-            performanceMetrics.recordFrameDropped()
-        } catch (t: Throwable) {
-            // Catch OutOfMemoryError and other critical errors
-            Log.e(TAG, "Critical error processing MJPEG frame", t)
-            performanceMetrics.recordFrameDropped()
-            // Clear bitmap pool on OOME to free memory
-            if (t is OutOfMemoryError) {
-                Log.w(TAG, "OutOfMemoryError in frame processing, clearing bitmap pool")
-                bitmapPool.clear()
-            }
-        } finally {
-            image.close()
+            // Note: image.close() is called automatically by use{} when this block exits
+            // This happens regardless of normal completion, early return, or exception
         }
     }
     
