@@ -81,7 +81,7 @@ finally {
         // Check if another rebind was requested while we were binding
         val retry = hasPendingRebind
         if (retry) {
-            Log.d(TAG, "Pending rebind detected, will retry after brief delay")
+            Log.d(TAG, "Pending rebind detected, will retry after optimized delay")
             hasPendingRebind = false
         }
         retry
