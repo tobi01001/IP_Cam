@@ -913,7 +913,7 @@ class RTSPServer(
                     
                     // Recreate encoder with actual frame dimensions
                     if (!recreateEncoder(image.width, image.height)) {
-                        // Note: image.close() will be called automatically by use{} when this block exits
+                        // Note: return exits the function AND automatically calls image.close() via use{}
                         return false
                     }
                 }
@@ -953,7 +953,7 @@ class RTSPServer(
                         } catch (e: IllegalStateException) {
                             // Encoder not yet in EXECUTING state (still in start())
                             // This can happen during encoder recreation - safe to drop frame
-                            // Note: image.close() will be called automatically by use{} when this block exits
+                            // Note: return exits the function AND automatically calls image.close() via use{}
                             Log.w(TAG, "Encoder not ready yet (during start()), dropping frame")
                             return false
                         }
@@ -973,7 +973,7 @@ class RTSPServer(
                         lastQueueFullLogTimeMs = currentTimeMs
                     }
                     droppedFrameCount.incrementAndGet()
-                    // Note: image.close() will be called automatically by use{} when this block exits
+                    // Note: return exits the function AND automatically calls image.close() via use{}
                     return false
                 }
                 

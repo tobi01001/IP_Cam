@@ -956,7 +956,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 if (lastMjpegFrameProcessedTimeMs > 0 && timeSinceLastFrame < minFrameIntervalMs) {
                     // Skip this frame to maintain target MJPEG FPS
                     // Camera FPS already tracked above, so this only affects MJPEG stream FPS
-                    // Note: image.close() will be called automatically by use{} when this block exits
+                    // Note: return exits the function AND automatically calls image.close() via use{}
                     return
                 }
                 
@@ -967,7 +967,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 val bitmap = imageProxyToBitmap(image)
                 if (bitmap == null) {
                     // Failed to allocate bitmap, skip this frame
-                    // Note: image.close() will be called automatically by use{} when this block exits
+                    // Note: return exits the function AND automatically calls image.close() via use{}
                     Log.w(TAG, "Skipping MJPEG frame due to bitmap allocation failure")
                     performanceMetrics.recordFrameDropped()
                     return
@@ -997,7 +997,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 if (annotatedBitmap == null) {
                     // Failed to annotate, skip frame
-                    // Note: image.close() will be called automatically by use{} when this block exits
+                    // Note: return exits the function AND automatically calls image.close() via use{}
                     Log.w(TAG, "Skipping MJPEG frame due to annotation failure")
                     performanceMetrics.recordFrameDropped()
                     return
