@@ -938,7 +938,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                             // Check if another rebind was requested while we were binding
                             val retry = hasPendingRebind
                             if (retry) {
-                                Log.d(TAG, "Pending rebind detected, will retry with debounce protection")
+                                Log.d(TAG, "Pending rebind detected, will retry after optimized delay")
                                 hasPendingRebind = false
                             }
                             retry
@@ -948,12 +948,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         // This ensures the latest settings are applied
                         if (shouldRetry) {
                             // Calculate remaining debounce time to minimize unnecessary delay
-                            // Use lastBindRequestTime which is synchronized and already set
+                            // Capture both time values within synchronized block to prevent race conditions
                             serviceScope.launch {
-                                val now = System.currentTimeMillis()
-                                val timeSinceLastBind = synchronized(bindingLock) {
-                                    now - lastBindRequestTime
+                                val (currentTime, lastRequestTime) = synchronized(bindingLock) {
+                                    System.currentTimeMillis() to lastBindRequestTime
                                 }
+                                val timeSinceLastBind = currentTime - lastRequestTime
                                 val remainingDelay = (CAMERA_REBIND_DEBOUNCE_MS - timeSinceLastBind).coerceAtLeast(0)
                                 
                                 if (remainingDelay > 0) {
