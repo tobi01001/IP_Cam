@@ -89,6 +89,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Camera binding state management
     @Volatile private var isBindingInProgress: Boolean = false
     private val bindingLock = Any() // Lock for binding synchronization
+    @Volatile private var lastBindRequestTime: Long = 0 // Time of last bind request
+    private var pendingBindJob: Job? = null // Job for pending bind operation
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -96,6 +98,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var batteryUpdatePending: Boolean = false
     // Battery threshold for wake lock management (20%)
     private val BATTERY_THRESHOLD_PERCENT = 20
+    // State tracking for delta broadcasting (only send changed values via SSE)
+    private val lastBroadcastState = mutableMapOf<String, Any>()
+    private val broadcastLock = Any() // Lock for broadcast state synchronization
     private lateinit var lifecycleRegistry: LifecycleRegistry
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -185,6 +190,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         // Camera rebinding debounce
+         private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
          const val EXTRA_START_SERVER = "start_server"
          // Thread pool settings for NanoHTTPD
@@ -729,6 +736,50 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
             
+            // Monitor camera state for lifecycle events
+            // This helps detect when camera is closed or in error state
+            // Use observeForever to avoid triggering multiple times on same state
+            val cameraStateObserver = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { cameraState ->
+                Log.d(TAG, "Camera state changed: ${cameraState.type}, error: ${cameraState.error?.toString() ?: "none"}")
+                
+                when (cameraState.type) {
+                    androidx.camera.core.CameraState.Type.CLOSED -> {
+                        Log.w(TAG, "Camera CLOSED state detected - camera may need rebinding")
+                        // Don't automatically rebind here to avoid infinite loops
+                        // Let the watchdog handle recovery via frame stale detection
+                    }
+                    androidx.camera.core.CameraState.Type.CLOSING -> {
+                        Log.d(TAG, "Camera closing...")
+                    }
+                    androidx.camera.core.CameraState.Type.PENDING_OPEN -> {
+                        Log.d(TAG, "Camera opening...")
+                    }
+                    androidx.camera.core.CameraState.Type.OPENING -> {
+                        Log.d(TAG, "Camera is opening...")
+                    }
+                    androidx.camera.core.CameraState.Type.OPEN -> {
+                        Log.i(TAG, "Camera is open and ready")
+                    }
+                }
+                
+                // Log any errors for debugging
+                cameraState.error?.let { error ->
+                    Log.e(TAG, "Camera error: code=${error.code}, ${error.cause?.message ?: "no cause"}", error.cause)
+                    
+                    // For critical errors, clear camera reference so watchdog can retry
+                    // Only clear once to avoid repeated logging
+                    if (camera != null && 
+                        (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
+                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
+                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE)) {
+                        Log.e(TAG, "Critical camera error detected, clearing camera reference for recovery")
+                        camera = null
+                    }
+                }
+            }
+            
+            camera?.cameraInfo?.cameraState?.observe(this, cameraStateObserver)
+            
             // Notify observers that camera state has changed (binding completed)
             onCameraStateChangedCallback?.invoke(currentCamera)
         } catch (e: Exception) {
@@ -776,20 +827,41 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Stop camera, apply settings, and restart camera.
      * This ensures settings are properly applied without conflicts.
      * Uses proper async handling to avoid blocking the main thread.
-     * Prevents overlapping bind operations.
+     * Prevents overlapping bind operations using both flag-based and time-based debouncing.
      * 
      * PRIVATE: Only CameraService methods should trigger rebinding.
      * External callers should use methods like switchCamera() or setResolutionAndRebind()
      * that encapsulate both the setting change and rebinding.
      */
     private fun requestBindCamera() {
-        // Check if a binding operation is already in progress
+        val now = System.currentTimeMillis()
+        
+        // Time-based debouncing: Check if enough time has passed since last request
         synchronized(bindingLock) {
+            val timeSinceLastRequest = now - lastBindRequestTime
+            if (timeSinceLastRequest < CAMERA_REBIND_DEBOUNCE_MS) {
+                Log.d(TAG, "requestBindCamera() debounced - too soon (${timeSinceLastRequest}ms < ${CAMERA_REBIND_DEBOUNCE_MS}ms)")
+                
+                // Cancel any pending bind job and schedule a new one
+                pendingBindJob?.cancel()
+                val remainingDelay = CAMERA_REBIND_DEBOUNCE_MS - timeSinceLastRequest
+                
+                pendingBindJob = serviceScope.launch {
+                    delay(remainingDelay)
+                    // Recursively call after delay - this time it will pass the debounce check
+                    requestBindCamera()
+                }
+                return
+            }
+            
+            // Flag-based debouncing: Check if a binding operation is already in progress
             if (isBindingInProgress) {
                 Log.d(TAG, "requestBindCamera() ignored - binding already in progress")
                 return
             }
+            
             isBindingInProgress = true
+            lastBindRequestTime = now
         }
         
         // Log stack trace to identify caller
@@ -1342,7 +1414,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Get current RTSP streaming FPS (frames actually encoded)
      */
-    fun getCurrentRtspFps(): Float = currentRtspFps
+    fun getCurrentRtspFps(): Float {
+        // Return actual encoder output rate instead of frame queue rate
+        return rtspServer?.getMetrics()?.encodedFps ?: 0f
+    }
     
     /**
      * Record that a frame was served via MJPEG stream
@@ -1875,7 +1950,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     // Camera provider exists but camera not bound
                     // This happens after ERROR_CAMERA_DISABLED or other binding failures
                     Log.w(TAG, "Watchdog: Camera provider exists but camera not bound, binding camera...")
-                    bindCamera()
+                    
+                    // CameraX requires main thread for binding operations
+                    // Post to main thread to avoid IllegalStateException
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try {
+                            bindCamera()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
+                        }
+                    }
                     needsRecovery = true
                 }
                 
@@ -1891,6 +1975,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     val frameAge = System.currentTimeMillis() - lastFrameTimestamp
                     if (frameAge > FRAME_STALE_THRESHOLD_MS) {
                         Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
+                        requestBindCamera()
+                        needsRecovery = true
+                    }
+                    
+                    // Check camera state - detect CLOSED state which indicates camera was released
+                    val cameraState = try {
+                        camera?.cameraInfo?.cameraState?.value
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Watchdog: Error reading camera state", e)
+                        null
+                    }
+                    
+                    if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
+                        Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
                         requestBindCamera()
                         needsRecovery = true
                     }
@@ -2174,7 +2272,116 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Update CPU usage before sending state
         updateCpuUsage()
         
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$currentRtspFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
+        // Full state JSON - used for /status endpoint and initial SSE connection
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()}}"""
+    }
+    
+    /**
+     * Get camera state JSON with only changed values (delta broadcasting)
+     * This reduces bandwidth and prevents unnecessary UI updates for unchanged values
+     * Returns null if nothing has changed since last broadcast
+     */
+    override fun getCameraStateDeltaJson(): String? {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
+        
+        // Update CPU usage before comparing state
+        updateCpuUsage()
+        
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
+        // Build map of current values
+        val currentState = mapOf<String, Any>(
+            "camera" to cameraName,
+            "resolution" to resolutionLabel,
+            "cameraOrientation" to cameraOrientation,
+            "rotation" to rotation,
+            "showDateTimeOverlay" to showDateTimeOverlay,
+            "showBatteryOverlay" to showBatteryOverlay,
+            "showResolutionOverlay" to showResolutionOverlay,
+            "showFpsOverlay" to showFpsOverlay,
+            "currentCameraFps" to currentCameraFps,
+            "currentMjpegFps" to currentMjpegFps,
+            "currentRtspFps" to rtspEncodedFps,
+            "cpuUsage" to currentCpuUsage,
+            "targetMjpegFps" to targetMjpegFps,
+            "targetRtspFps" to targetRtspFps,
+            "adaptiveQualityEnabled" to adaptiveQualityEnabled,
+            "flashlightAvailable" to isFlashlightAvailable(),
+            "flashlightOn" to isFlashlightEnabled()
+        )
+        
+        // Find changed fields
+        val changes = mutableListOf<String>()
+        
+        synchronized(broadcastLock) {
+            currentState.forEach { (key, value) ->
+                val lastValue = lastBroadcastState[key]
+                val hasChanged = when (value) {
+                    is Float -> lastValue == null || kotlin.math.abs(value - (lastValue as? Float ?: 0f)) > 0.01f
+                    else -> lastValue != value
+                }
+                
+                if (hasChanged) {
+                    // Format value for JSON
+                    val jsonValue = when (value) {
+                        is String -> "\"$value\""
+                        is Boolean -> value.toString()
+                        is Int -> value.toString()
+                        is Float -> value.toString()
+                        else -> value.toString()
+                    }
+                    changes.add("\"$key\":$jsonValue")
+                    // Update last broadcast state
+                    lastBroadcastState[key] = value
+                }
+            }
+        }
+        
+        // If nothing changed, return null
+        if (changes.isEmpty()) {
+            return null
+        }
+        
+        // Build JSON with only changed fields
+        return "{${changes.joinToString(",")}}"
+    }
+    
+    /**
+     * Initialize last broadcast state with current values
+     * Called when a new SSE client connects to prevent sending full state again on next delta
+     */
+    override fun initializeLastBroadcastState() {
+        val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
+        
+        // Get RTSP encoder output FPS (actual encoded frames/sec)
+        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
+        synchronized(broadcastLock) {
+            lastBroadcastState.clear()
+            lastBroadcastState["camera"] = cameraName
+            lastBroadcastState["resolution"] = resolutionLabel
+            lastBroadcastState["cameraOrientation"] = cameraOrientation
+            lastBroadcastState["rotation"] = rotation
+            lastBroadcastState["showDateTimeOverlay"] = showDateTimeOverlay
+            lastBroadcastState["showBatteryOverlay"] = showBatteryOverlay
+            lastBroadcastState["showResolutionOverlay"] = showResolutionOverlay
+            lastBroadcastState["showFpsOverlay"] = showFpsOverlay
+            lastBroadcastState["currentCameraFps"] = currentCameraFps
+            lastBroadcastState["currentMjpegFps"] = currentMjpegFps
+            lastBroadcastState["currentRtspFps"] = rtspEncodedFps
+            lastBroadcastState["cpuUsage"] = currentCpuUsage
+            lastBroadcastState["targetMjpegFps"] = targetMjpegFps
+            lastBroadcastState["targetRtspFps"] = targetRtspFps
+            lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled
+            lastBroadcastState["flashlightAvailable"] = isFlashlightAvailable()
+            lastBroadcastState["flashlightOn"] = isFlashlightEnabled()
+        }
     }
     
     override fun recordBytesSent(clientId: Long, bytes: Long) {
