@@ -223,6 +223,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Cache camera characteristics to avoid repeated IPC calls
     // Key: camera ID, Value: cached characteristics
     private val cameraCharacteristicsCache = mutableMapOf<String, CachedCameraCharacteristics>()
+    @Volatile private var cameraCharacteristicsCacheInitialized = false
     
     // Per-camera resolution memory: store resolution for each camera separately
     private var backCameraResolution: Size? = null
@@ -1521,53 +1522,68 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * Queries all available cameras once and caches their characteristics (facing, flash).
      * This avoids repeated expensive IPC calls to CameraManager.getCameraCharacteristics().
-     * Should be called once during service initialization or when camera system changes.
+     * Should be called once during service initialization.
+     * Thread-safe: Uses volatile flag and synchronized block to prevent multiple initializations.
      */
     private fun initializeCameraCharacteristicsCache() {
-        if (cameraCharacteristicsCache.isNotEmpty()) {
-            // Cache already initialized
+        // Fast path: check if already initialized without synchronization
+        if (cameraCharacteristicsCacheInitialized) {
             return
         }
         
-        try {
-            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            cameraManager.cameraIdList.forEach { id ->
-                try {
-                    val characteristics = cameraManager.getCameraCharacteristics(id)
-                    val facing = characteristics.get(CameraCharacteristics.LENS_FACING) 
-                        ?: CameraCharacteristics.LENS_FACING_BACK
-                    val hasFlash = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) 
-                        ?: false
-                    
-                    val cached = CachedCameraCharacteristics(
-                        cameraId = id,
-                        lensFacing = facing,
-                        hasFlash = hasFlash
-                    )
-                    cameraCharacteristicsCache[id] = cached
-                    
-                    Log.d(TAG, "Cached characteristics for camera $id: facing=$facing, hasFlash=$hasFlash")
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to cache characteristics for camera $id", e)
-                }
+        // Slow path: initialize with synchronization
+        synchronized(cameraCharacteristicsCache) {
+            // Double-check after acquiring lock
+            if (cameraCharacteristicsCacheInitialized) {
+                return
             }
-            Log.d(TAG, "Camera characteristics cache initialized with ${cameraCharacteristicsCache.size} cameras")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing camera characteristics cache", e)
+            
+            try {
+                val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                cameraManager.cameraIdList.forEach { id ->
+                    try {
+                        val characteristics = cameraManager.getCameraCharacteristics(id)
+                        val facing = characteristics.get(CameraCharacteristics.LENS_FACING) 
+                            ?: CameraCharacteristics.LENS_FACING_BACK
+                        val hasFlash = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) 
+                            ?: false
+                        
+                        val cached = CachedCameraCharacteristics(
+                            cameraId = id,
+                            lensFacing = facing,
+                            hasFlash = hasFlash
+                        )
+                        cameraCharacteristicsCache[id] = cached
+                        
+                        Log.d(TAG, "Cached characteristics for camera $id: facing=$facing, hasFlash=$hasFlash")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to cache characteristics for camera $id", e)
+                    }
+                }
+                Log.d(TAG, "Camera characteristics cache initialized with ${cameraCharacteristicsCache.size} cameras")
+                cameraCharacteristicsCacheInitialized = true
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing camera characteristics cache", e)
+                // Don't set initialized flag on failure, allowing retry
+            }
         }
     }
     
     /**
      * Check if the current camera has a flash unit using Camera2 API
-     * Uses cached characteristics to avoid expensive IPC calls
+     * Uses cached characteristics to avoid expensive IPC calls.
+     * Assumes cache is already initialized in onCreate().
      */
     private fun checkFlashAvailability() {
         hasFlashUnit = false
         
+        // If cache not initialized (e.g., initialization failed), log warning and return
+        if (!cameraCharacteristicsCacheInitialized) {
+            Log.w(TAG, "Camera characteristics cache not initialized, cannot check flash availability")
+            return
+        }
+        
         try {
-            // Ensure cache is initialized
-            initializeCameraCharacteristicsCache()
-            
             val targetFacing = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) {
                 CameraCharacteristics.LENS_FACING_FRONT
             } else {
