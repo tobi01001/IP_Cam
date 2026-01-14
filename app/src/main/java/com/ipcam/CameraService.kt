@@ -213,11 +213,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * Caching camera characteristics avoids repeated expensive IPC calls to CameraManager.
      * These characteristics are static hardware properties that don't change at runtime.
+     * All characteristics are queried once per camera during service initialization.
      */
     private data class CachedCameraCharacteristics(
         val cameraId: String,
         val lensFacing: Int, // CameraCharacteristics.LENS_FACING_BACK or LENS_FACING_FRONT
-        val hasFlash: Boolean
+        val hasFlash: Boolean,
+        val supportedResolutions: List<Size> // All supported YUV_420_888 output sizes
     )
     
     // Cache camera characteristics to avoid repeated IPC calls
@@ -1520,7 +1522,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Initialize camera characteristics cache
      * 
-     * Queries all available cameras once and caches their characteristics (facing, flash).
+     * Queries all available cameras once and caches their characteristics (facing, flash, resolutions).
      * This avoids repeated expensive IPC calls to CameraManager.getCameraCharacteristics().
      * Should be called once during service initialization.
      * Thread-safe: Uses volatile flag and synchronized block to prevent multiple initializations.
@@ -1548,14 +1550,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         val hasFlash = characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) 
                             ?: false
                         
+                        // Get supported resolutions for this camera
+                        val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                        val resolutions = config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList() 
+                            ?: emptyList()
+                        
                         val cached = CachedCameraCharacteristics(
                             cameraId = id,
                             lensFacing = facing,
-                            hasFlash = hasFlash
+                            hasFlash = hasFlash,
+                            supportedResolutions = resolutions
                         )
                         cameraCharacteristicsCache[id] = cached
                         
-                        Log.d(TAG, "Cached characteristics for camera $id: facing=$facing, hasFlash=$hasFlash")
+                        Log.d(TAG, "Cached characteristics for camera $id: facing=$facing, hasFlash=$hasFlash, resolutions=${resolutions.size}")
                     } catch (e: Exception) {
                         Log.w(TAG, "Failed to cache characteristics for camera $id", e)
                     }
@@ -2937,20 +2945,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
     
     private fun getSupportedResolutions(cameraSelector: CameraSelector): List<Size> {
-        val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
         val targetFacing = if (cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA) {
             CameraCharacteristics.LENS_FACING_FRONT
         } else {
             CameraCharacteristics.LENS_FACING_BACK
         }
+        
+        // Check if resolution cache already has filtered/processed resolutions for this facing
         resolutionCache[targetFacing]?.let { return it }
-        val sizes = cameraManager.cameraIdList.mapNotNull { id ->
-            val characteristics = cameraManager.getCameraCharacteristics(id)
-            val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
-            if (facing != targetFacing) return@mapNotNull null
-            val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
-        }.flatten()
+        
+        // Use cached camera characteristics instead of making IPC calls
+        val sizes = if (cameraCharacteristicsCacheInitialized) {
+            // Get resolutions from cache
+            cameraCharacteristicsCache.values
+                .filter { it.lensFacing == targetFacing }
+                .flatMap { it.supportedResolutions }
+        } else {
+            // Fallback: if cache not initialized, query directly (shouldn't happen in normal flow)
+            Log.w(TAG, "Camera characteristics cache not initialized, falling back to direct query")
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            cameraManager.cameraIdList.mapNotNull { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                if (facing != targetFacing) return@mapNotNull null
+                val config = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                config?.getOutputSizes(ImageFormat.YUV_420_888)?.toList()
+            }.flatten()
+        }
         
         // Filter resolutions based on camera orientation
         val filtered = sizes.filter { size ->
