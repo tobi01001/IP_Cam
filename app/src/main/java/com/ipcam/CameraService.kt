@@ -1591,6 +1591,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             // Use cached characteristics instead of querying CameraManager
+            // Returns the first camera matching the target facing direction
+            // (maintains original behavior - most devices have only one camera per facing)
             for ((id, cached) in cameraCharacteristicsCache) {
                 if (cached.lensFacing == targetFacing) {
                     hasFlashUnit = cached.hasFlash
