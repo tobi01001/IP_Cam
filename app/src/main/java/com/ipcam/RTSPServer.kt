@@ -447,9 +447,16 @@ class RTSPServer(
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // I-frame every 2 seconds
             format.setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
             
+            // CRITICAL: Set operating rate to actually limit output framerate
+            // KEY_FRAME_RATE is just a hint for rate control, doesn't limit output
+            // KEY_OPERATING_RATE actually controls the encoding rate
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
+            
             // Set baseline profile for maximum compatibility
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            
+            Log.i(TAG, "Encoder framerate configured: KEY_FRAME_RATE=$fps, KEY_OPERATING_RATE=$fps")
             
             // Low-latency encoding settings for RTSP streaming
             // These settings minimize encoder buffering and reduce latency
@@ -474,6 +481,34 @@ class RTSPServer(
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder?.start()
             Log.i(TAG, "Encoder started successfully: $encoderName (hardware: $isHardwareEncoder)")
+            
+            // Verify encoder configuration by reading output format
+            try {
+                val outputFormat = encoder?.outputFormat
+                if (outputFormat != null) {
+                    val actualFrameRate = outputFormat.getInteger(MediaFormat.KEY_FRAME_RATE)
+                    val actualBitrate = outputFormat.getInteger(MediaFormat.KEY_BIT_RATE)
+                    val actualBitrateMode = if (outputFormat.containsKey(MediaFormat.KEY_BITRATE_MODE)) {
+                        when (outputFormat.getInteger(MediaFormat.KEY_BITRATE_MODE)) {
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR -> "VBR"
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR -> "CBR"
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ -> "CQ"
+                            else -> "Unknown"
+                        }
+                    } else {
+                        "Not specified"
+                    }
+                    
+                    Log.i(TAG, "=== ENCODER OUTPUT FORMAT VERIFICATION ===")
+                    Log.i(TAG, "Configured FPS: $fps, Actual output FPS: $actualFrameRate")
+                    Log.i(TAG, "Configured bitrate: ${bitrate / 1_000_000}Mbps, Actual output bitrate: ${actualBitrate / 1_000_000}Mbps")
+                    Log.i(TAG, "Configured bitrate mode: $bitrateModeName, Actual output mode: $actualBitrateMode")
+                    Log.i(TAG, "Full output format: $outputFormat")
+                    Log.i(TAG, "==========================================")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not verify encoder output format: ${e.message}")
+            }
             
             isEncoding.set(true)
             
