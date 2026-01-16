@@ -86,7 +86,7 @@ class H264PreviewEncoder(
             }
             
             if (!configured) {
-                throw IllegalStateException("Failed to configure encoder after $configAttempt attempts")
+                throw IllegalStateException("Failed to configure encoder after ${configAttempt - 1} attempts")
             }
             
             // Get input surface for CameraX
@@ -184,7 +184,7 @@ class H264PreviewEncoder(
             val isHardware = encoderInfo?.isHardwareAccelerated ?: false
             
             Log.d(TAG, "Encoder: $name (Hardware: $isHardware)")
-            Log.d(TAG, "Target resolution: ${width}x${height}, fps: $fps, bitrate: ${bitrate/1_000_000}Mbps")
+            Log.d(TAG, "Target resolution: ${width}x${height}, fps: $fps, bitrate: ${bitrate / 1_000_000.0}Mbps")
             
             // Log supported capabilities
             encoderInfo?.getCapabilitiesForType(MIME_TYPE)?.let { caps ->
