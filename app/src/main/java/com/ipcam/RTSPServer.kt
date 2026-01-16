@@ -450,6 +450,24 @@ class RTSPServer(
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
             
+            // Low-latency encoding settings for RTSP streaming
+            // These settings minimize encoder buffering and reduce latency
+            try {
+                // Request low latency mode (Android 10+)
+                format.setInteger(MediaFormat.KEY_LATENCY, 0)
+                
+                // Disable B-frames for lower latency (baseline profile doesn't use them anyway)
+                format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                
+                // Set real-time priority for encoding (Android 10+)
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0) // 0 = realtime
+                
+                Log.d(TAG, "Low-latency encoder settings applied")
+            } catch (e: Exception) {
+                // These keys may not be supported on all devices/Android versions
+                Log.d(TAG, "Some low-latency settings not supported: ${e.message}")
+            }
+            
             Log.i(TAG, "Encoder configuration: ${width}x${height} @ ${fps}fps, bitrate=${bitrate} bps (${bitrate / 1_000_000} Mbps), mode=$bitrateModeName, format=$encoderColorFormatName")
             Log.d(TAG, "Full MediaFormat: $format")
             encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)

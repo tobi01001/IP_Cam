@@ -146,6 +146,24 @@ class H264PreviewEncoder(
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL)
                 
+                // Low-latency encoding settings for RTSP streaming
+                // These settings minimize encoder buffering and reduce latency
+                try {
+                    // Request low latency mode (Android 10+)
+                    setInteger(MediaFormat.KEY_LATENCY, 0)
+                    
+                    // Disable B-frames for lower latency (baseline profile doesn't use them anyway)
+                    setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                    
+                    // Set real-time priority for encoding (Android 10+)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0) // 0 = realtime
+                    
+                    Log.d(TAG, "Low-latency encoder settings applied")
+                } catch (e: Exception) {
+                    // These keys may not be supported on all devices/Android versions
+                    Log.d(TAG, "Some low-latency settings not supported: ${e.message}")
+                }
+                
                 // Optional: Enable hardware encoding with VBR
                 if (includeBitrateMode) {
                     setInteger(
