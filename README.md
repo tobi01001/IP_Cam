@@ -16,6 +16,7 @@ IP_Cam is a simple Android application that turns your Android phone into an IP 
 ### Camera & Control
 - **Live Camera Preview**: View what the camera sees directly in the app
 - **Camera Selection**: Switch between front and back cameras
+- **User-Defined Device Names**: Customize device name for easy identification (default: `IP_CAM_{device_model}`)
 - **Flashlight/Torch Control**: Toggle flashlight for back camera (in-app and via HTTP API)
 - **Configurable Formats**: Choose supported resolutions from the web UI
 - **Orientation Control**: Independent camera orientation (landscape/portrait) and rotation (0°, 90°, 180°, 270°)
@@ -84,6 +85,18 @@ Developed and tested for Samsung Galaxy S10+ (but should work on any Android dev
 3. Tap "Start Server" button
 4. The app will display the server URL (e.g., `http://192.168.1.100:8080`)
 5. Keep the app running in the foreground or background (notification will show)
+
+### Customizing Device Name
+By default, the device name is set to `IP_CAM_{device_model}` (e.g., `IP_CAM_Pixel_6`). To customize:
+1. In the app, locate the "Device Name" field below the camera selection
+2. Enter your desired name (e.g., "Living Room Camera" or "Front Door")
+3. Tap "Save" to persist the change
+4. The device name will appear in:
+   - Foreground service notification title
+   - Web interface page title and header
+   - `/status` API endpoint JSON response
+
+This makes it easy to identify and manage multiple IP_Cam devices on the same network.
 
 ### Accessing the Camera
 
