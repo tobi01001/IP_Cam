@@ -71,6 +71,7 @@ class RTSPServer(
     @Volatile private var lastQueueFullLogTimeMs: Long = 0
     private val logThrottleMs = 5000L // Log at most every 5 seconds
     @Volatile private var streamStartTimeMs: Long = 0
+    @Volatile private var streamStartTimeNs: Long = 0 // For high-precision timestamp calculations
     
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
@@ -152,9 +153,9 @@ class RTSPServer(
         var interleavedRtcpChannel: Int = 1
         private val tcpOutputStream: OutputStream? get() = if (useTCP && !socket.isClosed) socket.getOutputStream() else null
         
-        fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean) {
+        fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean, presentationTimeUs: Long) {
             try {
-                val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame)
+                val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame, presentationTimeUs)
                 
                 if (useTCP) {
                     // TCP interleaved mode - send over RTSP socket
@@ -221,13 +222,13 @@ class RTSPServer(
             }
         }
         
-        private fun packetizeNALUnit(nalUnit: ByteArray, isKeyFrame: Boolean): List<ByteArray> {
+        private fun packetizeNALUnit(nalUnit: ByteArray, isKeyFrame: Boolean, presentationTimeUs: Long): List<ByteArray> {
             val maxPayloadSize = 1400 // MTU - headers
             val packets = mutableListOf<ByteArray>()
             
             if (nalUnit.size <= maxPayloadSize) {
                 // Single NAL unit mode
-                val rtpPacket = createRTPPacket(nalUnit, marker = true)
+                val rtpPacket = createRTPPacket(nalUnit, marker = true, presentationTimeUs)
                 packets.add(rtpPacket)
             } else {
                 // Fragmentation Unit (FU-A) mode for large NAL units
@@ -254,7 +255,7 @@ class RTSPServer(
                     payload[1] = fuHeader
                     System.arraycopy(nalUnit, offset, payload, 2, fragmentSize)
                     
-                    val rtpPacket = createRTPPacket(payload, marker = isLast)
+                    val rtpPacket = createRTPPacket(payload, marker = isLast, presentationTimeUs)
                     packets.add(rtpPacket)
                     
                     offset += fragmentSize
@@ -265,7 +266,7 @@ class RTSPServer(
             return packets
         }
         
-        private fun createRTPPacket(payload: ByteArray, marker: Boolean): ByteArray {
+        private fun createRTPPacket(payload: ByteArray, marker: Boolean, presentationTimeUs: Long): ByteArray {
             val packet = ByteArray(12 + payload.size) // RTP header (12 bytes) + payload
             
             // Byte 0: Version (2), Padding (0), Extension (0), CSRC count (0)
@@ -280,7 +281,9 @@ class RTSPServer(
             sequenceNumber++
             
             // Bytes 4-7: Timestamp (90kHz clock for video)
-            val ts = (frameCount.get() * 90000L / fps).toInt()
+            // Convert presentation time from microseconds to 90kHz RTP clock
+            // RTP uses 90kHz clock for video per RFC 3551
+            val ts = ((presentationTimeUs * 90L) / 1000L).toInt()
             packet[4] = (ts shr 24).toByte()
             packet[5] = (ts shr 16).toByte()
             packet[6] = (ts shr 8).toByte()
@@ -444,9 +447,34 @@ class RTSPServer(
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // I-frame every 2 seconds
             format.setInteger(MediaFormat.KEY_BITRATE_MODE, bitrateMode)
             
+            // CRITICAL: Set operating rate to actually limit output framerate
+            // KEY_FRAME_RATE is just a hint for rate control, doesn't limit output
+            // KEY_OPERATING_RATE actually controls the encoding rate
+            format.setInteger(MediaFormat.KEY_OPERATING_RATE, fps)
+            
             // Set baseline profile for maximum compatibility
             format.setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
             format.setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+            
+            Log.i(TAG, "Encoder framerate configured: KEY_FRAME_RATE=$fps, KEY_OPERATING_RATE=$fps")
+            
+            // Low-latency encoding settings for RTSP streaming
+            // These settings minimize encoder buffering and reduce latency
+            try {
+                // Request low latency mode (Android 10+)
+                format.setInteger(MediaFormat.KEY_LATENCY, 0)
+                
+                // Disable B-frames for lower latency (baseline profile doesn't use them anyway)
+                format.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                
+                // Set real-time priority for encoding (Android 10+)
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0) // 0 = realtime
+                
+                Log.d(TAG, "Low-latency encoder settings applied")
+            } catch (e: Exception) {
+                // These keys may not be supported on all devices/Android versions
+                Log.d(TAG, "Some low-latency settings not supported: ${e.message}")
+            }
             
             Log.i(TAG, "Encoder configuration: ${width}x${height} @ ${fps}fps, bitrate=${bitrate} bps (${bitrate / 1_000_000} Mbps), mode=$bitrateModeName, format=$encoderColorFormatName")
             Log.d(TAG, "Full MediaFormat: $format")
@@ -454,13 +482,42 @@ class RTSPServer(
             encoder?.start()
             Log.i(TAG, "Encoder started successfully: $encoderName (hardware: $isHardwareEncoder)")
             
+            // Verify encoder configuration by reading output format
+            try {
+                val outputFormat = encoder?.outputFormat
+                if (outputFormat != null) {
+                    val actualFrameRate = outputFormat.getInteger(MediaFormat.KEY_FRAME_RATE)
+                    val actualBitrate = outputFormat.getInteger(MediaFormat.KEY_BIT_RATE)
+                    val actualBitrateMode = if (outputFormat.containsKey(MediaFormat.KEY_BITRATE_MODE)) {
+                        when (outputFormat.getInteger(MediaFormat.KEY_BITRATE_MODE)) {
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR -> "VBR"
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR -> "CBR"
+                            MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CQ -> "CQ"
+                            else -> "Unknown"
+                        }
+                    } else {
+                        "Not specified"
+                    }
+                    
+                    Log.i(TAG, "=== ENCODER OUTPUT FORMAT VERIFICATION ===")
+                    Log.i(TAG, "Configured FPS: $fps, Actual output FPS: $actualFrameRate")
+                    Log.i(TAG, "Configured bitrate: ${bitrate / 1_000_000}Mbps, Actual output bitrate: ${actualBitrate / 1_000_000}Mbps")
+                    Log.i(TAG, "Configured bitrate mode: $bitrateModeName, Actual output mode: $actualBitrateMode")
+                    Log.i(TAG, "Full output format: $outputFormat")
+                    Log.i(TAG, "==========================================")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not verify encoder output format: ${e.message}")
+            }
+            
             isEncoding.set(true)
             
             // Reset stream start time when encoder is (re)initialized
-            // This ensures accurate FPS calculation after encoder recreation
-            // (e.g., resolution changes, bitrate updates, etc.)
+            // This ensures accurate FPS calculation and timestamp generation
+            // after encoder recreation (e.g., resolution changes, bitrate updates, etc.)
             streamStartTimeMs = 0
-            Log.d(TAG, "Stream start time reset for accurate FPS calculation")
+            streamStartTimeNs = 0
+            Log.d(TAG, "Stream start time reset for accurate FPS calculation and timestamps")
             
             return true
             
@@ -934,7 +991,19 @@ class RTSPServer(
                     if (inputBuffer != null) {
                         fillInputBuffer(inputBuffer, image)
                         
-                        val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                        // Use actual elapsed time for presentation timestamp
+                        // This provides accurate timing for RTP timestamps
+                        val currentTimeNs = System.nanoTime()
+                        val elapsedTimeUs = if (streamStartTimeNs > 0) {
+                            // Calculate time since stream start in microseconds
+                            // Using nanoTime() for high precision and monotonic timing
+                            (currentTimeNs - streamStartTimeNs) / 1000L
+                        } else {
+                            // First frame - initialize start time and use 0
+                            streamStartTimeNs = currentTimeNs
+                            streamStartTimeMs = System.currentTimeMillis() // For FPS calculation
+                            0L
+                        }
                         val bufferSize = inputBuffer.remaining() // Size of data after flip()
                         
                         // Check encoder state before queueing - avoid race condition during start()
@@ -943,7 +1012,7 @@ class RTSPServer(
                                 inputBufferIndex,
                                 0,
                                 bufferSize,
-                                presentationTimeUs,
+                                elapsedTimeUs,
                                 0
                             )
                             frameCount.incrementAndGet()
@@ -1305,11 +1374,12 @@ class RTSPServer(
                         // Extract NAL units and send to active sessions
                         val nalUnits = extractNALUnits(encodedData, bufferInfo)
                         val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                        val presentationTimeUs = bufferInfo.presentationTimeUs
                         
                         sessions.values.forEach { session ->
                             if (session.state == SessionState.PLAYING) {
                                 nalUnits.forEach { nalUnit ->
-                                    session.sendRTP(nalUnit, isKeyFrame)
+                                    session.sendRTP(nalUnit, isKeyFrame, presentationTimeUs)
                                 }
                             }
                         }
@@ -1423,12 +1493,12 @@ class RTSPServer(
         // Track FPS
         cameraService?.recordRtspFrameEncoded()
         
-        // Send each NAL unit to all playing sessions
+        // Send each NAL unit to all playing sessions with actual presentation time
         nalUnits.forEach { nalUnit ->
             if (nalUnit.isNotEmpty()) {
                 sessions.values.forEach { session ->
                     if (session.state == SessionState.PLAYING) {
-                        session.sendRTP(nalUnit, isKeyFrame)
+                        session.sendRTP(nalUnit, isKeyFrame, presentationTimeUs)
                     }
                 }
             }

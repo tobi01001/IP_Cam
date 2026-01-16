@@ -823,8 +823,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         }
                         .build()
                     
+                    // Configure CameraX Preview with target frame rate for H.264 encoding
+                    // This limits the input frames sent to the encoder at the camera level
                     videoCaptureUseCase = androidx.camera.core.Preview.Builder()
                         .setResolutionSelector(previewResolutionSelector)
+                        .setTargetFrameRate(android.util.Range(targetRtspFps, targetRtspFps))
                         .build()
                         .apply {
                             // Connect to encoder's input surface
@@ -835,14 +838,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                                         surface,
                                         cameraExecutor
                                     ) { }
-                                    Log.d(TAG, "H.264 encoder surface connected to camera")
+                                    Log.d(TAG, "H.264 encoder surface connected to camera with target FPS: $targetRtspFps")
                                 } else {
                                     request.willNotProvideSurface()
                                     Log.w(TAG, "H.264 encoder surface not available - encoder may have failed to initialize or been stopped")
                                 }
                             }
                         }
-                    Log.i(TAG, "H.264 encoder created and connected")
+                    Log.i(TAG, "H.264 encoder created and connected with target FPS: $targetRtspFps")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create H.264 encoder", e)
                     h264Encoder = null
