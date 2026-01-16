@@ -152,9 +152,9 @@ class RTSPServer(
         var interleavedRtcpChannel: Int = 1
         private val tcpOutputStream: OutputStream? get() = if (useTCP && !socket.isClosed) socket.getOutputStream() else null
         
-        fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean) {
+        fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean, presentationTimeUs: Long) {
             try {
-                val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame)
+                val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame, presentationTimeUs)
                 
                 if (useTCP) {
                     // TCP interleaved mode - send over RTSP socket
@@ -221,13 +221,13 @@ class RTSPServer(
             }
         }
         
-        private fun packetizeNALUnit(nalUnit: ByteArray, isKeyFrame: Boolean): List<ByteArray> {
+        private fun packetizeNALUnit(nalUnit: ByteArray, isKeyFrame: Boolean, presentationTimeUs: Long): List<ByteArray> {
             val maxPayloadSize = 1400 // MTU - headers
             val packets = mutableListOf<ByteArray>()
             
             if (nalUnit.size <= maxPayloadSize) {
                 // Single NAL unit mode
-                val rtpPacket = createRTPPacket(nalUnit, marker = true)
+                val rtpPacket = createRTPPacket(nalUnit, marker = true, presentationTimeUs)
                 packets.add(rtpPacket)
             } else {
                 // Fragmentation Unit (FU-A) mode for large NAL units
@@ -254,7 +254,7 @@ class RTSPServer(
                     payload[1] = fuHeader
                     System.arraycopy(nalUnit, offset, payload, 2, fragmentSize)
                     
-                    val rtpPacket = createRTPPacket(payload, marker = isLast)
+                    val rtpPacket = createRTPPacket(payload, marker = isLast, presentationTimeUs)
                     packets.add(rtpPacket)
                     
                     offset += fragmentSize
@@ -265,7 +265,7 @@ class RTSPServer(
             return packets
         }
         
-        private fun createRTPPacket(payload: ByteArray, marker: Boolean): ByteArray {
+        private fun createRTPPacket(payload: ByteArray, marker: Boolean, presentationTimeUs: Long): ByteArray {
             val packet = ByteArray(12 + payload.size) // RTP header (12 bytes) + payload
             
             // Byte 0: Version (2), Padding (0), Extension (0), CSRC count (0)
@@ -280,7 +280,9 @@ class RTSPServer(
             sequenceNumber++
             
             // Bytes 4-7: Timestamp (90kHz clock for video)
-            val ts = (frameCount.get() * 90000L / fps).toInt()
+            // Convert presentation time from microseconds to 90kHz RTP clock
+            // RTP uses 90kHz clock for video per RFC 3551
+            val ts = ((presentationTimeUs * 90L) / 1000L).toInt()
             packet[4] = (ts shr 24).toByte()
             packet[5] = (ts shr 16).toByte()
             packet[6] = (ts shr 8).toByte()
@@ -1305,11 +1307,12 @@ class RTSPServer(
                         // Extract NAL units and send to active sessions
                         val nalUnits = extractNALUnits(encodedData, bufferInfo)
                         val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                        val presentationTimeUs = bufferInfo.presentationTimeUs
                         
                         sessions.values.forEach { session ->
                             if (session.state == SessionState.PLAYING) {
                                 nalUnits.forEach { nalUnit ->
-                                    session.sendRTP(nalUnit, isKeyFrame)
+                                    session.sendRTP(nalUnit, isKeyFrame, presentationTimeUs)
                                 }
                             }
                         }
@@ -1423,12 +1426,12 @@ class RTSPServer(
         // Track FPS
         cameraService?.recordRtspFrameEncoded()
         
-        // Send each NAL unit to all playing sessions
+        // Send each NAL unit to all playing sessions with actual presentation time
         nalUnits.forEach { nalUnit ->
             if (nalUnit.isNotEmpty()) {
                 sessions.values.forEach { session ->
                     if (session.state == SessionState.PLAYING) {
-                        session.sendRTP(nalUnit, isKeyFrame)
+                        session.sendRTP(nalUnit, isKeyFrame, presentationTimeUs)
                     }
                 }
             }
