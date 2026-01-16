@@ -71,6 +71,7 @@ class RTSPServer(
     @Volatile private var lastQueueFullLogTimeMs: Long = 0
     private val logThrottleMs = 5000L // Log at most every 5 seconds
     @Volatile private var streamStartTimeMs: Long = 0
+    @Volatile private var streamStartTimeNs: Long = 0 // For high-precision timestamp calculations
     
     // Reusable buffers
     private var yDataBuffer: ByteArray? = null
@@ -477,10 +478,11 @@ class RTSPServer(
             isEncoding.set(true)
             
             // Reset stream start time when encoder is (re)initialized
-            // This ensures accurate FPS calculation after encoder recreation
-            // (e.g., resolution changes, bitrate updates, etc.)
+            // This ensures accurate FPS calculation and timestamp generation
+            // after encoder recreation (e.g., resolution changes, bitrate updates, etc.)
             streamStartTimeMs = 0
-            Log.d(TAG, "Stream start time reset for accurate FPS calculation")
+            streamStartTimeNs = 0
+            Log.d(TAG, "Stream start time reset for accurate FPS calculation and timestamps")
             
             return true
             
@@ -957,12 +959,14 @@ class RTSPServer(
                         // Use actual elapsed time for presentation timestamp
                         // This provides accurate timing for RTP timestamps
                         val currentTimeNs = System.nanoTime()
-                        val elapsedTimeUs = if (streamStartTimeMs > 0) {
+                        val elapsedTimeUs = if (streamStartTimeNs > 0) {
                             // Calculate time since stream start in microseconds
-                            val elapsedMs = System.currentTimeMillis() - streamStartTimeMs
-                            elapsedMs * 1000L
+                            // Using nanoTime() for high precision and monotonic timing
+                            (currentTimeNs - streamStartTimeNs) / 1000L
                         } else {
-                            // First frame - use 0
+                            // First frame - initialize start time and use 0
+                            streamStartTimeNs = currentTimeNs
+                            streamStartTimeMs = System.currentTimeMillis() // For FPS calculation
                             0L
                         }
                         val bufferSize = inputBuffer.remaining() // Size of data after flip()
