@@ -385,9 +385,13 @@ class H264PreviewEncoder(
                                     // Regular frame - enforce FPS by dropping frames
                                     val timeSinceLastFrameUs = bufferInfo.presentationTimeUs - lastSentFrameTimeUs
                                     
-                                    // Send frame if enough time has elapsed OR it's a keyframe (always send keyframes)
+                                    // Send frame if:
+                                    // 1. It's the first frame (lastSentFrameTimeUs == 0)
+                                    // 2. It's a keyframe (always send keyframes for stream integrity)
+                                    // 3. Enough time has elapsed since last sent frame
                                     val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                                    val shouldSend = isKeyFrame || (timeSinceLastFrameUs >= minFrameIntervalUs)
+                                    val isFirstFrame = (lastSentFrameTimeUs == 0L)
+                                    val shouldSend = isFirstFrame || isKeyFrame || (timeSinceLastFrameUs >= minFrameIntervalUs)
                                     
                                     if (shouldSend) {
                                         rtspServer?.sendH264Frame(
@@ -396,6 +400,15 @@ class H264PreviewEncoder(
                                             isKeyFrame = isKeyFrame
                                         )
                                         lastSentFrameTimeUs = bufferInfo.presentationTimeUs
+                                        
+                                        if (Log.isLoggable(TAG, Log.DEBUG)) {
+                                            val reason = when {
+                                                isFirstFrame -> "first frame"
+                                                isKeyFrame -> "keyframe"
+                                                else -> "interval elapsed (${timeSinceLastFrameUs}us >= ${minFrameIntervalUs}us)"
+                                            }
+                                            Log.d(TAG, "Frame sent: $reason, pts=${bufferInfo.presentationTimeUs}us")
+                                        }
                                     } else {
                                         // Frame dropped to maintain target FPS
                                         if (Log.isLoggable(TAG, Log.DEBUG)) {
