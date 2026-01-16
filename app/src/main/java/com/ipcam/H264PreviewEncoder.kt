@@ -82,8 +82,26 @@ class H264PreviewEncoder(
             encoder?.start()
             isRunning = true
             
+            // Try to extract SPS/PPS early from output format (some encoders provide it immediately)
+            // This helps RTSP clients connect faster without waiting for first frame
+            val earlyExtraction = tryExtractEarlySPSPPS()
+            
             // Start output draining thread
             startDrainThread()
+            
+            // If early extraction failed, try to force encoder to generate SPS/PPS
+            // by requesting an immediate sync frame (I-frame)
+            if (!earlyExtraction) {
+                try {
+                    Log.d(TAG, "Early SPS/PPS extraction failed, requesting immediate I-frame to trigger generation")
+                    val bundle = android.os.Bundle()
+                    bundle.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+                    encoder?.setParameters(bundle)
+                    Log.d(TAG, "I-frame request sent to encoder")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not request sync frame: ${e.message}")
+                }
+            }
             
             Log.i(TAG, "H.264 encoder started: ${width}x${height} @ ${fps}fps, ${bitrate/1_000_000}Mbps")
             
@@ -91,6 +109,63 @@ class H264PreviewEncoder(
             Log.e(TAG, "Failed to start H.264 encoder", e)
             stop()
         }
+    }
+    
+    /**
+     * Try to extract SPS/PPS from encoder output format immediately after start()
+     * Some encoders (especially Qualcomm) provide codec-specific data (CSD) in the
+     * output format before processing any frames. This allows RTSP clients to connect
+     * immediately without waiting for the first frame.
+     * 
+     * For encoders that don't provide CSD early (like some Exynos), SPS/PPS will be
+     * extracted later from the first codec config buffer in the drain thread.
+     * 
+     * @return true if SPS/PPS were successfully extracted, false otherwise
+     */
+    private fun tryExtractEarlySPSPPS(): Boolean {
+        try {
+            val format = encoder?.outputFormat
+            if (format != null) {
+                Log.d(TAG, "Checking output format for early SPS/PPS: $format")
+                
+                var foundSPS = false
+                var foundPPS = false
+                
+                if (format.containsKey("csd-0")) {
+                    val csd0 = format.getByteBuffer("csd-0")
+                    if (csd0 != null && csd0.remaining() > 0) {
+                        val data = ByteArray(csd0.remaining())
+                        csd0.get(data)
+                        rtspServer?.updateCodecConfig(data)
+                        foundSPS = true
+                        Log.i(TAG, "Early SPS extracted from output format: ${data.size} bytes")
+                    }
+                }
+                
+                if (format.containsKey("csd-1")) {
+                    val csd1 = format.getByteBuffer("csd-1")
+                    if (csd1 != null && csd1.remaining() > 0) {
+                        val data = ByteArray(csd1.remaining())
+                        csd1.get(data)
+                        rtspServer?.updateCodecConfig(data)
+                        foundPPS = true
+                        Log.i(TAG, "Early PPS extracted from output format: ${data.size} bytes")
+                    }
+                }
+                
+                if (foundSPS && foundPPS) {
+                    Log.i(TAG, "Successfully extracted SPS/PPS early - RTSP clients can connect immediately")
+                    return true
+                } else if (!foundSPS && !foundPPS) {
+                    Log.d(TAG, "No CSD buffers in output format yet - will extract from first frame")
+                } else {
+                    Log.w(TAG, "Partial CSD extraction: SPS=$foundSPS, PPS=$foundPPS")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not extract early SPS/PPS (will extract from first frame): ${e.message}")
+        }
+        return false
     }
     
     /**

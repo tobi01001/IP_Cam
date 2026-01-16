@@ -794,7 +794,37 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     h264Encoder?.start()
                     
                     // Create Preview for H.264 encoder (feeds to encoder's surface)
+                    // CRITICAL: Must match the resolution that the encoder expects
+                    val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
+                        .setResolutionFilter { supportedSizes, _ ->
+                            // Try to find exact match for encoder resolution
+                            val exactMatch = supportedSizes.filter { size ->
+                                size.width == resolution.width && size.height == resolution.height
+                            }
+                            
+                            if (exactMatch.isNotEmpty()) {
+                                Log.d(TAG, "Found exact resolution match for H.264 Preview: ${resolution.width}x${resolution.height}")
+                                exactMatch
+                            } else {
+                                // No exact match - find closest
+                                val targetPixels = resolution.width * resolution.height
+                                val closest = supportedSizes.minByOrNull { size ->
+                                    Math.abs(size.width * size.height - targetPixels)
+                                }
+                                
+                                if (closest != null) {
+                                    Log.w(TAG, "Exact resolution ${resolution.width}x${resolution.height} not available for H.264 Preview. Using closest: ${closest.width}x${closest.height}")
+                                } else {
+                                    Log.e(TAG, "Could not find any suitable resolution for H.264 Preview")
+                                }
+                                
+                                closest?.let { listOf(it) } ?: supportedSizes
+                            }
+                        }
+                        .build()
+                    
                     videoCaptureUseCase = androidx.camera.core.Preview.Builder()
+                        .setResolutionSelector(previewResolutionSelector)
                         .build()
                         .apply {
                             // Connect to encoder's input surface
