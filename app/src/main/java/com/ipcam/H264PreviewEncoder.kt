@@ -36,10 +36,6 @@ class H264PreviewEncoder(
     private var isRunning = false
     private var drainThread: Thread? = null
     
-    // Frame dropping for FPS enforcement
-    private var lastSentFrameTimeUs: Long = 0
-    private val minFrameIntervalUs: Long = (1_000_000.0 / fps).toLong()
-    
     /**
      * Get the input surface to attach to CameraX Preview
      */
@@ -150,7 +146,6 @@ class H264PreviewEncoder(
             }
             
             Log.i(TAG, "H.264 encoder started: ${width}x${height} @ ${fps}fps, ${bitrate/1_000_000}Mbps")
-            Log.i(TAG, "Frame dropping enabled: minFrameInterval=${minFrameIntervalUs}us (${minFrameIntervalUs/1000}ms)")
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start H.264 encoder", e)
@@ -378,43 +373,17 @@ class H264PreviewEncoder(
                                     MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                                 
                                 if (isCodecConfig) {
-                                    // Parse SPS/PPS - always send
+                                    // Parse SPS/PPS
                                     rtspServer?.updateCodecConfig(nalUnit)
                                     Log.d(TAG, "Codec config updated: ${nalUnit.size} bytes")
                                 } else {
-                                    // Regular frame - enforce FPS by dropping frames
-                                    val timeSinceLastFrameUs = bufferInfo.presentationTimeUs - lastSentFrameTimeUs
-                                    
-                                    // Send frame if:
-                                    // 1. It's the first frame (lastSentFrameTimeUs == 0)
-                                    // 2. It's a keyframe (always send keyframes for stream integrity)
-                                    // 3. Enough time has elapsed since last sent frame
-                                    val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                                    val isFirstFrame = (lastSentFrameTimeUs == 0L)
-                                    val shouldSend = isFirstFrame || isKeyFrame || (timeSinceLastFrameUs >= minFrameIntervalUs)
-                                    
-                                    if (shouldSend) {
-                                        rtspServer?.sendH264Frame(
-                                            nalUnit, 
-                                            bufferInfo.presentationTimeUs,
-                                            isKeyFrame = isKeyFrame
-                                        )
-                                        lastSentFrameTimeUs = bufferInfo.presentationTimeUs
-                                        
-                                        if (Log.isLoggable(TAG, Log.DEBUG)) {
-                                            val reason = when {
-                                                isFirstFrame -> "first frame"
-                                                isKeyFrame -> "keyframe"
-                                                else -> "interval elapsed (${timeSinceLastFrameUs}us >= ${minFrameIntervalUs}us)"
-                                            }
-                                            Log.d(TAG, "Frame sent: $reason, pts=${bufferInfo.presentationTimeUs}us")
-                                        }
-                                    } else {
-                                        // Frame dropped to maintain target FPS
-                                        if (Log.isLoggable(TAG, Log.DEBUG)) {
-                                            Log.d(TAG, "Frame dropped: timeSinceLastFrame=${timeSinceLastFrameUs}us < minInterval=${minFrameIntervalUs}us")
-                                        }
-                                    }
+                                    // Regular frame - send to RTSP
+                                    rtspServer?.sendH264Frame(
+                                        nalUnit, 
+                                        bufferInfo.presentationTimeUs,
+                                        isKeyFrame = (bufferInfo.flags and 
+                                            MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                                    )
                                 }
                             }
                             
