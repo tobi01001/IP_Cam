@@ -342,6 +342,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var rtspBitrate: Int = -1 // Saved bitrate setting (-1 = auto/default)
     @Volatile private var rtspBitrateMode: String = "VBR" // Saved bitrate mode setting
     
+    // Device identification
+    @Volatile private var deviceName: String = "" // User-defined device name (default: IP_CAM_{deviceModel})
+    
     // Callbacks for MainActivity to receive updates
     // LIFECYCLE SAFETY: These callbacks are cleared when MainActivity is destroyed (in MainActivity.onDestroy)
     // and guarded by lifecycle checks before invocation to prevent crashes from dead contexts.
@@ -628,8 +631,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         val text = contentText ?: getNotificationText()
         
+        // Use device name in notification title if set, otherwise use default
+        val title = if (deviceName.isNotEmpty()) deviceName else "IP Camera Server"
+        
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("IP Camera Server")
+            .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(pendingIntent)
@@ -2043,6 +2049,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         rtspBitrate = prefs.getInt("rtspBitrate", -1)
         rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
         
+        // Load device name with default based on device model
+        val defaultDeviceName = "IP_CAM_${Build.MODEL.replace(" ", "_")}"
+        deviceName = prefs.getString("deviceName", defaultDeviceName) ?: defaultDeviceName
+        
         // Migration: Check for old single resolution format and migrate to per-camera format
         val oldResWidth = prefs.getInt("resolutionWidth", -1)
         val oldResHeight = prefs.getInt("resolutionHeight", -1)
@@ -2089,7 +2099,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Cleaned up old resolution format keys")
         }
         
-        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps, rtspBitrate=$rtspBitrate, rtspBitrateMode=$rtspBitrateMode, adaptiveQuality=$adaptiveQualityEnabled")
+        Log.d(TAG, "Loaded settings: camera=$cameraType, orientation=$cameraOrientation, rotation=$rotation, resolution=${selectedResolution?.let { "${it.width}x${it.height}" } ?: "auto"}, maxConnections=$maxConnections, flashlight=$isFlashlightOn, mjpegFps=$targetMjpegFps, rtspFps=$targetRtspFps, rtspBitrate=$rtspBitrate, rtspBitrateMode=$rtspBitrateMode, adaptiveQuality=$adaptiveQualityEnabled, deviceName=$deviceName")
     }
     
     private fun saveSettings() {
@@ -2125,6 +2135,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             putInt("rtspBitrate", rtspBitrate)
             putString("rtspBitrateMode", rtspBitrateMode)
+            
+            // Save device name
+            putString("deviceName", deviceName)
             
             // Save per-camera resolutions
             backCameraResolution?.let {
@@ -3369,5 +3382,30 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      */
     private fun broadcastCameraState() {
         httpServer?.broadcastCameraState()
+    }
+    
+    // ==================== Device Identification ====================
+    
+    /**
+     * Get the user-defined device name
+     */
+    override fun getDeviceName(): String = deviceName
+    
+    /**
+     * Set the user-defined device name and persist it
+     */
+    override fun setDeviceName(name: String) {
+        val trimmedName = name.trim()
+        if (trimmedName.isNotEmpty()) {
+            deviceName = trimmedName
+            saveSettings()
+            Log.d(TAG, "Device name updated to: $deviceName")
+            
+            // Update notification to reflect new device name
+            updateNotification(getNotificationText())
+            
+            // Broadcast state change to web clients
+            broadcastCameraState()
+        }
     }
 }

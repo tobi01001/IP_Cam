@@ -82,4 +82,8 @@ interface CameraServiceInterface {
     fun getBatteryCriticalPercent(): Int
     fun getBatteryLowPercent(): Int
     fun getBatteryRecoveryPercent(): Int
+    
+    // Device identification
+    fun getDeviceName(): String
+    fun setDeviceName(name: String)
 }

@@ -238,12 +238,14 @@ class HttpServer(
         val activeConns = cameraService.getActiveConnectionsCount()
         val maxConns = cameraService.getMaxConnections()
         val connectionDisplay = "$activeConns/$maxConns"
+        val deviceName = cameraService.getDeviceName()
+        val displayName = if (deviceName.isNotEmpty()) deviceName else "IP Camera Server"
         
         val html = """
             <!DOCTYPE html>
             <html>
             <head>
-                <title>IP Camera</title>
+                <title>$displayName</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <style>
                     body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }
@@ -286,7 +288,7 @@ class HttpServer(
             </head>
             <body>
                 <div class="container">
-                    <h1>IP Camera Server</h1>
+                    <h1>$displayName</h1>
                     <div class="status-info">
                         <strong>Server Status:</strong> Running (Ktor) | 
                         <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
@@ -1558,6 +1560,7 @@ class HttpServer(
         val sseCount = synchronized(sseClientsLock) { sseClients.size }
         val batteryMode = cameraService.getBatteryMode()
         val streamingAllowed = cameraService.isStreamingAllowed()
+        val deviceName = cameraService.getDeviceName()
         
         val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
         
@@ -1565,6 +1568,7 @@ class HttpServer(
             {
                 "status": "running",
                 "server": "Ktor",
+                "deviceName": "$deviceName",
                 "camera": "$cameraName",
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",

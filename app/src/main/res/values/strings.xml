@@ -62,4 +62,7 @@
     <string name="rtsp_target_fps_label">RTSP Target FPS:</string>
     <string name="current_fps_label">Current FPS:</string>
     <string name="version_info_placeholder">Version info</string>
+    <string name="device_name_label">Device Name:</string>
+    <string name="device_name_hint">e.g., Living Room Camera</string>
+    <string name="save_device_name">Save</string>
 </resources>
