@@ -36,6 +36,10 @@ class H264PreviewEncoder(
     private var isRunning = false
     private var drainThread: Thread? = null
     
+    // Frame dropping for FPS enforcement
+    private var lastSentFrameTimeUs: Long = 0
+    private val minFrameIntervalUs: Long = (1_000_000.0 / fps).toLong()
+    
     /**
      * Get the input surface to attach to CameraX Preview
      */
@@ -146,6 +150,7 @@ class H264PreviewEncoder(
             }
             
             Log.i(TAG, "H.264 encoder started: ${width}x${height} @ ${fps}fps, ${bitrate/1_000_000}Mbps")
+            Log.i(TAG, "Frame dropping enabled: minFrameInterval=${minFrameIntervalUs}us (${minFrameIntervalUs/1000}ms)")
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start H.264 encoder", e)
@@ -373,17 +378,30 @@ class H264PreviewEncoder(
                                     MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
                                 
                                 if (isCodecConfig) {
-                                    // Parse SPS/PPS
+                                    // Parse SPS/PPS - always send
                                     rtspServer?.updateCodecConfig(nalUnit)
                                     Log.d(TAG, "Codec config updated: ${nalUnit.size} bytes")
                                 } else {
-                                    // Regular frame - send to RTSP
-                                    rtspServer?.sendH264Frame(
-                                        nalUnit, 
-                                        bufferInfo.presentationTimeUs,
-                                        isKeyFrame = (bufferInfo.flags and 
-                                            MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
-                                    )
+                                    // Regular frame - enforce FPS by dropping frames
+                                    val timeSinceLastFrameUs = bufferInfo.presentationTimeUs - lastSentFrameTimeUs
+                                    
+                                    // Send frame if enough time has elapsed OR it's a keyframe (always send keyframes)
+                                    val isKeyFrame = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0
+                                    val shouldSend = isKeyFrame || (timeSinceLastFrameUs >= minFrameIntervalUs)
+                                    
+                                    if (shouldSend) {
+                                        rtspServer?.sendH264Frame(
+                                            nalUnit, 
+                                            bufferInfo.presentationTimeUs,
+                                            isKeyFrame = isKeyFrame
+                                        )
+                                        lastSentFrameTimeUs = bufferInfo.presentationTimeUs
+                                    } else {
+                                        // Frame dropped to maintain target FPS
+                                        if (Log.isLoggable(TAG, Log.DEBUG)) {
+                                            Log.d(TAG, "Frame dropped: timeSinceLastFrame=${timeSinceLastFrameUs}us < minInterval=${minFrameIntervalUs}us")
+                                        }
+                                    }
                                 }
                             }
                             
