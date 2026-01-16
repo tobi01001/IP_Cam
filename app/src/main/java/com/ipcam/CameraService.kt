@@ -809,7 +809,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                                 // No exact match - find closest
                                 val targetPixels = resolution.width * resolution.height
                                 val closest = supportedSizes.minByOrNull { size ->
-                                    Math.abs(size.width * size.height - targetPixels)
+                                    kotlin.math.abs(size.width * size.height - targetPixels)
                                 }
                                 
                                 if (closest != null) {
