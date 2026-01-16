@@ -42,38 +42,52 @@ class H264PreviewEncoder(
     fun getInputSurface(): Surface? = inputSurface
     
     /**
-     * Initialize the encoder
+     * Initialize the encoder with progressive fallback configurations
      */
     fun start() {
         try {
             // Create MediaCodec encoder
             encoder = MediaCodec.createEncoderByType(MIME_TYPE)
             
-            // Configure format
-            val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
-                setInteger(
-                    MediaFormat.KEY_COLOR_FORMAT,
-                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
-                )
-                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL)
-                
-                // Enable hardware encoding with VBR
-                setInteger(
-                    MediaFormat.KEY_BITRATE_MODE,
-                    MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
-                )
-                
-                // Set baseline profile for maximum compatibility
-                setInteger(
-                    MediaFormat.KEY_PROFILE,
-                    MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
+            // Log encoder capabilities for debugging
+            logEncoderCapabilities()
+            
+            // Try multiple configuration strategies with progressively relaxed constraints
+            var configured = false
+            var configAttempt = 1
+            
+            // Attempt 1: Full configuration with profile and VBR
+            if (!configured) {
+                configured = tryConfigureEncoder(
+                    attempt = configAttempt++,
+                    includeProfile = true,
+                    includeBitrateMode = true
                 )
             }
             
-            // Configure encoder
-            encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            // Attempt 2: Without explicit profile (let encoder choose)
+            if (!configured) {
+                Log.w(TAG, "Retrying without explicit profile constraint")
+                configured = tryConfigureEncoder(
+                    attempt = configAttempt++,
+                    includeProfile = false,
+                    includeBitrateMode = true
+                )
+            }
+            
+            // Attempt 3: Without bitrate mode (let encoder use default)
+            if (!configured) {
+                Log.w(TAG, "Retrying without bitrate mode constraint")
+                configured = tryConfigureEncoder(
+                    attempt = configAttempt++,
+                    includeProfile = false,
+                    includeBitrateMode = false
+                )
+            }
+            
+            if (!configured) {
+                throw IllegalStateException("Failed to configure encoder after $configAttempt attempts")
+            }
             
             // Get input surface for CameraX
             inputSurface = encoder?.createInputSurface()
@@ -108,6 +122,88 @@ class H264PreviewEncoder(
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start H.264 encoder", e)
             stop()
+        }
+    }
+    
+    /**
+     * Try to configure the encoder with specified constraints
+     * @return true if configuration succeeded, false otherwise
+     */
+    private fun tryConfigureEncoder(
+        attempt: Int,
+        includeProfile: Boolean,
+        includeBitrateMode: Boolean
+    ): Boolean {
+        return try {
+            Log.d(TAG, "Configuration attempt #$attempt: profile=$includeProfile, bitrateMode=$includeBitrateMode")
+            
+            val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+                )
+                setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL)
+                
+                // Optional: Enable hardware encoding with VBR
+                if (includeBitrateMode) {
+                    setInteger(
+                        MediaFormat.KEY_BITRATE_MODE,
+                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR
+                    )
+                }
+                
+                // Optional: Set baseline profile for maximum compatibility
+                if (includeProfile) {
+                    setInteger(
+                        MediaFormat.KEY_PROFILE,
+                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline
+                    )
+                }
+            }
+            
+            Log.d(TAG, "Attempting to configure encoder with format: $format")
+            encoder?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            
+            Log.i(TAG, "Encoder configured successfully on attempt #$attempt")
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "Configuration attempt #$attempt failed: ${e.message}")
+            false
+        }
+    }
+    
+    /**
+     * Log encoder capabilities for debugging
+     */
+    private fun logEncoderCapabilities() {
+        try {
+            val encoderInfo = encoder?.codecInfo
+            val name = encoderInfo?.name ?: "unknown"
+            val isHardware = encoderInfo?.isHardwareAccelerated ?: false
+            
+            Log.d(TAG, "Encoder: $name (Hardware: $isHardware)")
+            Log.d(TAG, "Target resolution: ${width}x${height}, fps: $fps, bitrate: ${bitrate/1_000_000}Mbps")
+            
+            // Log supported capabilities
+            encoderInfo?.getCapabilitiesForType(MIME_TYPE)?.let { caps ->
+                val videoCapabilities = caps.videoCapabilities
+                if (videoCapabilities != null) {
+                    Log.d(TAG, "Supported bitrate range: ${videoCapabilities.bitrateRange}")
+                    Log.d(TAG, "Supported width range: ${videoCapabilities.supportedWidths}")
+                    Log.d(TAG, "Supported height range: ${videoCapabilities.supportedHeights}")
+                    Log.d(TAG, "Supported frame rate range: ${videoCapabilities.supportedFrameRates}")
+                }
+                
+                // Log supported profiles
+                val profiles = caps.profileLevels.joinToString(", ") { 
+                    "Profile=${it.profile}, Level=${it.level}"
+                }
+                Log.d(TAG, "Supported profiles: $profiles")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not log encoder capabilities: ${e.message}")
         }
     }
     
