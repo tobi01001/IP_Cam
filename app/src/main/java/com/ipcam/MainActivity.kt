@@ -44,6 +44,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var activeConnectionsText: TextView
     private lateinit var maxConnectionsSpinner: Spinner
     private lateinit var versionInfoText: TextView
+    // Device name controls
+    private lateinit var deviceNameEditText: android.widget.EditText
+    private lateinit var saveDeviceNameButton: Button
     // OSD overlay checkboxes
     private lateinit var showDateTimeCheckBox: android.widget.CheckBox
     private lateinit var showBatteryCheckBox: android.widget.CheckBox
@@ -157,6 +160,7 @@ class MainActivity : AppCompatActivity() {
                 loadMaxConnectionsOptions()
                 loadOsdSettings()
                 loadFpsSettings()
+                loadDeviceName()
             } finally {
                 isUpdatingSpinners = false
             }
@@ -189,6 +193,9 @@ class MainActivity : AppCompatActivity() {
         activeConnectionsText = findViewById(R.id.activeConnectionsText)
         maxConnectionsSpinner = findViewById(R.id.maxConnectionsSpinner)
         versionInfoText = findViewById(R.id.versionInfoText)
+        // Device name controls
+        deviceNameEditText = findViewById(R.id.deviceNameEditText)
+        saveDeviceNameButton = findViewById(R.id.saveDeviceNameButton)
         // OSD overlay checkboxes
         showDateTimeCheckBox = findViewById(R.id.showDateTimeCheckBox)
         showBatteryCheckBox = findViewById(R.id.showBatteryCheckBox)
@@ -209,6 +216,7 @@ class MainActivity : AppCompatActivity() {
         setupMaxConnectionsSpinner()
         setupOsdCheckBoxes()
         setupMjpegFpsSpinner()
+        setupDeviceNameControls()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -703,6 +711,27 @@ class MainActivity : AppCompatActivity() {
         if (index >= 0) {
             mjpegFpsSpinner.setSelection(index)
         }
+    }
+    
+    private fun setupDeviceNameControls() {
+        // Load current device name when service connects
+        saveDeviceNameButton.setOnClickListener {
+            val newName = deviceNameEditText.text.toString().trim()
+            if (newName.isNotEmpty()) {
+                cameraService?.setDeviceName(newName)
+                Toast.makeText(this, "Device name saved: $newName", Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this, "Please enter a device name", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+    
+    private fun loadDeviceName() {
+        val service = cameraService ?: return
+        
+        // Load current device name
+        val currentName = service.getDeviceName()
+        deviceNameEditText.setText(currentName)
     }
     
     private fun updateConnectionsUI() {
