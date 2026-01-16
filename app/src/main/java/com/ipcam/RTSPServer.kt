@@ -954,7 +954,17 @@ class RTSPServer(
                     if (inputBuffer != null) {
                         fillInputBuffer(inputBuffer, image)
                         
-                        val presentationTimeUs = frameCount.get() * 1_000_000L / fps
+                        // Use actual elapsed time for presentation timestamp
+                        // This provides accurate timing for RTP timestamps
+                        val currentTimeNs = System.nanoTime()
+                        val elapsedTimeUs = if (streamStartTimeMs > 0) {
+                            // Calculate time since stream start in microseconds
+                            val elapsedMs = System.currentTimeMillis() - streamStartTimeMs
+                            elapsedMs * 1000L
+                        } else {
+                            // First frame - use 0
+                            0L
+                        }
                         val bufferSize = inputBuffer.remaining() // Size of data after flip()
                         
                         // Check encoder state before queueing - avoid race condition during start()
@@ -963,7 +973,7 @@ class RTSPServer(
                                 inputBufferIndex,
                                 0,
                                 bufferSize,
-                                presentationTimeUs,
+                                elapsedTimeUs,
                                 0
                             )
                             frameCount.incrementAndGet()
