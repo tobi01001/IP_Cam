@@ -584,15 +584,23 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun setupAutoStartCheckBox() {
+        // Use device-protected storage for Direct Boot compatibility (Android N+)
+        // This ensures BootReceiver can access the setting even before device unlock
+        val storageContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            createDeviceProtectedStorageContext()
+        } else {
+            this
+        }
+        
         // Load saved autostart preference
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         autoStartCheckBox.isChecked = autoStart
         
         // Save preference when changed
         autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
-            Log.d("MainActivity", "Auto-start preference changed to: $isChecked")
+            Log.d("MainActivity", "Auto-start preference changed to: $isChecked (using device-protected storage)")
         }
     }
     
@@ -756,7 +764,14 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun checkAutoStart() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Use device-protected storage for Direct Boot compatibility (Android N+)
+        val storageContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            createDeviceProtectedStorageContext()
+        } else {
+            this
+        }
+        
+        val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         
         // Only auto-start if:
