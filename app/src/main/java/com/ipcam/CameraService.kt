@@ -182,6 +182,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var httpServer: HttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
     
+    // Track if service started from boot (Android 15 workaround)
+    @Volatile private var isBootStart = false
+    @Volatile private var cameraActivatedAfterBoot = false
+    
     // ATOMIC FRAME UPDATES: Single source of truth for frame data
     // AtomicReference ensures the UI and web stream always display the same frame
     // by atomically updating bitmap, JPEG bytes, and timestamp together.
@@ -371,6 +375,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
          const val EXTRA_START_SERVER = "start_server"
+         const val EXTRA_BOOT_START = "boot_start"
          // Thread pool settings for NanoHTTPD
          // Maximum parallel connections: HTTP_MAX_POOL_SIZE (32 concurrent connections)
          // Separate pools for request handlers and long-lived streaming connections
@@ -429,6 +434,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         lifecycleRegistry = LifecycleRegistry(this)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         
+        // Check critical permissions before proceeding
+        if (!hasRequiredPermissions()) {
+            Log.e(TAG, "Service started without required permissions - stopping")
+            stopSelf()
+            return
+        }
+        
         // Load saved settings
         loadSettings()
         
@@ -463,14 +475,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         // Try to start foreground service
-        // This may fail on Android 15 if started from BOOT_COMPLETED with camera type
+        // On Android 15+ boot start, use connectedDevice type which is allowed from BOOT_COMPLETED
         try {
             startForeground(NOTIFICATION_ID, createNotification())
             Log.d(TAG, "Foreground service started successfully")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
-            // On Android 15+, starting camera-type foreground service from boot is prohibited
-            // Stop the service gracefully
+            // If foreground start fails, stop the service gracefully
             stopSelf()
             return
         }
@@ -480,13 +491,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
-        // Delay camera start to ensure foreground service is fully established
-        // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
-        // The foreground service needs to be in STARTED state before accessing camera
-        // Increased delay from 500ms to 1500ms for better reliability
-        serviceScope.launch {
-            delay(1500) // Longer delay to ensure service permissions are fully initialized
-            startCamera()
+        // Camera initialization strategy based on Android version and boot state
+        // Android 15 restricts camera-type services from BOOT_COMPLETED, but allows connectedDevice type
+        // Strategy: Start with connectedDevice type (for HTTP server), activate camera on first stream request
+        val skipCameraInit = isBootStart && Build.VERSION.SDK_INT >= 35
+        
+        if (!skipCameraInit) {
+            // Delay camera start to ensure foreground service is fully established
+            // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
+            // The foreground service needs to be in STARTED state before accessing camera
+            // Increased delay from 500ms to 1500ms for better reliability
+            serviceScope.launch {
+                delay(1500) // Longer delay to ensure service permissions are fully initialized
+                startCamera()
+            }
+        } else {
+            Log.i(TAG, "Android 15 boot start: Server starting with connectedDevice type")
+            Log.i(TAG, "Camera will activate automatically on first stream request (on-demand activation)")
         }
         
         // Auto-start RTSP if it was enabled in settings
@@ -506,6 +527,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
         
+        // Check if this is a boot start (Android 15 workaround)
+        val isFromBoot = intent?.getBooleanExtra(EXTRA_BOOT_START, false) ?: false
+        if (isFromBoot) {
+            isBootStart = true
+            Log.i(TAG, "Service started from boot - using connectedDevice type with on-demand camera activation")
+        }
+        
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
@@ -513,11 +541,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         // Try to start camera if not already bound
+        // Skip on Android 15 boot start - camera will activate automatically on first stream request
         // This handles cases where:
         // 1. Service started before MainActivity granted permission
         // 2. Service restarted after being killed
         // 3. Permission was granted after service onCreate
-        if (cameraProvider == null) {
+        val skipCameraStart = isBootStart && Build.VERSION.SDK_INT >= 35
+        if (cameraProvider == null && !skipCameraStart) {
             startCamera()
         }
         
@@ -550,6 +580,29 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             android.os.SystemClock.elapsedRealtime() + 1000,
             pendingIntent
         )
+    }
+    
+    /**
+     * Check if all required permissions are granted
+     * Service cannot function without these permissions
+     */
+    private fun hasRequiredPermissions(): Boolean {
+        // CAMERA permission is required (runtime permission)
+        val hasCameraPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        // INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE are install-time permissions (automatically granted)
+        // No need to check them at runtime
+        
+        if (!hasCameraPermission) {
+            Log.e(TAG, "Missing required permission: CAMERA")
+            return false
+        }
+        
+        Log.d(TAG, "All required permissions granted")
+        return true
     }
     
     /**
@@ -3052,6 +3105,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // ==================== CameraServiceInterface Implementation ====================
     
     override fun getLastFrameJpegBytes(): ByteArray? {
+        // On-demand camera activation for Android 15 boot start
+        // When a client requests a stream and camera hasn't been activated yet, activate it now
+        if (isBootStart && Build.VERSION.SDK_INT >= 35 && !cameraActivatedAfterBoot && cameraProvider == null) {
+            Log.i(TAG, "First stream request detected - activating camera on-demand (Android 15 boot workaround)")
+            cameraActivatedAfterBoot = true
+            serviceScope.launch {
+                delay(500) // Small delay to ensure we're ready
+                startCamera()
+            }
+        }
+        
         // ATOMIC FRAME ACCESS: Retrieve JPEG bytes from atomic reference
         // This ensures we get the JPEG bytes that correspond to the current frame
         return lastProcessedFrame.get()?.jpegBytes

@@ -45,27 +45,17 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
             
-            // Android 15 (API 35+) restriction: Cannot start foreground service with type "camera" from BOOT_COMPLETED
-            // This is a hard privacy/security restriction by Google - no workarounds available
-            // User must open the app manually at least once after boot to start the service
-            if (Build.VERSION.SDK_INT >= 35) {
-                Log.w(TAG, "═══════════════════════════════════════════════════════════════")
-                Log.w(TAG, "Android 15+ detected: Cannot auto-start camera service from boot")
-                Log.w(TAG, "This is an Android 15 restriction, not an app bug")
-                Log.w(TAG, "Please open the IP_Cam app manually to start the camera service")
-                Log.w(TAG, "═══════════════════════════════════════════════════════════════")
-                Log.w(TAG, "Technical: Android 15 prohibits starting camera-type foreground services from BOOT_COMPLETED")
-                Log.w(TAG, "Reference: https://developer.android.com/about/versions/15/changes/foreground-service-types")
-                return
-            }
-            
             Log.i(TAG, "Auto-start enabled, starting CameraService with server")
+            Log.i(TAG, "Using connectedDevice service type for Android 15 compatibility (allowed from BOOT_COMPLETED)")
             
             val serviceIntent = Intent(context, CameraService::class.java)
             serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
+            // Indicate this is a boot start so service knows to use on-demand camera activation on Android 15
+            serviceIntent.putExtra(CameraService.EXTRA_BOOT_START, true)
+            
             try {
                 ContextCompat.startForegroundService(context, serviceIntent)
-                Log.i(TAG, "Successfully started foreground service on boot")
+                Log.i(TAG, "Successfully requested foreground service start on boot")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
                 Log.e(TAG, "This may indicate missing permissions or Android restrictions")
