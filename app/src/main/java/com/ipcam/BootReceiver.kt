@@ -3,6 +3,7 @@ package com.ipcam
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
 
@@ -28,7 +29,7 @@ class BootReceiver : BroadcastReceiver() {
             
             // Check if autostart is enabled
             // Use device-protected storage context for Direct Boot compatibility
-            val storageContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            val storageContext = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
                 context.createDeviceProtectedStorageContext()
             } else {
                 context
@@ -37,22 +38,37 @@ class BootReceiver : BroadcastReceiver() {
             val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
             
-            Log.d(TAG, "Auto-start setting: $autoStart")
+            Log.i(TAG, "Auto-start setting: $autoStart, Android API: ${Build.VERSION.SDK_INT}")
             
-            if (autoStart) {
-                Log.i(TAG, "Auto-start enabled, starting CameraService with server")
-                // Note: Service will check for camera permission on startup and handle accordingly
-                // The service is designed to handle missing permissions gracefully
-                val serviceIntent = Intent(context, CameraService::class.java)
-                serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
-                try {
-                    ContextCompat.startForegroundService(context, serviceIntent)
-                    Log.i(TAG, "Successfully started foreground service on boot")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
-                }
-            } else {
+            if (!autoStart) {
                 Log.d(TAG, "Auto-start disabled, not starting service")
+                return
+            }
+            
+            // Android 15 (API 35+) restriction: Cannot start foreground service with type "camera" from BOOT_COMPLETED
+            // This is a hard privacy/security restriction by Google - no workarounds available
+            // User must open the app manually at least once after boot to start the service
+            if (Build.VERSION.SDK_INT >= 35) {
+                Log.w(TAG, "═══════════════════════════════════════════════════════════════")
+                Log.w(TAG, "Android 15+ detected: Cannot auto-start camera service from boot")
+                Log.w(TAG, "This is an Android 15 restriction, not an app bug")
+                Log.w(TAG, "Please open the IP_Cam app manually to start the camera service")
+                Log.w(TAG, "═══════════════════════════════════════════════════════════════")
+                Log.w(TAG, "Technical: Android 15 prohibits starting camera-type foreground services from BOOT_COMPLETED")
+                Log.w(TAG, "Reference: https://developer.android.com/about/versions/15/changes/foreground-service-types")
+                return
+            }
+            
+            Log.i(TAG, "Auto-start enabled, starting CameraService with server")
+            
+            val serviceIntent = Intent(context, CameraService::class.java)
+            serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
+            try {
+                ContextCompat.startForegroundService(context, serviceIntent)
+                Log.i(TAG, "Successfully started foreground service on boot")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
+                Log.e(TAG, "This may indicate missing permissions or Android restrictions")
             }
         } else {
             Log.d(TAG, "Ignoring unhandled broadcast action: $action")

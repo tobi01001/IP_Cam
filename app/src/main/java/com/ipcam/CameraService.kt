@@ -462,7 +462,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.w(TAG, "POST_NOTIFICATIONS permission not granted. Foreground service notification may not be visible on Android 13+")
         }
         
-        startForeground(NOTIFICATION_ID, createNotification())
+        // Try to start foreground service
+        // This may fail on Android 15 if started from BOOT_COMPLETED with camera type
+        try {
+            startForeground(NOTIFICATION_ID, createNotification())
+            Log.d(TAG, "Foreground service started successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
+            // On Android 15+, starting camera-type foreground service from boot is prohibited
+            // Stop the service gracefully
+            stopSelf()
+            return
+        }
+        
         acquireLocks()
         registerNetworkReceiver()
         setupOrientationListener()

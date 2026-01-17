@@ -601,6 +601,18 @@ class MainActivity : AppCompatActivity() {
         autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
             Log.d("MainActivity", "Auto-start preference changed to: $isChecked (using device-protected storage)")
+            
+            // Show Android 15 limitation warning when enabling auto-start
+            if (isChecked && Build.VERSION.SDK_INT >= 35) {
+                AlertDialog.Builder(this)
+                    .setTitle("Android 15 Limitation")
+                    .setMessage("Auto-start at boot is not supported on Android 15 due to system restrictions.\n\nYou must manually open the app after each reboot to start the camera service.\n\nThis is an Android limitation, not an app issue.")
+                    .setPositiveButton("OK") { dialog, _ ->
+                        dialog.dismiss()
+                    }
+                    .setIcon(android.R.drawable.ic_dialog_info)
+                    .show()
+            }
         }
     }
     
