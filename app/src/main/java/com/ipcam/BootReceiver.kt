@@ -1,8 +1,10 @@
 package com.ipcam
 
+import android.Manifest
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
@@ -12,6 +14,36 @@ class BootReceiver : BroadcastReceiver() {
         private const val TAG = "BootReceiver"
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
+        
+        /**
+         * Check if all required permissions are granted
+         * This prevents service crashes and ANR when starting at boot
+         */
+        private fun hasRequiredPermissions(context: Context): Boolean {
+            val hasCameraPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+            
+            // POST_NOTIFICATIONS only required on Android 13+
+            val hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true // Not required on older Android versions
+            }
+            
+            if (!hasCameraPermission) {
+                Log.e(TAG, "Missing CAMERA permission")
+            }
+            if (!hasNotificationPermission) {
+                Log.e(TAG, "Missing POST_NOTIFICATIONS permission")
+            }
+            
+            return hasCameraPermission && hasNotificationPermission
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -45,35 +77,50 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
             
-            Log.i(TAG, "Auto-start enabled, starting camera service")
+            Log.i(TAG, "Auto-start enabled - checking permissions before starting")
             
-            // On Android 14+ (API 34+), start MainActivity to add app to recent tasks
-            // This is required for camera access - Android blocks camera unless app is in recent tasks
-            // MainActivity will stay open as it's the main interface for the IP camera device
+            // Check permissions before attempting to start service
+            // This prevents ANR and service crashes due to missing permissions
+            if (!hasRequiredPermissions(context)) {
+                Log.e(TAG, "Missing required permissions - cannot auto-start service")
+                Log.e(TAG, "User must open app and grant permissions for auto-start to work")
+                return
+            }
+            
+            Log.i(TAG, "All permissions granted, proceeding with auto-start")
+            
+            // On Android 14+ (API 34+), start MainActivity to keep app in recent tasks
+            // This enables camera access - Android requires app be in recent tasks for camera
+            // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
+            // This is intentional - the device is meant to show the camera interface
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                Log.d(TAG, "Android 14+: Starting MainActivity to enable camera access")
+                Log.d(TAG, "Android 14+: Starting MainActivity for camera eligibility")
                 val activityIntent = Intent(context, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    putExtra("FROM_BOOT", true) // Flag to indicate boot start
                 }
                 try {
                     context.startActivity(activityIntent)
+                    Log.i(TAG, "MainActivity started successfully - will remain open for camera access")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to start MainActivity at boot: ${e.message}", e)
+                    return // Don't proceed if we can't start activity on Android 14+
                 }
                 
-                // Small delay to let activity start before service
-                Thread.sleep(500)
+                // Longer delay to ensure activity is fully initialized and visible
+                // This is critical - camera access requires activity to be visible
+                Thread.sleep(1500)
             }
             
+            // Start camera service with auto-start flag
             val serviceIntent = Intent(context, CameraService::class.java)
             serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
             
             try {
                 ContextCompat.startForegroundService(context, serviceIntent)
-                Log.i(TAG, "Successfully requested foreground service start on boot")
+                Log.i(TAG, "Camera service started successfully on boot")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
-                Log.e(TAG, "This may indicate missing permissions or Android restrictions")
             }
         } else {
             Log.d(TAG, "Ignoring unhandled broadcast action: $action")

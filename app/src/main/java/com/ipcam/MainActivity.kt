@@ -95,6 +95,11 @@ class MainActivity : AppCompatActivity() {
         if (allPermissionsGranted) {
             Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show()
             
+            // Mark that we should check battery optimization after recreate
+            // This ensures the dialog shows after activity is fully recreated
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("check_battery_after_recreate", true).apply()
+            
             // Recreate activity to start fresh with all permissions
             // This avoids needing to force-close the app
             recreate()
@@ -280,20 +285,48 @@ class MainActivity : AppCompatActivity() {
             toggleServer()
         }
         
-        // Request all permissions upfront
-        checkAllPermissions()
-        
-        // Only start camera service if we already have all permissions
-        if (allPermissionsGranted) {
-            // Check battery optimization after we know we have all permissions
-            // This prevents the dialog from being interrupted by recreate()
-            checkBatteryOptimization()
+        // Check if launched from boot - if so, we know permissions are granted
+        val fromBoot = intent.getBooleanExtra("FROM_BOOT", false)
+        if (fromBoot) {
+            Log.d(TAG, "MainActivity launched from boot - permissions already validated")
+            // Set permission flags to true since BootReceiver already checked
+            hasCameraPermission = true
+            hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+            
+            // Don't call checkAllPermissions() - we know we have them
+            // Just start the service
             startCameraServiceForPreview()
-        }
-        
-        // Auto-start server if enabled
-        if (allPermissionsGranted) {
             checkAutoStart()
+        } else {
+            // Normal app launch - check and request permissions
+            Log.d(TAG, "Normal MainActivity launch - checking permissions")
+            checkAllPermissions()
+            
+            // Only start camera service if we already have all permissions
+            if (allPermissionsGranted) {
+                // Check if we should show battery optimization dialog after recreate
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val checkBatteryAfterRecreate = prefs.getBoolean("check_battery_after_recreate", false)
+                
+                if (checkBatteryAfterRecreate) {
+                    // Clear the flag
+                    prefs.edit().remove("check_battery_after_recreate").apply()
+                    // Show battery optimization dialog now that recreate is complete
+                    checkBatteryOptimization()
+                }
+                
+                startCameraServiceForPreview()
+            }
+            
+            // Auto-start server if enabled
+            if (allPermissionsGranted) {
+                checkAutoStart()
+            }
         }
     }
     

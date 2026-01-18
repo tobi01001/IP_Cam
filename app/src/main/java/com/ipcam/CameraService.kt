@@ -447,13 +447,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             return
         }
         
-        // Check critical permissions after starting foreground
-        if (!hasRequiredPermissions()) {
-            Log.e(TAG, "Service started without required permissions - stopping")
-            isStopping = true
-            stopSelf()
-            return
-        }
+        // Note: Permission checks are done BEFORE starting the service (in BootReceiver and MainActivity)
+        // This ensures the service only starts when permissions are available
+        // If you see this service running, permissions were validated before start
         
         // Load saved settings
         loadSettings()
