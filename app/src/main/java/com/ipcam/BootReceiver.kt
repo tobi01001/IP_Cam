@@ -45,30 +45,10 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
             
-            Log.i(TAG, "Auto-start enabled, starting camera eligibility setup")
-            Log.i(TAG, "Using connectedDevice service type for Android 15 compatibility (allowed from BOOT_COMPLETED)")
-            
-            // CRITICAL FIX for Android 14/15: Start transparent activity first to add app to recent tasks
-            // This makes the app "eligible" for camera access and prevents ERROR_CAMERA_DISABLED
-            // Without this, camera access fails with: "Recent tasks don't include camera client package name"
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                Log.i(TAG, "Android 14+ detected: Starting transparent activity to establish camera eligibility")
-                val activityIntent = Intent(context, TransparentLauncherActivity::class.java)
-                activityIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                try {
-                    context.startActivity(activityIntent)
-                    Log.d(TAG, "Transparent launcher activity started - app now in recent tasks")
-                    // Small delay to ensure activity is processed before starting service
-                    Thread.sleep(500)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start transparent activity: ${e.message}", e)
-                }
-            }
+            Log.i(TAG, "Auto-start enabled, starting camera service")
             
             val serviceIntent = Intent(context, CameraService::class.java)
             serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
-            // Indicate this is a boot start so service knows to use on-demand camera activation on Android 15
-            serviceIntent.putExtra(CameraService.EXTRA_BOOT_START, true)
             
             try {
                 ContextCompat.startForegroundService(context, serviceIntent)
