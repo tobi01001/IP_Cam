@@ -186,6 +186,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var isBootStart = false
     @Volatile private var cameraActivatedAfterBoot = false
     
+    // Track if service is stopping due to missing permissions or other fatal errors
+    @Volatile private var isStopping = false
+    
     // ATOMIC FRAME UPDATES: Single source of truth for frame data
     // AtomicReference ensures the UI and web stream always display the same frame
     // by atomically updating bitmap, JPEG bytes, and timestamp together.
@@ -452,6 +455,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Check critical permissions after starting foreground
         if (!hasRequiredPermissions()) {
             Log.e(TAG, "Service started without required permissions - stopping")
+            isStopping = true
             stopSelf()
             return
         }
@@ -1285,6 +1289,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * keeps the frame pipeline flowing smoothly.
      */
     private fun processMjpegFrame(image: ImageProxy) {
+        // Skip processing if service is stopping
+        if (isStopping) {
+            Log.d(TAG, "Skipping frame processing - service is stopping")
+            return
+        }
+        
         val processingStart = System.currentTimeMillis()
         
         try {
@@ -1362,6 +1372,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * @param processingStart Timestamp when frame processing started
      */
     private fun processImageHeavyOperations(image: ImageProxy, processingStart: Long) {
+        // Skip processing if service is stopping
+        if (isStopping) {
+            Log.d(TAG, "Skipping heavy operations - service is stopping")
+            image.close()
+            return
+        }
+        
         // Use Kotlin's use{} extension to ensure image.close() is always called
         // This provides automatic resource management similar to Java's try-with-resources
         image.use {
