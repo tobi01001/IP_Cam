@@ -1,24 +1,23 @@
 package com.ipcam
 
 import android.app.Activity
+import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 
 /**
  * Transparent launcher activity used to get app into "recent tasks" list at boot.
  * 
- * Android 14/15 requires apps to be in recent tasks to access camera.
- * At boot, starting a service doesn't add the app to recent tasks, causing
- * ERROR_CAMERA_DISABLED when trying to access camera.
+ * Android 14/15 requires apps to be in recent tasks AND have a visible activity
+ * to access camera. At boot, starting only a service doesn't satisfy this requirement,
+ * causing ERROR_CAMERA_DISABLED when trying to access camera.
  * 
- * Solution: Start this transparent activity briefly at boot to satisfy the
- * "recent tasks" requirement, then finish immediately.
+ * Solution: Start MainActivity briefly at boot with a special flag, keep it visible
+ * for 2 seconds to establish camera eligibility, then finish it automatically.
  * 
- * This activity:
- * - Has no UI (transparent theme)
- * - Finishes immediately in onCreate()
- * - Adds app to recent tasks list
- * - Makes app "eligible" for camera access
+ * This allows camera to work without requiring user interaction.
  */
 class TransparentLauncherActivity : Activity() {
     companion object {
@@ -28,14 +27,19 @@ class TransparentLauncherActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        Log.d(TAG, "Transparent launcher activity started - adding app to recent tasks")
+        Log.d(TAG, "Transparent launcher started - launching MainActivity to establish camera eligibility")
         
-        // This activity has done its job just by being created:
-        // - App is now in recent tasks list
-        // - Camera access will be allowed
-        // Finish immediately so user doesn't see anything
+        // Launch MainActivity with special flag to indicate boot start
+        val intent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            putExtra("BOOT_START", true)
+        }
+        startActivity(intent)
+        
+        // Finish this transparent activity immediately
+        // MainActivity will handle the visibility requirement
         finish()
         
-        Log.d(TAG, "Transparent launcher activity finished - app now eligible for camera access")
+        Log.d(TAG, "Transparent launcher finished - MainActivity launched for camera eligibility")
     }
 }

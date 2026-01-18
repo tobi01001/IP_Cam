@@ -9,7 +9,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -68,9 +70,13 @@ class MainActivity : AppCompatActivity() {
     // Track last applied resolution to prevent infinite loop when setSelection triggers onItemSelected
     private var lastAppliedResolution: String? = null
     
+    // Track if this is a boot start (for camera eligibility on Android 14/15)
+    private var isBootStart = false
+    
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
+        private const val TAG = "MainActivity"
     }
     
     // Request multiple permissions at once
@@ -254,6 +260,24 @@ class MainActivity : AppCompatActivity() {
         // Set version information
         versionInfoText.text = BuildInfo.getFullVersionString()
         
+        // Check if this is a boot start (for camera eligibility on Android 14/15)
+        isBootStart = intent.getBooleanExtra("BOOT_START", false)
+        
+        if (isBootStart) {
+            Log.d(TAG, "MainActivity started from boot - will establish camera eligibility and finish automatically")
+            
+            // On Android 14/15, the activity needs to be visible for 2-3 seconds to establish
+            // camera eligibility. Schedule auto-finish after that time.
+            // The service will continue running in the background.
+            Handler(Looper.getMainLooper()).postDelayed({
+                Log.d(TAG, "Boot start delay complete - camera eligibility established, finishing MainActivity")
+                finish()
+            }, 3000) // 3 seconds to establish camera eligibility
+            
+            // Show a toast to inform user (they might see the app briefly)
+            Toast.makeText(this, "IP Camera Server starting...", Toast.LENGTH_SHORT).show()
+        }
+        
         setupEndpointsText()
         setupResolutionSpinner()
         setupCameraOrientationSpinner()
@@ -276,9 +300,16 @@ class MainActivity : AppCompatActivity() {
             toggleServer()
         }
         
-        // Request all permissions upfront
-        checkAllPermissions()
-        checkBatteryOptimization()
+        // Request all permissions upfront (skip if boot start, permissions already granted)
+        if (!isBootStart) {
+            checkAllPermissions()
+            checkBatteryOptimization()
+        } else {
+            // For boot start, assume permissions are granted (service already running)
+            hasCameraPermission = true
+            hasNotificationPermission = true
+            allPermissionsGranted = true
+        }
         
         // Only start camera service if we already have all permissions
         if (allPermissionsGranted) {
@@ -286,7 +317,8 @@ class MainActivity : AppCompatActivity() {
         }
         
         // Auto-start server if enabled (only if permissions granted)
-        if (allPermissionsGranted) {
+        if (allPermissionsGranted && !isBootStart) {
+            // Skip auto-start check on boot start (service already started by BootReceiver)
             checkAutoStart()
         }
     }
