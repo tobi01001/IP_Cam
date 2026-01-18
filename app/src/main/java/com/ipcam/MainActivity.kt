@@ -298,10 +298,14 @@ class MainActivity : AppCompatActivity() {
             }
             allPermissionsGranted = hasCameraPermission && hasNotificationPermission
             
-            // Don't call checkAllPermissions() - we know we have them
-            // Just start the service
-            startCameraServiceForPreview()
-            checkAutoStart()
+            // CRITICAL: On boot, we must wait for MainActivity to be FULLY visible before starting service
+            // Android 14+ requires the activity to be actively displayed for camera access
+            // Post with delay to ensure activity is completely initialized and visible
+            Handler(Looper.getMainLooper()).postDelayed({
+                Log.d(TAG, "Boot launch: MainActivity now fully visible, starting service")
+                startCameraServiceForPreview()
+                checkAutoStart()
+            }, 2000) // 2 second delay to ensure activity is fully rendered
         } else {
             // Normal app launch - check and request permissions
             Log.d(TAG, "Normal MainActivity launch - checking permissions")

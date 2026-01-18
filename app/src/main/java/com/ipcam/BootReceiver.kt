@@ -92,7 +92,7 @@ class BootReceiver : BroadcastReceiver() {
             // On Android 14+ (API 34+), start MainActivity to keep app in recent tasks
             // This enables camera access - Android requires app be in recent tasks for camera
             // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
-            // This is intentional - the device is meant to show the camera interface
+            // MainActivity will delay starting the service until it's fully visible
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 Log.d(TAG, "Android 14+: Starting MainActivity for camera eligibility")
                 val activityIntent = Intent(context, MainActivity::class.java).apply {
@@ -101,26 +101,23 @@ class BootReceiver : BroadcastReceiver() {
                 }
                 try {
                     context.startActivity(activityIntent)
-                    Log.i(TAG, "MainActivity started successfully - will remain open for camera access")
+                    Log.i(TAG, "MainActivity started - will remain open for camera access")
+                    Log.i(TAG, "MainActivity will start service after it becomes fully visible")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to start MainActivity at boot: ${e.message}", e)
-                    return // Don't proceed if we can't start activity on Android 14+
                 }
+            } else {
+                // Android 11-13: Start service directly (no recent tasks requirement)
+                Log.i(TAG, "Android 11-13: Starting service directly")
+                val serviceIntent = Intent(context, CameraService::class.java)
+                serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
                 
-                // Longer delay to ensure activity is fully initialized and visible
-                // This is critical - camera access requires activity to be visible
-                Thread.sleep(1500)
-            }
-            
-            // Start camera service with auto-start flag
-            val serviceIntent = Intent(context, CameraService::class.java)
-            serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
-            
-            try {
-                ContextCompat.startForegroundService(context, serviceIntent)
-                Log.i(TAG, "Camera service started successfully on boot")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
+                try {
+                    ContextCompat.startForegroundService(context, serviceIntent)
+                    Log.i(TAG, "Camera service started successfully on boot")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
+                }
             }
         } else {
             Log.d(TAG, "Ignoring unhandled broadcast action: $action")
