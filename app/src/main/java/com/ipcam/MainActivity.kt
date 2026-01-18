@@ -73,6 +73,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
+        private const val PREF_BATTERY_DIALOG_SHOWN = "batteryDialogShown"
         private const val TAG = "MainActivity"
     }
     
@@ -281,10 +282,12 @@ class MainActivity : AppCompatActivity() {
         
         // Request all permissions upfront
         checkAllPermissions()
-        checkBatteryOptimization()
         
         // Only start camera service if we already have all permissions
         if (allPermissionsGranted) {
+            // Check battery optimization after we know we have all permissions
+            // This prevents the dialog from being interrupted by recreate()
+            checkBatteryOptimization()
             startCameraServiceForPreview()
         }
         
@@ -417,11 +420,18 @@ class MainActivity : AppCompatActivity() {
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         val packageName = packageName
         
-        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+        // Check if already ignored battery optimizations OR if we already showed the dialog
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val dialogShown = prefs.getBoolean(PREF_BATTERY_DIALOG_SHOWN, false)
+        
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName) && !dialogShown) {
             AlertDialog.Builder(this)
                 .setTitle("Battery Optimization")
                 .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
                 .setPositiveButton("Disable Optimization") { _, _ ->
+                    // Mark as shown regardless of what user does in system settings
+                    prefs.edit().putBoolean(PREF_BATTERY_DIALOG_SHOWN, true).apply()
+                    
                     val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                         data = Uri.parse("package:$packageName")
                     }
@@ -432,8 +442,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 .setNegativeButton("Skip") { dialog, _ ->
+                    // Mark as shown so we don't ask again
+                    prefs.edit().putBoolean(PREF_BATTERY_DIALOG_SHOWN, true).apply()
                     dialog.dismiss()
                 }
+                .setCancelable(false) // Prevent dismissing by tapping outside
                 .create()
                 .show()
         }

@@ -10,7 +10,7 @@ kotlin = "2.1.0"
 # Android SDK versions
 minSdk = "30"
 compileSdk = "35"
-targetSdk = "35"
+targetSdk = "34"
 
 # AndroidX Core
 androidx-core-ktx = "1.15.0"
