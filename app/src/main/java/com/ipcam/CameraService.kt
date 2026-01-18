@@ -434,7 +434,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         lifecycleRegistry = LifecycleRegistry(this)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         
-        // Check critical permissions before proceeding
+        // Create notification channel immediately (required before startForeground)
+        createNotificationChannel()
+        
+        // CRITICAL: Must call startForeground() within 5 seconds of startForegroundService()
+        // Do this BEFORE any other operations to avoid ANR
+        try {
+            startForeground(NOTIFICATION_ID, createNotification())
+            Log.d(TAG, "Foreground service started successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
+            // If foreground start fails, stop the service gracefully
+            stopSelf()
+            return
+        }
+        
+        // Check critical permissions after starting foreground
         if (!hasRequiredPermissions()) {
             Log.e(TAG, "Service started without required permissions - stopping")
             stopSelf()
@@ -465,25 +480,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
         }
         
-        createNotificationChannel()
-        
         // Check for POST_NOTIFICATIONS permission on Android 13+
         // Note: startForeground() will still succeed even without permission on Android 13+,
         // but the notification won't be visible to the user. The service continues to run normally.
         if (!hasNotificationPermission()) {
             Log.w(TAG, "POST_NOTIFICATIONS permission not granted. Foreground service notification may not be visible on Android 13+")
-        }
-        
-        // Try to start foreground service
-        // On Android 15+ boot start, use connectedDevice type which is allowed from BOOT_COMPLETED
-        try {
-            startForeground(NOTIFICATION_ID, createNotification())
-            Log.d(TAG, "Foreground service started successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
-            // If foreground start fails, stop the service gracefully
-            stopSelf()
-            return
         }
         
         acquireLocks()
