@@ -47,6 +47,24 @@ class BootReceiver : BroadcastReceiver() {
             
             Log.i(TAG, "Auto-start enabled, starting camera service")
             
+            // On Android 14+ (API 34+), start MainActivity to add app to recent tasks
+            // This is required for camera access - Android blocks camera unless app is in recent tasks
+            // MainActivity will stay open as it's the main interface for the IP camera device
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                Log.d(TAG, "Android 14+: Starting MainActivity to enable camera access")
+                val activityIntent = Intent(context, MainActivity::class.java).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                try {
+                    context.startActivity(activityIntent)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to start MainActivity at boot: ${e.message}", e)
+                }
+                
+                // Small delay to let activity start before service
+                Thread.sleep(500)
+            }
+            
             val serviceIntent = Intent(context, CameraService::class.java)
             serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
             
