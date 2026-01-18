@@ -93,7 +93,7 @@ class BootReceiver : BroadcastReceiver() {
             // This enables camera access - Android requires app be in recent tasks for camera
             // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
             // MainActivity will delay starting the service until it's fully visible
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            if (Build.VERSION.SDK_INT >= 34) { // Android 14 (UPSIDE_DOWN_CAKE)
                 Log.d(TAG, "Android 14+: Starting MainActivity for camera eligibility")
                 val activityIntent = Intent(context, MainActivity::class.java).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
