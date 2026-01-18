@@ -509,6 +509,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } else {
             Log.i(TAG, "Android 15 boot start: Server starting with connectedDevice type")
             Log.i(TAG, "Camera will activate automatically on first stream request (on-demand activation)")
+            
+            // Start periodic check to activate camera when device becomes eligible
+            // This handles cases where device is locked at boot but unlocked later
+            startPeriodicCameraActivationCheck()
         }
         
         // Auto-start RTSP if it was enabled in settings
@@ -604,6 +608,40 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         Log.d(TAG, "All required permissions granted")
         return true
+    }
+    
+    /**
+     * Periodically check if camera can be activated after boot
+     * This handles cases where device is locked at boot but unlocked later
+     * Checks every 30 seconds for up to 10 minutes
+     */
+    private fun startPeriodicCameraActivationCheck() {
+        serviceScope.launch {
+            var attempts = 0
+            val maxAttempts = 20 // 20 attempts * 30 seconds = 10 minutes
+            
+            while (attempts < maxAttempts && !cameraActivatedAfterBoot && cameraProvider == null) {
+                delay(30000) // Wait 30 seconds between checks
+                attempts++
+                
+                Log.d(TAG, "Periodic camera activation check (attempt $attempts/$maxAttempts)")
+                
+                // Check if camera can be activated now
+                if (hasRequiredPermissions()) {
+                    Log.i(TAG, "Device now eligible for camera activation - starting camera")
+                    cameraActivatedAfterBoot = true
+                    delay(500) // Small delay to ensure we're ready
+                    startCamera()
+                    break
+                } else {
+                    Log.d(TAG, "Camera still not eligible, will retry in 30 seconds")
+                }
+            }
+            
+            if (attempts >= maxAttempts && cameraProvider == null) {
+                Log.w(TAG, "Camera activation check timed out after 10 minutes - camera will activate on first stream request")
+            }
+        }
     }
     
     /**

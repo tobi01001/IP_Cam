@@ -45,7 +45,7 @@
             android:name=".CameraService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="camera|connectedDevice" />
+            android:foregroundServiceType="connectedDevice" />
 
         <receiver
             android:name=".BootReceiver"
