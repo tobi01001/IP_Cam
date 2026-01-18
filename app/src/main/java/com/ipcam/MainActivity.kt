@@ -90,9 +90,10 @@ class MainActivity : AppCompatActivity() {
         
         if (allPermissionsGranted) {
             Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show()
-            // Start camera service for preview now that we have all permissions
-            startCameraServiceForPreview()
-            updateUI()
+            
+            // Recreate activity to start fresh with all permissions
+            // This avoids needing to force-close the app
+            recreate()
         } else {
             // Show which permissions are missing
             val missingPermissions = mutableListOf<String>()

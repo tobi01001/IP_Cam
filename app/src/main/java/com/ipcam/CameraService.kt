@@ -617,33 +617,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Periodically check if camera can be activated after boot
      * This handles cases where device is locked at boot but unlocked later
-     * Checks every 30 seconds for up to 10 minutes
+     * Checks every 15 seconds for up to 5 minutes
      */
     private fun startPeriodicCameraActivationCheck() {
         serviceScope.launch {
             var attempts = 0
-            val maxAttempts = 20 // 20 attempts * 30 seconds = 10 minutes
+            val maxAttempts = 20 // 20 attempts * 15 seconds = 5 minutes
             
             while (attempts < maxAttempts && !cameraActivatedAfterBoot && cameraProvider == null) {
-                delay(30000) // Wait 30 seconds between checks
+                delay(15000) // Wait 15 seconds between checks (faster than before)
                 attempts++
                 
                 Log.d(TAG, "Periodic camera activation check (attempt $attempts/$maxAttempts)")
                 
                 // Check if camera can be activated now
                 if (hasRequiredPermissions()) {
-                    Log.i(TAG, "Device now eligible for camera activation - starting camera")
+                    Log.i(TAG, "Permissions available - attempting camera activation")
                     cameraActivatedAfterBoot = true
                     delay(500) // Small delay to ensure we're ready
                     startCamera()
                     break
                 } else {
-                    Log.d(TAG, "Camera still not eligible, will retry in 30 seconds")
+                    Log.d(TAG, "Camera still not eligible (permissions check failed), will retry in 15 seconds")
                 }
             }
             
             if (attempts >= maxAttempts && cameraProvider == null) {
-                Log.w(TAG, "Camera activation check timed out after 10 minutes - camera will activate on first stream request")
+                Log.w(TAG, "Camera activation check timed out after 5 minutes - camera will activate on first stream request")
             }
         }
     }

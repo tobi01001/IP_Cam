@@ -41,6 +41,15 @@
             </intent-filter>
         </activity>
 
+        <!-- Transparent activity used to add app to recent tasks at boot -->
+        <!-- This makes camera access eligible on Android 14/15 -->
+        <activity
+            android:name=".TransparentLauncherActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="false" />
+
         <service
             android:name=".CameraService"
             android:enabled="true"
