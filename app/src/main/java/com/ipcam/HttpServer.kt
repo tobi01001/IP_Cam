@@ -298,6 +298,14 @@ class HttpServer(
                         <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
                         <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
                     </div>
+                    <div id="cameraStatusDisplay" class="status-info" style="display: none; background-color: #fff3cd; border-left-color: #ffc107;">
+                        <strong>⚠️ Camera Not Active:</strong> <span id="cameraStatusText">Camera initialization deferred</span>
+                        <br>
+                        <button id="activateCameraBtn" onclick="activateCamera()" style="margin-top: 10px; background-color: #2196F3;">
+                            🎥 Activate Camera
+                        </button>
+                        <p class="note" style="margin: 5px 0 0 0;"><em>Camera will auto-activate when you start streaming, or click the button above to activate manually.</em></p>
+                    </div>
                     <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
                     <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
@@ -1379,6 +1387,73 @@ class HttpServer(
                                     '<strong style="color: red;">Error:</strong> ' + error;
                             });
                     }
+                    
+                    // Camera activation functions
+                    function activateCamera() {
+                        const btn = document.getElementById('activateCameraBtn');
+                        const statusText = document.getElementById('cameraStatusText');
+                        
+                        btn.disabled = true;
+                        btn.textContent = '⏳ Activating...';
+                        statusText.textContent = 'Initializing camera... Please wait.';
+                        
+                        fetch('/activateCamera')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    statusText.textContent = data.message;
+                                    btn.style.backgroundColor = '#4CAF50';
+                                    btn.textContent = '✓ Camera Activated';
+                                    
+                                    // Hide camera status after 3 seconds
+                                    setTimeout(() => {
+                                        checkCameraStatus();
+                                    }, 3000);
+                                } else {
+                                    statusText.textContent = 'Error: ' + data.message;
+                                    btn.disabled = false;
+                                    btn.textContent = '🎥 Activate Camera';
+                                }
+                            })
+                            .catch(error => {
+                                statusText.textContent = 'Error activating camera: ' + error;
+                                btn.disabled = false;
+                                btn.textContent = '🎥 Activate Camera';
+                            });
+                    }
+                    
+                    function checkCameraStatus() {
+                        fetch('/status')
+                            .then(response => response.json())
+                            .then(data => {
+                                const statusDisplay = document.getElementById('cameraStatusDisplay');
+                                const statusText = document.getElementById('cameraStatusText');
+                                
+                                if (data.cameraDeferred) {
+                                    // Camera is deferred - show activation UI
+                                    statusDisplay.style.display = 'block';
+                                    statusText.textContent = 'Camera initialization deferred (Android 14+ boot). Activate to start streaming.';
+                                } else if (data.cameraActive) {
+                                    // Camera is active - hide activation UI
+                                    statusDisplay.style.display = 'none';
+                                } else {
+                                    // Camera is not active but also not deferred (might be starting)
+                                    statusDisplay.style.display = 'block';
+                                    statusDisplay.style.backgroundColor = '#e3f2fd';
+                                    statusDisplay.style.borderLeftColor = '#2196F3';
+                                    statusText.textContent = 'Camera is initializing...';
+                                    document.getElementById('activateCameraBtn').style.display = 'none';
+                                }
+                            })
+                            .catch(error => {
+                                console.error('Failed to check camera status:', error);
+                            });
+                    }
+                    
+                    // Check camera status on page load
+                    checkCameraStatus();
+                    // Recheck every 5 seconds to catch camera activation
+                    setInterval(checkCameraStatus, 5000);
                 </script>
             </body>
             </html>
