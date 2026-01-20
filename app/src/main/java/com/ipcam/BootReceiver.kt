@@ -93,19 +93,7 @@ class BootReceiver : BroadcastReceiver() {
                 return
             }
             
-            Log.i(TAG, "All permissions granted, proceeding with auto-start")
-            
-            // Android 14+ Camera Access Solution: Home Launcher Mode
-            // When app is set as home launcher, it's always in recent tasks, so camera works normally.
-            // Simply start the service as usual - no deferred initialization needed.
-            
-            Log.i(TAG, "============================================")
-            Log.i(TAG, "Starting CameraService at boot")
-            if (Build.VERSION.SDK_INT >= 34) {
-                Log.i(TAG, "Android 14+: Requires app to be set as home launcher for camera access")
-                Log.i(TAG, "If camera doesn't work, set app as default launcher (HOME button → Select IP Camera)")
-            }
-            Log.i(TAG, "============================================")
+            Log.i(TAG, "All permissions granted, starting CameraService at boot")
             
             val serviceIntent = Intent(context, CameraService::class.java).apply {
                 putExtra(CameraService.EXTRA_START_SERVER, true)
