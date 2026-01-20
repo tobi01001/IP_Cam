@@ -823,18 +823,6 @@ class MainActivity : AppCompatActivity() {
         autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
             Log.d("MainActivity", "Auto-start preference changed to: $isChecked (using device-protected storage)")
-            
-            // Show Android 15 info when enabling auto-start
-            if (isChecked && Build.VERSION.SDK_INT >= 35) {
-                AlertDialog.Builder(this)
-                    .setTitle("Android 15 Auto-Start")
-                    .setMessage("On Android 15, the app uses on-demand camera activation:\n\n• Server starts automatically at boot\n• Camera activates when first client connects\n• Fully automatic, no manual intervention needed\n\nThis complies with Android 15 restrictions while maintaining full functionality.")
-                    .setPositiveButton("OK") { dialog, _ ->
-                        dialog.dismiss()
-                    }
-                    .setIcon(android.R.drawable.ic_dialog_info)
-                    .show()
-            }
         }
     }
     
