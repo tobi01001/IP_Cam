@@ -48,7 +48,11 @@ class BootReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action
-        Log.d(TAG, "Received broadcast: $action")
+        Log.i(TAG, "============================================")
+        Log.i(TAG, "BootReceiver.onReceive() called")
+        Log.i(TAG, "Action: $action")
+        Log.i(TAG, "Android Version: ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE})")
+        Log.i(TAG, "============================================")
         
         // Handle both BOOT_COMPLETED and LOCKED_BOOT_COMPLETED
         // LOCKED_BOOT_COMPLETED is received earlier (before device unlock) on devices with Direct Boot
@@ -57,7 +61,7 @@ class BootReceiver : BroadcastReceiver() {
             action == Intent.ACTION_LOCKED_BOOT_COMPLETED ||
             action == "android.intent.action.QUICKBOOT_POWERON") {
             
-            Log.d(TAG, "Boot completed (action: $action), checking autostart preference")
+            Log.i(TAG, "Boot completed (action: $action), checking autostart preference")
             
             // Check if autostart is enabled
             // Use device-protected storage context for Direct Boot compatibility
@@ -70,6 +74,8 @@ class BootReceiver : BroadcastReceiver() {
             val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
             
+            Log.i(TAG, "Storage context: ${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) "Device-protected" else "Default"}")
+            Log.i(TAG, "Preferences location: ${prefs.all}")
             Log.i(TAG, "Auto-start setting: $autoStart, Android API: ${Build.VERSION.SDK_INT}")
             
             if (!autoStart) {
