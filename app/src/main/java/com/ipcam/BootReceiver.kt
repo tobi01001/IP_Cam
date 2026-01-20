@@ -95,26 +95,36 @@ class BootReceiver : BroadcastReceiver() {
             
             Log.i(TAG, "All permissions granted, proceeding with auto-start")
             
-            // On Android 14+ (API 34+), start MainActivity to keep app in recent tasks
-            // This enables camera access - Android requires app be in recent tasks for camera
-            // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
-            // MainActivity will delay starting the service until it's fully visible
-            if (Build.VERSION.SDK_INT >= 34) { // Android 14 (UPSIDE_DOWN_CAKE)
+            // On Android 14+ (API 34+), we cannot start MainActivity from boot due to
+            // background activity launch restrictions. Instead:
+            // 1. Start CameraService directly (server starts, but camera stays inactive)
+            // 2. User can enable camera remotely via /enableCamera endpoint or web UI
+            // 3. Camera can also be enabled via notification action button
+            // 4. Auto-enable camera when first client connects to /stream or /snapshot
+            //
+            // This hybrid approach allows:
+            // - Server auto-starts at boot (accessible remotely)
+            // - Camera enables on-demand (via web, notification, or first client)
+            // - No manual app opening required for remote devices
+            if (Build.VERSION.SDK_INT >= 34) { // Android 14+ (UPSIDE_DOWN_CAKE)
                 Log.i(TAG, "============================================")
-                Log.i(TAG, "Android 14+: Attempting to start MainActivity")
+                Log.i(TAG, "Android 14+: Starting service without MainActivity")
+                Log.i(TAG, "Camera will remain inactive until enabled via:")
+                Log.i(TAG, "  1. Web interface: Click 'Enable Camera' button")
+                Log.i(TAG, "  2. API endpoint: GET /enableCamera")
+                Log.i(TAG, "  3. Notification: Tap 'Enable Camera' action")
+                Log.i(TAG, "  4. Auto-enable: First client connects to /stream")
                 Log.i(TAG, "============================================")
-                val activityIntent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    putExtra("FROM_BOOT", true) // Flag to indicate boot start
-                }
+                
+                val serviceIntent = Intent(context, CameraService::class.java)
+                serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
+                
                 try {
-                    Log.i(TAG, "Calling startActivity() with FROM_BOOT=true")
-                    context.startActivity(activityIntent)
-                    Log.i(TAG, "startActivity() call completed successfully")
-                    Log.i(TAG, "MainActivity should now launch and start service after 2 seconds")
-                    Log.i(TAG, "Look for 'MainActivity' logs to confirm activity started")
+                    ContextCompat.startForegroundService(context, serviceIntent)
+                    Log.i(TAG, "Camera service started successfully on boot (camera inactive)")
+                    Log.i(TAG, "Server will be accessible remotely for camera activation")
                 } catch (e: Exception) {
-                    Log.e(TAG, "EXCEPTION starting MainActivity: ${e.javaClass.simpleName}: ${e.message}", e)
+                    Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
                 }
             } else {
                 // Android 11-13: Start service directly (no recent tasks requirement)

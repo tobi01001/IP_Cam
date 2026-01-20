@@ -90,6 +90,7 @@ class HttpServer(
                 // Camera control
                 get("/switch") { serveSwitch() }
                 get("/toggleFlashlight") { serveToggleFlashlight() }
+                get("/enableCamera") { serveEnableCamera() }
                 
                 // Status and monitoring
                 get("/status") { serveStatus() }
@@ -1554,6 +1555,7 @@ class HttpServer(
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStatus() {
         val cameraName = if (cameraService.getCurrentCamera() == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
+        val cameraActive = cameraService.isCameraActive()
         val activeConns = cameraService.getActiveConnectionsCount()
         val maxConns = cameraService.getMaxConnections()
         val activeStreamCount = activeStreams.get()
@@ -1562,7 +1564,7 @@ class HttpServer(
         val streamingAllowed = cameraService.isStreamingAllowed()
         val deviceName = cameraService.getDeviceName()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/enableCamera\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
         
         val json = """
             {
@@ -1570,6 +1572,7 @@ class HttpServer(
                 "server": "Ktor",
                 "deviceName": "$deviceName",
                 "camera": "$cameraName",
+                "cameraActive": $cameraActive,
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
@@ -2049,6 +2052,33 @@ class HttpServer(
             """{"status":"ok","message":"Flashlight ${if (newState) "enabled" else "disabled"}","flashlight":$newState}""",
             ContentType.Application.Json
         )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableCamera() {
+        val cameraActive = cameraService.isCameraActive()
+        
+        if (cameraActive) {
+            call.respondText(
+                """{"status":"ok","message":"Camera is already active","cameraActive":true}""",
+                ContentType.Application.Json
+            )
+            return
+        }
+        
+        val success = cameraService.enableCamera()
+        
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"Camera activation initiated. Please wait 2-3 seconds for camera to initialize.","cameraActive":false,"activating":true}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to enable camera. Check that CAMERA permission is granted.","cameraActive":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveRestartServer() {

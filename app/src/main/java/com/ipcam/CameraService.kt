@@ -491,9 +491,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
         // Increased delay from 500ms to 1500ms for better reliability
+        //
+        // On Android 14+ boot start: Camera remains INACTIVE until manually enabled
+        // This allows server to be accessible remotely without camera active, solving
+        // the Android 14+ background activity launch restriction issue
         serviceScope.launch {
             delay(1500) // Longer delay to ensure service permissions are fully initialized
-            startCamera()
+            
+            // Only auto-start camera if NOT on Android 14+ OR if started from MainActivity
+            // On Android 14+ boot, camera remains inactive for remote/on-demand activation
+            if (Build.VERSION.SDK_INT < 34) {
+                // Android 11-13: Auto-start camera normally
+                Log.d(TAG, "Android 11-13: Auto-starting camera")
+                startCamera()
+            } else {
+                // Android 14+: Camera starts only when MainActivity is active or manually enabled
+                // Log that camera is waiting for activation
+                Log.i(TAG, "============================================")
+                Log.i(TAG, "Android 14+: Camera NOT auto-started on boot")
+                Log.i(TAG, "Camera activation options:")
+                Log.i(TAG, "  1. Web UI: Click 'Enable Camera' button")
+                Log.i(TAG, "  2. HTTP API: GET /enableCamera")
+                Log.i(TAG, "  3. Notification: Tap 'Enable Camera' action")
+                Log.i(TAG, "  4. Auto-enable: Access /stream or /snapshot")
+                Log.i(TAG, "============================================")
+                // Note: Camera will auto-start when MainActivity connects (via onStartCommand)
+            }
         }
         
         // Auto-start RTSP if it was enabled in settings
@@ -513,6 +536,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
         
+        // Check if camera should be enabled (from MainActivity)
+        val enableCamera = intent?.getBooleanExtra("ENABLE_CAMERA", false) ?: false
+        
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
@@ -521,11 +547,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Try to start camera if not already bound
         // This handles cases where:
-        // 1. Service started before MainActivity granted permission
+        // 1. Service started from MainActivity (normal app launch) - ENABLE_CAMERA=true on Android 14+
         // 2. Service restarted after being killed
         // 3. Permission was granted after service onCreate
+        //
+        // On Android 14+, camera only starts when:
+        // - ENABLE_CAMERA flag is set (from MainActivity)
+        // - Explicitly enabled via enableCamera() (remote/web activation)
+        // This prevents auto-start from boot which is blocked by Android 14+
         if (cameraProvider == null) {
-            startCamera()
+            // Auto-start camera if:
+            // - Android 11-13 (always), OR
+            // - Android 14+ with ENABLE_CAMERA flag (from MainActivity)
+            if (Build.VERSION.SDK_INT < 34 || enableCamera) {
+                Log.d(TAG, "Starting camera - Android < 14 or ENABLE_CAMERA flag set")
+                startCamera()
+            } else {
+                Log.d(TAG, "Android 14+: Camera not auto-started. Use enableCamera() to activate.")
+            }
         }
         
         // If camera is already bound, ensure it's in correct state
@@ -1729,6 +1768,52 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         } catch (e: Exception) {
             Log.e(TAG, "Error controlling torch", e)
         }
+    }
+    
+    /**
+     * Check if camera is currently active (bound and running)
+     */
+    override fun isCameraActive(): Boolean {
+        return camera != null && cameraProvider != null
+    }
+    
+    /**
+     * Manually enable camera on-demand
+     * Used for remote activation via web interface or notification action
+     * Returns true if camera activation was successful or already active
+     */
+    override fun enableCamera(): Boolean {
+        Log.d(TAG, "enableCamera() called - checking camera state...")
+        
+        // Check if camera permission is granted
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) 
+            != PackageManager.PERMISSION_GRANTED) {
+            Log.e(TAG, "Cannot enable camera: CAMERA permission not granted")
+            return false
+        }
+        
+        // If camera is already active, just return success
+        if (isCameraActive()) {
+            Log.d(TAG, "Camera is already active")
+            return true
+        }
+        
+        // Start camera if not already initialized
+        if (cameraProvider == null) {
+            Log.d(TAG, "Camera provider not initialized, starting camera...")
+            startCamera()
+            return true // Assume success, actual binding happens asynchronously
+        }
+        
+        // Camera provider exists but camera not bound - rebind
+        if (cameraProvider != null && camera == null) {
+            Log.d(TAG, "Camera provider exists but camera not bound, rebinding...")
+            bindCamera()
+            return true
+        }
+        
+        Log.w(TAG, "Camera state unclear - provider=${cameraProvider != null}, camera=${camera != null}")
+        return false
     }
     
     /**

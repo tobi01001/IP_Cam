@@ -16,6 +16,8 @@ interface CameraServiceInterface {
     fun toggleFlashlight(): Boolean
     fun isFlashlightAvailable(): Boolean
     fun isFlashlightEnabled(): Boolean
+    fun isCameraActive(): Boolean
+    fun enableCamera(): Boolean
     
     // Frame operations
     fun getLastFrameJpegBytes(): ByteArray?
