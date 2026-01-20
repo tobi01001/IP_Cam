@@ -9,7 +9,9 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
@@ -60,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var isServiceBound = false
     private var hasCameraPermission = false
     private var hasNotificationPermission = false
+    private var allPermissionsGranted = false
     
     // Flag to prevent spinner listeners from triggering during programmatic updates
     private var isUpdatingSpinners = false
@@ -70,16 +73,70 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
+        private const val PREF_BATTERY_DIALOG_SHOWN = "batteryDialogShown"
+        private const val PREF_FIRST_LAUNCH_DONE = "firstLaunchDone"
+        private const val PREF_HOME_LAUNCHER_PROMPTED = "homeLauncherPrompted"
+        private const val TAG = "MainActivity"
     }
     
+    // Request multiple permissions at once
+    private val requestMultiplePermissionsLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        hasCameraPermission = permissions[Manifest.permission.CAMERA] == true
+        
+        // POST_NOTIFICATIONS is only relevant on Android 13+
+        hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions[Manifest.permission.POST_NOTIFICATIONS] == true
+        } else {
+            true // Not required on older versions
+        }
+        
+        allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+        
+        if (allPermissionsGranted) {
+            Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show()
+            
+            // Mark that we should check battery optimization after recreate
+            // This ensures the dialog shows after activity is fully recreated
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean("check_battery_after_recreate", true).apply()
+            
+            // Recreate activity to start fresh with all permissions
+            // This avoids needing to force-close the app
+            recreate()
+        } else {
+            // Show which permissions are missing
+            val missingPermissions = mutableListOf<String>()
+            if (!hasCameraPermission) missingPermissions.add("Camera")
+            if (!hasNotificationPermission) missingPermissions.add("Notifications")
+            
+            val message = "Missing permissions: ${missingPermissions.joinToString(", ")}"
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+            
+            // Show rationale or guide to settings
+            if (!hasCameraPermission && !shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)) {
+                showPermissionDeniedDialog()
+            } else {
+                showPermissionRationale()
+            }
+            updateUI()
+        }
+    }
+    
+    // Keep old single permission launcher for backwards compatibility / fallback
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (isGranted) {
             hasCameraPermission = true
             Toast.makeText(this, "Camera permission granted", Toast.LENGTH_SHORT).show()
+            // Check if we need notification permission
+            checkNotificationPermission()
             // Start camera service for preview now that we have permission
-            startCameraServiceForPreview()
+            if (allPermissionsGranted || hasNotificationPermission) {
+                startCameraServiceForPreview()
+            }
             updateUI()
         } else {
             hasCameraPermission = false
@@ -176,6 +233,30 @@ class MainActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Allow app to show over lock screen and access camera even when device is locked
+        // This is crucial for surveillance devices that need camera access at boot
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            // Optionally dismiss keyguard for immediate access
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            keyguardManager?.requestDismissKeyguard(this, null)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+        
+        Log.i(TAG, "============================================")
+        Log.i(TAG, "MainActivity.onCreate() called")
+        Log.i(TAG, "Intent extras: ${intent.extras?.keySet()?.joinToString()}")
+        Log.i(TAG, "FROM_BOOT flag: ${intent.getBooleanExtra("FROM_BOOT", false)}")
+        Log.i(TAG, "============================================")
+        
         setContentView(R.layout.activity_main)
         
         previewImageView = findViewById(R.id.previewImageView)
@@ -230,17 +311,95 @@ class MainActivity : AppCompatActivity() {
             toggleServer()
         }
         
-        checkCameraPermission()
-        checkBatteryOptimization()
-        checkNotificationPermission()
-        
-        // Start the camera service for preview (server may or may not start)
-        if (hasCameraPermission) {
-            startCameraServiceForPreview()
+        // Check if we should prompt to set as home launcher (Android 14+ optimization)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val homeLauncherPrompted = prefs.getBoolean(PREF_HOME_LAUNCHER_PROMPTED, false)
+        if (!homeLauncherPrompted && Build.VERSION.SDK_INT >= 34) {
+            promptToSetAsHomeLauncher()
         }
         
-        // Auto-start server if enabled
-        checkAutoStart()
+        // Check if launched from boot or camera activation
+        val fromBoot = intent.getBooleanExtra("FROM_BOOT", false)
+        val fromCameraActivation = intent.getBooleanExtra("FROM_CAMERA_ACTIVATION", false)
+        
+        if (fromBoot) {
+            Log.i(TAG, "============================================")
+            Log.i(TAG, "BOOT LAUNCH DETECTED - FROM_BOOT=true")
+            Log.i(TAG, "Permissions already validated by BootReceiver")
+            Log.i(TAG, "============================================")
+            // Set permission flags to true since BootReceiver already checked
+            hasCameraPermission = true
+            hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+            
+            Log.i(TAG, "Scheduling service start in 2 seconds to allow activity to become fully visible")
+            
+            // CRITICAL: On boot, we must wait for MainActivity to be FULLY visible before starting service
+            // Android 14+ requires the activity to be actively displayed for camera access
+            // Post with delay to ensure activity is completely initialized and visible
+            Handler(Looper.getMainLooper()).postDelayed({
+                Log.i(TAG, "============================================")
+                Log.i(TAG, "Boot delay complete - starting camera service NOW")
+                Log.i(TAG, "============================================")
+                startCameraServiceForPreview()
+                checkAutoStart()
+            }, 2000) // 2 second delay to ensure activity is fully rendered
+            
+            Log.i(TAG, "Handler postDelayed() called - will fire in 2 seconds")
+        } else if (fromCameraActivation) {
+            // Launched by camera activation from web UI
+            Log.i(TAG, "============================================")
+            Log.i(TAG, "CAMERA ACTIVATION LAUNCH DETECTED - FROM_CAMERA_ACTIVATION=true")
+            Log.i(TAG, "MainActivity launched to add app to recent tasks for camera access")
+            Log.i(TAG, "============================================")
+            
+            // Check permissions - they should already be granted since service was running
+            hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+            
+            // Bind to service if not already bound
+            if (allPermissionsGranted && !isServiceBound) {
+                Log.i(TAG, "Binding to CameraService to display camera state")
+                startCameraServiceForPreview()
+            }
+            
+            // Show a toast to inform user
+            Toast.makeText(this, "Camera activation in progress. App is now in recent tasks, allowing camera access.", Toast.LENGTH_LONG).show()
+        } else {
+            // Normal app launch - check and request permissions
+            Log.d(TAG, "Normal MainActivity launch - checking permissions")
+            checkAllPermissions()
+            
+            // Only start camera service if we already have all permissions
+            if (allPermissionsGranted) {
+                // Check if we should show battery optimization dialog after recreate
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val checkBatteryAfterRecreate = prefs.getBoolean("check_battery_after_recreate", false)
+                
+                if (checkBatteryAfterRecreate) {
+                    // Clear the flag
+                    prefs.edit().remove("check_battery_after_recreate").apply()
+                    // Show battery optimization dialog now that recreate is complete
+                    checkBatteryOptimization()
+                }
+                
+                startCameraServiceForPreview()
+            }
+            
+            // Auto-start server if enabled
+            if (allPermissionsGranted) {
+                checkAutoStart()
+            }
+        }
     }
     
     private fun startCameraServiceForPreview() {
@@ -272,6 +431,40 @@ class MainActivity : AppCompatActivity() {
             ${getString(R.string.endpoint_rotation)}
         """.trimIndent()
         endpointsText.text = endpoints
+    }
+    
+    private fun checkAllPermissions() {
+        // Check what permissions we need
+        val permissionsToRequest = mutableListOf<String>()
+        
+        // Camera permission is always required
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.CAMERA)
+        } else {
+            hasCameraPermission = true
+        }
+        
+        // Notification permission is only required on Android 13+ (API 33)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                hasNotificationPermission = true
+            }
+        } else {
+            hasNotificationPermission = true // Not required on older versions
+        }
+        
+        // Update allPermissionsGranted flag
+        allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+        
+        // Request permissions if needed
+        if (permissionsToRequest.isNotEmpty()) {
+            requestMultiplePermissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            // All permissions already granted
+            updateUI()
+        }
     }
     
     private fun checkCameraPermission() {
@@ -327,16 +520,61 @@ class MainActivity : AppCompatActivity() {
             .show()
     }
     
+    private fun promptToSetAsHomeLauncher() {
+        AlertDialog.Builder(this)
+            .setTitle("Set as Home Launcher (Recommended)")
+            .setMessage("For optimal camera access on Android 14+, this app should be set as your device's home launcher.\n\n" +
+                        "Benefits:\n" +
+                        "• Reliable camera access at boot\n" +
+                        "• Works even with lock screen enabled\n" +
+                        "• Prevents accidental app closure\n" +
+                        "• Optimized for dedicated surveillance devices\n\n" +
+                        "Note: The app will show over the lock screen to enable camera access immediately after boot.\n\n" +
+                        "Press HOME button and select 'IP Camera' as default launcher.")
+            .setPositiveButton("Set Now") { _, _ ->
+                // Mark as prompted
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                prefs.edit().putBoolean(PREF_HOME_LAUNCHER_PROMPTED, true).apply()
+                
+                // Trigger home launcher selection by simulating HOME button
+                val intent = Intent(Intent.ACTION_MAIN)
+                intent.addCategory(Intent.CATEGORY_HOME)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                try {
+                    startActivity(intent)
+                    Toast.makeText(this, "Select 'IP Camera' and tap 'Always' to set as default launcher", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Press HOME button to select default launcher", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Skip") { dialog, _ ->
+                // Mark as prompted so we don't ask again
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                prefs.edit().putBoolean(PREF_HOME_LAUNCHER_PROMPTED, true).apply()
+                dialog.dismiss()
+            }
+            .setCancelable(false) // Prevent dismissing by tapping outside
+            .create()
+            .show()
+    }
+    
     private fun checkBatteryOptimization() {
         // API 30+ always supports battery optimization APIs (introduced in API 23)
         val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
         val packageName = packageName
         
-        if (!powerManager.isIgnoringBatteryOptimizations(packageName)) {
+        // Check if already ignored battery optimizations OR if we already showed the dialog
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val dialogShown = prefs.getBoolean(PREF_BATTERY_DIALOG_SHOWN, false)
+        
+        if (!powerManager.isIgnoringBatteryOptimizations(packageName) && !dialogShown) {
             AlertDialog.Builder(this)
                 .setTitle("Battery Optimization")
                 .setMessage("To keep the camera service running reliably, please disable battery optimization for this app.\n\nThis prevents Android from stopping the service in the background.")
                 .setPositiveButton("Disable Optimization") { _, _ ->
+                    // Mark as shown regardless of what user does in system settings
+                    prefs.edit().putBoolean(PREF_BATTERY_DIALOG_SHOWN, true).apply()
+                    
                     val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
                         data = Uri.parse("package:$packageName")
                     }
@@ -347,8 +585,11 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 .setNegativeButton("Skip") { dialog, _ ->
+                    // Mark as shown so we don't ask again
+                    prefs.edit().putBoolean(PREF_BATTERY_DIALOG_SHOWN, true).apply()
                     dialog.dismiss()
                 }
+                .setCancelable(false) // Prevent dismissing by tapping outside
                 .create()
                 .show()
         }
@@ -584,15 +825,23 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun setupAutoStartCheckBox() {
+        // Use device-protected storage for Direct Boot compatibility (Android N+)
+        // This ensures BootReceiver can access the setting even before device unlock
+        val storageContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            createDeviceProtectedStorageContext()
+        } else {
+            this
+        }
+        
         // Load saved autostart preference
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         autoStartCheckBox.isChecked = autoStart
         
         // Save preference when changed
         autoStartCheckBox.setOnCheckedChangeListener { _, isChecked ->
             prefs.edit().putBoolean(PREF_AUTO_START, isChecked).apply()
-            Log.d("MainActivity", "Auto-start preference changed to: $isChecked")
+            Log.d("MainActivity", "Auto-start preference changed to: $isChecked (using device-protected storage)")
         }
     }
     
@@ -756,7 +1005,14 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun checkAutoStart() {
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Use device-protected storage for Direct Boot compatibility (Android N+)
+        val storageContext = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            createDeviceProtectedStorageContext()
+        } else {
+            this
+        }
+        
+        val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
         
         // Only auto-start if:

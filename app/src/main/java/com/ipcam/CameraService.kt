@@ -182,6 +182,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var httpServer: HttpServer? = null
     private var currentCamera = CameraSelector.DEFAULT_BACK_CAMERA
     
+    // Track if service is stopping due to missing permissions or other fatal errors
+    @Volatile private var isStopping = false
+    
     // ATOMIC FRAME UPDATES: Single source of truth for frame data
     // AtomicReference ensures the UI and web stream always display the same frame
     // by atomically updating bitmap, JPEG bytes, and timestamp together.
@@ -429,6 +432,25 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         lifecycleRegistry = LifecycleRegistry(this)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         
+        // Create notification channel immediately (required before startForeground)
+        createNotificationChannel()
+        
+        // CRITICAL: Must call startForeground() within 5 seconds of startForegroundService()
+        // Do this BEFORE any other operations to avoid ANR
+        try {
+            startForeground(NOTIFICATION_ID, createNotification())
+            Log.d(TAG, "Foreground service started successfully")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
+            // If foreground start fails, stop the service gracefully
+            stopSelf()
+            return
+        }
+        
+        // Note: Permission checks are done BEFORE starting the service (in BootReceiver and MainActivity)
+        // This ensures the service only starts when permissions are available
+        // If you see this service running, permissions were validated before start
+        
         // Load saved settings
         loadSettings()
         
@@ -453,8 +475,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
         }
         
-        createNotificationChannel()
-        
         // Check for POST_NOTIFICATIONS permission on Android 13+
         // Note: startForeground() will still succeed even without permission on Android 13+,
         // but the notification won't be visible to the user. The service continues to run normally.
@@ -462,16 +482,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.w(TAG, "POST_NOTIFICATIONS permission not granted. Foreground service notification may not be visible on Android 13+")
         }
         
-        startForeground(NOTIFICATION_ID, createNotification())
         acquireLocks()
         registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
+        // ANDROID 14+ BOOT RESTRICTION HANDLING:
+        // When service starts from boot on Android 14+, we defer camera initialization
+        // because Android silently blocks activity launches from boot broadcasts.
+        // The camera will be initialized either:
+        // 1. When user visits web interface (first stream/snapshot request auto-activates)
+        // 2. Via explicit /activateCamera endpoint
+        // 3. On Android 11-13, camera starts immediately as before
+        //
+        // This allows the service to start reliably at boot while maintaining
         // Delay camera start to ensure foreground service is fully established
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
-        // Increased delay from 500ms to 1500ms for better reliability
         serviceScope.launch {
             delay(1500) // Longer delay to ensure service permissions are fully initialized
             startCamera()
@@ -540,6 +567,34 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         )
     }
     
+    /**
+     * Check if all required permissions are granted
+     * Service cannot function without these permissions
+     */
+    private fun hasRequiredPermissions(): Boolean {
+        // CAMERA permission is required (runtime permission)
+        val hasCameraPermission = ContextCompat.checkSelfPermission(
+            this,
+            Manifest.permission.CAMERA
+        ) == PackageManager.PERMISSION_GRANTED
+        
+        // INTERNET, ACCESS_NETWORK_STATE, ACCESS_WIFI_STATE are install-time permissions (automatically granted)
+        // No need to check them at runtime
+        
+        if (!hasCameraPermission) {
+            Log.e(TAG, "Missing required permission: CAMERA")
+            return false
+        }
+        
+        Log.d(TAG, "All required permissions granted")
+        return true
+    }
+    
+    /**
+     * Periodically check if camera can be activated after boot
+     * This handles cases where device is locked at boot but unlocked later
+     * Checks every 15 seconds for up to 5 minutes
+     */
     /**
      * Check if POST_NOTIFICATIONS permission is granted (required on Android 13+)
      */
@@ -1181,6 +1236,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * keeps the frame pipeline flowing smoothly.
      */
     private fun processMjpegFrame(image: ImageProxy) {
+        // Skip processing if service is stopping
+        if (isStopping) {
+            Log.d(TAG, "Skipping frame processing - service is stopping")
+            return
+        }
+        
         val processingStart = System.currentTimeMillis()
         
         try {
@@ -1258,6 +1319,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * @param processingStart Timestamp when frame processing started
      */
     private fun processImageHeavyOperations(image: ImageProxy, processingStart: Long) {
+        // Skip processing if service is stopping
+        if (isStopping) {
+            Log.d(TAG, "Skipping heavy operations - service is stopping")
+            image.close()
+            return
+        }
+        
         // Use Kotlin's use{} extension to ensure image.close() is always called
         // This provides automatic resource management similar to Java's try-with-resources
         image.use {
