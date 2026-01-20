@@ -305,7 +305,8 @@ class HttpServer(
                         <button id="activateCameraBtn" onclick="activateCamera()" style="margin-top: 10px; background-color: #2196F3;">
                             🎥 Activate Camera
                         </button>
-                        <p class="note" style="margin: 5px 0 0 0;"><em>Camera will auto-activate when you start streaming, or click the button above to activate manually.</em></p>
+                        <p class="note" style="margin: 5px 0 0 0;"><em><strong>Android 14+ Notice:</strong> Clicking this button will launch the IP_Cam app on your device to satisfy Android's "recent tasks" requirement for camera access. Please ensure device is accessible.</em></p>
+                        <p class="note" style="margin: 5px 0 0 0;"><em>Alternatively, camera will auto-activate when you start streaming.</em></p>
                     </div>
                     <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>

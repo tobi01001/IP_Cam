@@ -1809,6 +1809,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Manually activate camera when initialization was deferred (Android 14+ boot scenario)
+     * 
+     * On Android 14+, camera access requires the app to be in "recent tasks".
+     * This method launches MainActivity to satisfy this requirement, then starts the camera.
+     * 
      * Returns true if camera activation was triggered, false if already active or failed
      */
     override fun activateCamera(): Boolean {
@@ -1826,11 +1830,39 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.i(TAG, "Manual camera activation triggered")
         Log.i(TAG, "============================================")
         
+        // CRITICAL: On Android 14+, camera requires app to be in recent tasks
+        // Launch MainActivity to add app to recent tasks before starting camera
+        if (Build.VERSION.SDK_INT >= 34) {
+            Log.i(TAG, "Android 14+: Launching MainActivity to enable camera access")
+            Log.i(TAG, "Camera requires app to be in recent tasks per Android policy")
+            
+            val activityIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra("FROM_CAMERA_ACTIVATION", true)
+            }
+            
+            try {
+                startActivity(activityIntent)
+                Log.i(TAG, "MainActivity launch initiated - app will be added to recent tasks")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to launch MainActivity for camera activation: ${e.message}", e)
+                // Continue anyway - camera will fail but we'll log the reason
+            }
+            
+            // Delay camera start to give MainActivity time to launch and register in recent tasks
+            serviceScope.launch {
+                delay(3000) // 3 seconds to ensure MainActivity is fully visible
+                Log.i(TAG, "Proceeding with camera initialization after MainActivity launch")
+                startCamera()
+            }
+        } else {
+            // Android 11-13: No recent tasks requirement, start camera immediately
+            Log.i(TAG, "Android 11-13: Starting camera directly (no recent tasks requirement)")
+            startCamera()
+        }
+        
         cameraActivated = true
         cameraInitDeferred = false
-        
-        // Start camera immediately
-        startCamera()
         
         Log.i(TAG, "Camera activation initiated successfully")
         return true

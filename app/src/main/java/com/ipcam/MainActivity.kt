@@ -293,8 +293,10 @@ class MainActivity : AppCompatActivity() {
             toggleServer()
         }
         
-        // Check if launched from boot - if so, we know permissions are granted
+        // Check if launched from boot or camera activation
         val fromBoot = intent.getBooleanExtra("FROM_BOOT", false)
+        val fromCameraActivation = intent.getBooleanExtra("FROM_CAMERA_ACTIVATION", false)
+        
         if (fromBoot) {
             Log.i(TAG, "============================================")
             Log.i(TAG, "BOOT LAUNCH DETECTED - FROM_BOOT=true")
@@ -323,6 +325,30 @@ class MainActivity : AppCompatActivity() {
             }, 2000) // 2 second delay to ensure activity is fully rendered
             
             Log.i(TAG, "Handler postDelayed() called - will fire in 2 seconds")
+        } else if (fromCameraActivation) {
+            // Launched by camera activation from web UI
+            Log.i(TAG, "============================================")
+            Log.i(TAG, "CAMERA ACTIVATION LAUNCH DETECTED - FROM_CAMERA_ACTIVATION=true")
+            Log.i(TAG, "MainActivity launched to add app to recent tasks for camera access")
+            Log.i(TAG, "============================================")
+            
+            // Check permissions - they should already be granted since service was running
+            hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+            hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            }
+            allPermissionsGranted = hasCameraPermission && hasNotificationPermission
+            
+            // Bind to service if not already bound
+            if (allPermissionsGranted && !isServiceBound) {
+                Log.i(TAG, "Binding to CameraService to display camera state")
+                startCameraServiceForPreview()
+            }
+            
+            // Show a toast to inform user
+            Toast.makeText(this, "Camera activation in progress. App is now in recent tasks, allowing camera access.", Toast.LENGTH_LONG).show()
         } else {
             // Normal app launch - check and request permissions
             Log.d(TAG, "Normal MainActivity launch - checking permissions")
