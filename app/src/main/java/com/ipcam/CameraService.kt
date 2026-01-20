@@ -1837,22 +1837,27 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.i(TAG, "Camera requires app to be in recent tasks per Android policy")
             
             val activityIntent = Intent(this, MainActivity::class.java).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                // Use CLEAR_TASK + NEW_TASK to force MainActivity as root task
+                // This is more reliable for adding app to recent tasks
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
                 putExtra("FROM_CAMERA_ACTIVATION", true)
             }
             
             try {
                 startActivity(activityIntent)
-                Log.i(TAG, "MainActivity launch initiated - app will be added to recent tasks")
+                Log.i(TAG, "MainActivity launch initiated with CLEAR_TASK flag")
+                Log.i(TAG, "This forces MainActivity to be root task, ensuring recent tasks entry")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to launch MainActivity for camera activation: ${e.message}", e)
                 // Continue anyway - camera will fail but we'll log the reason
             }
             
             // Delay camera start to give MainActivity time to launch and register in recent tasks
+            // Increased delay to 5 seconds for more reliability
             serviceScope.launch {
-                delay(3000) // 3 seconds to ensure MainActivity is fully visible
-                Log.i(TAG, "Proceeding with camera initialization after MainActivity launch")
+                delay(5000) // 5 seconds to ensure MainActivity is fully visible and in recent tasks
+                Log.i(TAG, "5-second delay complete - proceeding with camera initialization")
+                Log.i(TAG, "MainActivity should now be in recent tasks, camera access should be allowed")
                 startCamera()
             }
         } else {
