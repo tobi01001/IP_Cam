@@ -40,6 +40,7 @@ class HttpServer(
     companion object {
         private const val TAG = "HttpServer"
         private const val JPEG_QUALITY_STREAM = 75
+        private const val CAMERA_ACTIVATION_DELAY_MS = 2000L // Delay to allow camera initialization
     }
     
     /**
@@ -1405,7 +1406,7 @@ class HttpServer(
                                     btn.style.backgroundColor = '#4CAF50';
                                     btn.textContent = '✓ Camera Activated';
                                     
-                                    // Hide camera status after 3 seconds
+                                    // Refresh camera status after 3 seconds to hide the activation banner
                                     setTimeout(() => {
                                         checkCameraStatus();
                                     }, 3000);
@@ -1452,8 +1453,9 @@ class HttpServer(
                     
                     // Check camera status on page load
                     checkCameraStatus();
-                    // Recheck every 5 seconds to catch camera activation
-                    setInterval(checkCameraStatus, 5000);
+                    // Recheck every 10 seconds to catch camera activation
+                    // (Camera activation is typically a one-time event, so less frequent polling is acceptable)
+                    setInterval(checkCameraStatus, 10000);
                 </script>
             </body>
             </html>
@@ -1468,7 +1470,7 @@ class HttpServer(
             Log.i(TAG, "First snapshot request received - auto-activating camera")
             cameraService.activateCamera()
             // Give camera a moment to initialize
-            delay(2000)
+            delay(CAMERA_ACTIVATION_DELAY_MS)
         }
         
         val jpegBytes = cameraService.getLastFrameJpegBytes()
@@ -1490,7 +1492,7 @@ class HttpServer(
             Log.i(TAG, "First stream request received - auto-activating camera")
             cameraService.activateCamera()
             // Give camera a moment to initialize
-            delay(2000)
+            delay(CAMERA_ACTIVATION_DELAY_MS)
         }
         
         // Check if streaming is allowed based on battery status
