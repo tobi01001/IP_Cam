@@ -106,7 +106,7 @@ class BootReceiver : BroadcastReceiver() {
             // - Server auto-starts at boot (accessible remotely)
             // - Camera enables on-demand (via web, notification, or first client)
             // - No manual app opening required for remote devices
-            if (Build.VERSION.SDK_INT >= 34) { // Android 14+ (UPSIDE_DOWN_CAKE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) { // Android 14+
                 Log.i(TAG, "============================================")
                 Log.i(TAG, "Android 14+: Starting service without MainActivity")
                 Log.i(TAG, "Camera will remain inactive until enabled via:")
