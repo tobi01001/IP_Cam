@@ -100,17 +100,21 @@ class BootReceiver : BroadcastReceiver() {
             // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
             // MainActivity will delay starting the service until it's fully visible
             if (Build.VERSION.SDK_INT >= 34) { // Android 14 (UPSIDE_DOWN_CAKE)
-                Log.d(TAG, "Android 14+: Starting MainActivity for camera eligibility")
+                Log.i(TAG, "============================================")
+                Log.i(TAG, "Android 14+: Attempting to start MainActivity")
+                Log.i(TAG, "============================================")
                 val activityIntent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                     putExtra("FROM_BOOT", true) // Flag to indicate boot start
                 }
                 try {
+                    Log.i(TAG, "Calling startActivity() with FROM_BOOT=true")
                     context.startActivity(activityIntent)
-                    Log.i(TAG, "MainActivity started - will remain open for camera access")
-                    Log.i(TAG, "MainActivity will start service after it becomes fully visible")
+                    Log.i(TAG, "startActivity() call completed successfully")
+                    Log.i(TAG, "MainActivity should now launch and start service after 2 seconds")
+                    Log.i(TAG, "Look for 'MainActivity' logs to confirm activity started")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start MainActivity at boot: ${e.message}", e)
+                    Log.e(TAG, "EXCEPTION starting MainActivity: ${e.javaClass.simpleName}: ${e.message}", e)
                 }
             } else {
                 // Android 11-13: Start service directly (no recent tasks requirement)

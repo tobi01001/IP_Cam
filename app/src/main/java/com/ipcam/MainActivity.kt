@@ -232,6 +232,13 @@ class MainActivity : AppCompatActivity() {
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        Log.i(TAG, "============================================")
+        Log.i(TAG, "MainActivity.onCreate() called")
+        Log.i(TAG, "Intent extras: ${intent.extras?.keySet()?.joinToString()}")
+        Log.i(TAG, "FROM_BOOT flag: ${intent.getBooleanExtra("FROM_BOOT", false)}")
+        Log.i(TAG, "============================================")
+        
         setContentView(R.layout.activity_main)
         
         previewImageView = findViewById(R.id.previewImageView)
@@ -289,7 +296,10 @@ class MainActivity : AppCompatActivity() {
         // Check if launched from boot - if so, we know permissions are granted
         val fromBoot = intent.getBooleanExtra("FROM_BOOT", false)
         if (fromBoot) {
-            Log.d(TAG, "MainActivity launched from boot - permissions already validated")
+            Log.i(TAG, "============================================")
+            Log.i(TAG, "BOOT LAUNCH DETECTED - FROM_BOOT=true")
+            Log.i(TAG, "Permissions already validated by BootReceiver")
+            Log.i(TAG, "============================================")
             // Set permission flags to true since BootReceiver already checked
             hasCameraPermission = true
             hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -299,14 +309,20 @@ class MainActivity : AppCompatActivity() {
             }
             allPermissionsGranted = hasCameraPermission && hasNotificationPermission
             
+            Log.i(TAG, "Scheduling service start in 2 seconds to allow activity to become fully visible")
+            
             // CRITICAL: On boot, we must wait for MainActivity to be FULLY visible before starting service
             // Android 14+ requires the activity to be actively displayed for camera access
             // Post with delay to ensure activity is completely initialized and visible
             Handler(Looper.getMainLooper()).postDelayed({
-                Log.d(TAG, "Boot launch: MainActivity now fully visible, starting service")
+                Log.i(TAG, "============================================")
+                Log.i(TAG, "Boot delay complete - starting camera service NOW")
+                Log.i(TAG, "============================================")
                 startCameraServiceForPreview()
                 checkAutoStart()
             }, 2000) // 2 second delay to ensure activity is fully rendered
+            
+            Log.i(TAG, "Handler postDelayed() called - will fire in 2 seconds")
         } else {
             // Normal app launch - check and request permissions
             Log.d(TAG, "Normal MainActivity launch - checking permissions")
