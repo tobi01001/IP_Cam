@@ -1811,7 +1811,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Manually activate camera when initialization was deferred (Android 14+ boot scenario)
      * Returns true if camera activation was triggered, false if already active or failed
      */
-    fun activateCamera(): Boolean {
+    override fun activateCamera(): Boolean {
         if (cameraActivated) {
             Log.d(TAG, "Camera already activated")
             return false
@@ -1839,14 +1839,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Check if camera is currently active
      */
-    fun isCameraActive(): Boolean {
+    override fun isCameraActive(): Boolean {
         return cameraProvider != null && !cameraInitDeferred
     }
     
     /**
      * Check if camera activation is deferred (waiting for manual trigger)
      */
-    fun isCameraDeferred(): Boolean {
+    override fun isCameraDeferred(): Boolean {
         return cameraInitDeferred
     }
     
