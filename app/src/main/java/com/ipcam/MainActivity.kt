@@ -234,6 +234,23 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // Allow app to show over lock screen and access camera even when device is locked
+        // This is crucial for surveillance devices that need camera access at boot
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+            // Optionally dismiss keyguard for immediate access
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as? android.app.KeyguardManager
+            keyguardManager?.requestDismissKeyguard(this, null)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            )
+        }
+        
         Log.i(TAG, "============================================")
         Log.i(TAG, "MainActivity.onCreate() called")
         Log.i(TAG, "Intent extras: ${intent.extras?.keySet()?.joinToString()}")
@@ -509,8 +526,10 @@ class MainActivity : AppCompatActivity() {
             .setMessage("For optimal camera access on Android 14+, this app should be set as your device's home launcher.\n\n" +
                         "Benefits:\n" +
                         "• Reliable camera access at boot\n" +
+                        "• Works even with lock screen enabled\n" +
                         "• Prevents accidental app closure\n" +
                         "• Optimized for dedicated surveillance devices\n\n" +
+                        "Note: The app will show over the lock screen to enable camera access immediately after boot.\n\n" +
                         "Press HOME button and select 'IP Camera' as default launcher.")
             .setPositiveButton("Set Now") { _, _ ->
                 // Mark as prompted
