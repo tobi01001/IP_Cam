@@ -1808,6 +1808,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Manually enable camera on-demand
      * Used for remote activation via web interface or notification action
      * Returns true if camera activation was successful or already active
+     * 
+     * NOTE: This method can be called from any thread (e.g., HTTP thread),
+     * but camera operations MUST run on the main thread.
      */
     override fun enableCamera(): Boolean {
         Log.d(TAG, "enableCamera() called - checking camera state...")
@@ -1828,16 +1831,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Start camera if not already initialized
         if (cameraProvider == null) {
             Log.d(TAG, "Camera provider not initialized, starting camera...")
-            startCamera()
+            startCamera() // startCamera() already handles main thread execution
             // Update notification to remove "Enable Camera" button (if present)
             updateNotification()
             return true // Assume success, actual binding happens asynchronously
         }
         
         // Camera provider exists but camera not bound - rebind
+        // CRITICAL: bindCamera() MUST run on main thread (CameraX requirement)
         if (cameraProvider != null && camera == null) {
             Log.d(TAG, "Camera provider exists but camera not bound, rebinding...")
-            bindCamera()
+            
+            // Execute on main thread to avoid "Not in application's main thread" error
+            ContextCompat.getMainExecutor(this).execute {
+                bindCamera()
+            }
+            
             // Update notification to remove "Enable Camera" button (if present)
             updateNotification()
             return true
