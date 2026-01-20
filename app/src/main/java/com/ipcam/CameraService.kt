@@ -500,7 +500,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Only auto-start camera if NOT on Android 14+ OR if started from MainActivity
             // On Android 14+ boot, camera remains inactive for remote/on-demand activation
-            if (Build.VERSION.SDK_INT < 34) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 // Android 11-13: Auto-start camera normally
                 Log.d(TAG, "Android 11-13: Auto-starting camera")
                 startCamera()
@@ -568,7 +568,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Auto-start camera if:
             // - Android 11-13 (always), OR
             // - Android 14+ with ENABLE_CAMERA flag (from MainActivity)
-            if (Build.VERSION.SDK_INT < 34 || enableCamera) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE || enableCamera) {
                 Log.d(TAG, "Starting camera - Android < 14 or ENABLE_CAMERA flag set")
                 startCamera()
             } else {
@@ -739,7 +739,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
         
         // On Android 14+, add "Enable Camera" action if camera is not active
-        if (Build.VERSION.SDK_INT >= 34 && !isCameraActive()) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && !isCameraActive()) {
             val enableCameraIntent = Intent(this, CameraService::class.java).apply {
                 action = "ENABLE_CAMERA_ACTION"
             }

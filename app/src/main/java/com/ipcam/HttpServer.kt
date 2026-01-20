@@ -1449,7 +1449,7 @@ class HttpServer(
             call.respondBytes(jpegBytes, ContentType.Image.JPEG)
         } else {
             call.respondText(
-                "No frame available. Camera may still be initializing - try again in a moment.",
+                "No frame available. Camera may still be initializing - try again in 2-3 seconds.",
                 ContentType.Text.Plain,
                 HttpStatusCode.ServiceUnavailable
             )

@@ -359,7 +359,7 @@ class MainActivity : AppCompatActivity() {
             val intent = Intent(this, CameraService::class.java)
             // On Android 14+, explicitly request camera activation since we're launched from MainActivity
             // This ensures camera starts when user opens the app normally
-            if (Build.VERSION.SDK_INT >= 34) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 intent.putExtra("ENABLE_CAMERA", true)
             }
             startAndBindService(intent)
@@ -367,7 +367,7 @@ class MainActivity : AppCompatActivity() {
             Log.d("MainActivity", "Camera service already bound, skipping start")
             // If service is bound but camera might be inactive (Android 14+ boot scenario),
             // explicitly enable it now that MainActivity is active
-            if (Build.VERSION.SDK_INT >= 34 && cameraService?.isCameraActive() == false) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE && cameraService?.isCameraActive() == false) {
                 Log.d("MainActivity", "Service bound but camera inactive - enabling camera now")
                 cameraService?.enableCamera()
             }
