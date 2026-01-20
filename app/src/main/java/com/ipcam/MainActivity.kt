@@ -74,6 +74,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
         private const val PREF_BATTERY_DIALOG_SHOWN = "batteryDialogShown"
+        private const val PREF_FIRST_LAUNCH_DONE = "firstLaunchDone"
         private const val TAG = "MainActivity"
     }
     
