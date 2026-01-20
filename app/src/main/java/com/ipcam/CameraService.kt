@@ -536,6 +536,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
         
+        // Handle "Enable Camera" action from notification
+        if (intent?.action == "ENABLE_CAMERA_ACTION") {
+            Log.d(TAG, "Enable Camera action triggered from notification")
+            enableCamera()
+            // Update notification to remove the action button
+            updateNotification()
+            return START_STICKY
+        }
+        
         // Check if camera should be enabled (from MainActivity)
         val enableCamera = intent?.getBooleanExtra("ENABLE_CAMERA", false) ?: false
         
@@ -720,7 +729,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Use device name in notification title if set, otherwise use default
         val title = if (deviceName.isNotEmpty()) deviceName else "IP Camera Server"
         
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
@@ -728,7 +737,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .setOngoing(true)  // Make notification persistent
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)  // Increase priority
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .build()
+        
+        // On Android 14+, add "Enable Camera" action if camera is not active
+        if (Build.VERSION.SDK_INT >= 34 && !isCameraActive()) {
+            val enableCameraIntent = Intent(this, CameraService::class.java).apply {
+                action = "ENABLE_CAMERA_ACTION"
+            }
+            val enableCameraPendingIntent = PendingIntent.getService(
+                this, 1, enableCameraIntent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+            )
+            builder.addAction(
+                android.R.drawable.ic_menu_camera,
+                "Enable Camera",
+                enableCameraPendingIntent
+            )
+        }
+        
+        return builder.build()
     }
     
     private fun startServer() {
@@ -798,8 +824,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Update the foreground notification with new text
+     * If no text provided, uses default notification text
      */
-    private fun updateNotification(contentText: String) {
+    private fun updateNotification(contentText: String? = null) {
         // On Android 13+, check if POST_NOTIFICATIONS permission is granted
         if (!hasNotificationPermission()) {
             Log.w(TAG, "Cannot update notification: POST_NOTIFICATIONS permission not granted")
@@ -1802,6 +1829,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         if (cameraProvider == null) {
             Log.d(TAG, "Camera provider not initialized, starting camera...")
             startCamera()
+            // Update notification to remove "Enable Camera" button (if present)
+            updateNotification()
             return true // Assume success, actual binding happens asynchronously
         }
         
@@ -1809,6 +1838,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         if (cameraProvider != null && camera == null) {
             Log.d(TAG, "Camera provider exists but camera not bound, rebinding...")
             bindCamera()
+            // Update notification to remove "Enable Camera" button (if present)
+            updateNotification()
             return true
         }
         

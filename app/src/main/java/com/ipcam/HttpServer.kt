@@ -294,6 +294,10 @@ class HttpServer(
                         <strong>Server Status:</strong> Running (Ktor) | 
                         <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
                     </div>
+                    <div id="cameraStatusDisplay" class="battery-status" style="display: none;">
+                        <strong>Camera Status:</strong> <span id="cameraStatusText">Inactive</span>
+                        <button onclick="enableCameraRemote()" style="margin-left: 10px; background-color: #ff9800;">Enable Camera</button>
+                    </div>
                     <div id="batteryStatusDisplay" class="battery-status">
                         <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
                         <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
@@ -434,8 +438,12 @@ class HttpServer(
                         Switches between front and back camera
                     </div>
                     <div class="endpoint">
+                        <strong>Enable Camera:</strong> <a href="/enableCamera" target="_blank"><code>GET /enableCamera</code></a><br>
+                        Activates camera on-demand (useful for Android 14+ remote boot scenarios)
+                    </div>
+                    <div class="endpoint">
                         <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
-                        Returns server status as JSON
+                        Returns server status as JSON (includes <code>cameraActive</code> field)
                     </div>
                     <div class="endpoint">
                         <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
@@ -1008,6 +1016,40 @@ class HttpServer(
                     refreshConnections();
                     updateFlashlightButton();
                     
+                    // Function to enable camera remotely
+                    function enableCameraRemote() {
+                        document.getElementById('formatStatus').textContent = 'Enabling camera...';
+                        fetch('/enableCamera')
+                            .then(response => response.json())
+                            .then(data => {
+                                document.getElementById('formatStatus').textContent = data.message;
+                                // Hide the enable camera button after successful request
+                                if (data.status === 'ok') {
+                                    setTimeout(() => {
+                                        updateCameraStatus(true);
+                                    }, 2000); // Check status after 2 seconds
+                                }
+                            })
+                            .catch(error => {
+                                document.getElementById('formatStatus').textContent = 'Error enabling camera: ' + error;
+                            });
+                    }
+                    
+                    // Function to update camera status display
+                    function updateCameraStatus(cameraActive) {
+                        const statusDiv = document.getElementById('cameraStatusDisplay');
+                        const statusText = document.getElementById('cameraStatusText');
+                        
+                        if (cameraActive) {
+                            statusText.textContent = 'Active';
+                            statusDiv.style.display = 'none'; // Hide the warning when camera is active
+                        } else {
+                            statusText.textContent = 'Inactive - Enable for streaming';
+                            statusDiv.style.display = 'block'; // Show warning when camera is inactive
+                            statusDiv.className = 'battery-status critical'; // Use critical styling
+                        }
+                    }
+                    
                     // Load max connections and battery status from server status
                     fetch('/status')
                         .then(response => response.json())
@@ -1024,6 +1066,11 @@ class HttpServer(
                             // Initialize battery status display
                             if (data.batteryMode && data.streamingAllowed !== undefined) {
                                 updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed);
+                            }
+                            
+                            // Initialize camera status display
+                            if (data.cameraActive !== undefined) {
+                                updateCameraStatus(data.cameraActive);
                             }
                         });
                     
