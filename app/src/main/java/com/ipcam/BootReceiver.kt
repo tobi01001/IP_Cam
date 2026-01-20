@@ -95,39 +95,48 @@ class BootReceiver : BroadcastReceiver() {
             
             Log.i(TAG, "All permissions granted, proceeding with auto-start")
             
-            // On Android 14+ (API 34+), start MainActivity to keep app in recent tasks
-            // This enables camera access - Android requires app be in recent tasks for camera
-            // MainActivity STAYS OPEN since this is the primary interface for the IP camera device
-            // MainActivity will delay starting the service until it's fully visible
-            if (Build.VERSION.SDK_INT >= 34) { // Android 14 (UPSIDE_DOWN_CAKE)
-                Log.i(TAG, "============================================")
-                Log.i(TAG, "Android 14+: Attempting to start MainActivity")
-                Log.i(TAG, "============================================")
-                val activityIntent = Intent(context, MainActivity::class.java).apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                    putExtra("FROM_BOOT", true) // Flag to indicate boot start
-                }
-                try {
-                    Log.i(TAG, "Calling startActivity() with FROM_BOOT=true")
-                    context.startActivity(activityIntent)
-                    Log.i(TAG, "startActivity() call completed successfully")
-                    Log.i(TAG, "MainActivity should now launch and start service after 2 seconds")
-                    Log.i(TAG, "Look for 'MainActivity' logs to confirm activity started")
-                } catch (e: Exception) {
-                    Log.e(TAG, "EXCEPTION starting MainActivity: ${e.javaClass.simpleName}: ${e.message}", e)
-                }
+            // Android 14+ Background Activity Launch Restriction:
+            // Starting with Android 14, the system silently blocks startActivity() calls from
+            // boot broadcasts. This is a privacy/security restriction with no workarounds.
+            // 
+            // Solution: Hybrid Approach (Service-First with Remote Activation)
+            // - Start CameraService at boot WITHOUT camera initialization
+            // - Camera remains inactive until user triggers it via web interface
+            // - User clicks "Activate Camera" button on web UI to initialize camera remotely
+            // - Once activated, camera persists through service lifecycle
+            //
+            // This approach:
+            // ✓ Complies with Android 14+ restrictions (no activity launch)
+            // ✓ Service auto-starts reliably at boot
+            // ✓ Camera accessible remotely without physical device access
+            // ✓ Works on all Android versions (11-15+)
+            
+            Log.i(TAG, "============================================")
+            Log.i(TAG, "Starting CameraService at boot")
+            if (Build.VERSION.SDK_INT >= 34) {
+                Log.i(TAG, "Android 14+: Service starts WITHOUT camera")
+                Log.i(TAG, "Camera will activate when first client connects OR via /activateCamera endpoint")
             } else {
-                // Android 11-13: Start service directly (no recent tasks requirement)
-                Log.i(TAG, "Android 11-13: Starting service directly")
-                val serviceIntent = Intent(context, CameraService::class.java)
-                serviceIntent.putExtra(CameraService.EXTRA_START_SERVER, true)
-                
-                try {
-                    ContextCompat.startForegroundService(context, serviceIntent)
-                    Log.i(TAG, "Camera service started successfully on boot")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to start service on boot: ${e.message}", e)
+                Log.i(TAG, "Android 11-13: Service starts WITH camera auto-init")
+            }
+            Log.i(TAG, "============================================")
+            
+            val serviceIntent = Intent(context, CameraService::class.java).apply {
+                putExtra(CameraService.EXTRA_START_SERVER, true)
+                // On Android 14+, defer camera initialization
+                // Service will show notification with instructions for remote activation
+                putExtra(CameraService.EXTRA_DEFER_CAMERA_INIT, Build.VERSION.SDK_INT >= 34)
+            }
+            
+            try {
+                ContextCompat.startForegroundService(context, serviceIntent)
+                Log.i(TAG, "CameraService started successfully on boot")
+                if (Build.VERSION.SDK_INT >= 34) {
+                    Log.i(TAG, "Connect to web interface to activate camera remotely")
+                    Log.i(TAG, "Visit http://DEVICE_IP:8080 and click 'Activate Camera'")
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start CameraService on boot: ${e.message}", e)
             }
         } else {
             Log.d(TAG, "Ignoring unhandled broadcast action: $action")

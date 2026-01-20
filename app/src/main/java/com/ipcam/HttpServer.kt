@@ -90,6 +90,7 @@ class HttpServer(
                 // Camera control
                 get("/switch") { serveSwitch() }
                 get("/toggleFlashlight") { serveToggleFlashlight() }
+                get("/activateCamera") { serveActivateCamera() }
                 
                 // Status and monitoring
                 get("/status") { serveStatus() }
@@ -1387,6 +1388,14 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
+        // Auto-activate camera if deferred (Android 14+ boot scenario)
+        if (cameraService.isCameraDeferred()) {
+            Log.i(TAG, "First snapshot request received - auto-activating camera")
+            cameraService.activateCamera()
+            // Give camera a moment to initialize
+            delay(2000)
+        }
+        
         val jpegBytes = cameraService.getLastFrameJpegBytes()
         
         if (jpegBytes != null) {
@@ -1401,6 +1410,14 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
+        // Auto-activate camera if deferred (Android 14+ boot scenario)
+        if (cameraService.isCameraDeferred()) {
+            Log.i(TAG, "First stream request received - auto-activating camera")
+            cameraService.activateCamera()
+            // Give camera a moment to initialize
+            delay(2000)
+        }
+        
         // Check if streaming is allowed based on battery status
         if (!cameraService.isStreamingAllowed()) {
             // Serve battery-limited info page instead of stream
@@ -1561,8 +1578,10 @@ class HttpServer(
         val batteryMode = cameraService.getBatteryMode()
         val streamingAllowed = cameraService.isStreamingAllowed()
         val deviceName = cameraService.getDeviceName()
+        val cameraActive = cameraService.isCameraActive()
+        val cameraDeferred = cameraService.isCameraDeferred()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/activateCamera\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
         
         val json = """
             {
@@ -1570,6 +1589,8 @@ class HttpServer(
                 "server": "Ktor",
                 "deviceName": "$deviceName",
                 "camera": "$cameraName",
+                "cameraActive": $cameraActive,
+                "cameraDeferred": $cameraDeferred,
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
@@ -2049,6 +2070,41 @@ class HttpServer(
             """{"status":"ok","message":"Flashlight ${if (newState) "enabled" else "disabled"}","flashlight":$newState}""",
             ContentType.Application.Json
         )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
+        // Check if camera is deferred (waiting for activation)
+        if (!cameraService.isCameraDeferred()) {
+            // Camera is already active or was never deferred
+            if (cameraService.isCameraActive()) {
+                call.respondText(
+                    """{"status":"ok","message":"Camera already active","cameraActive":true,"wasDeferred":false}""",
+                    ContentType.Application.Json
+                )
+            } else {
+                call.respondText(
+                    """{"status":"error","message":"Camera initialization was not deferred. Camera may be starting or failed.","cameraActive":false}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.BadRequest
+                )
+            }
+            return
+        }
+        
+        // Attempt to activate camera
+        val activated = cameraService.activateCamera()
+        if (activated) {
+            call.respondText(
+                """{"status":"ok","message":"Camera activation initiated successfully. Camera should be ready in 2-3 seconds.","cameraActive":true,"activated":true}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to activate camera. Camera may already be active or initialization failed.","cameraActive":false,"activated":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveRestartServer() {

@@ -17,6 +17,11 @@ interface CameraServiceInterface {
     fun isFlashlightAvailable(): Boolean
     fun isFlashlightEnabled(): Boolean
     
+    // Camera activation (for deferred initialization scenario)
+    fun activateCamera(): Boolean
+    fun isCameraActive(): Boolean
+    fun isCameraDeferred(): Boolean
+    
     // Frame operations
     fun getLastFrameJpegBytes(): ByteArray?
     

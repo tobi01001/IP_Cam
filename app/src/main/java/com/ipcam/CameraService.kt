@@ -185,6 +185,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Track if service is stopping due to missing permissions or other fatal errors
     @Volatile private var isStopping = false
     
+    // Track if camera initialization is deferred (Android 14+ boot scenario)
+    // When true, service runs but camera is not initialized until explicitly activated
+    @Volatile private var cameraInitDeferred = false
+    @Volatile private var cameraActivated = false // True once camera has been activated
+    
     // ATOMIC FRAME UPDATES: Single source of truth for frame data
     // AtomicReference ensures the UI and web stream always display the same frame
     // by atomically updating bitmap, JPEG bytes, and timestamp together.
@@ -374,6 +379,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
          const val EXTRA_START_SERVER = "start_server"
+         const val EXTRA_DEFER_CAMERA_INIT = "defer_camera_init"
          // Thread pool settings for NanoHTTPD
          // Maximum parallel connections: HTTP_MAX_POOL_SIZE (32 concurrent connections)
          // Separate pools for request handlers and long-lived streaming connections
@@ -487,13 +493,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
+        // ANDROID 14+ BOOT RESTRICTION HANDLING:
+        // When service starts from boot on Android 14+, we defer camera initialization
+        // because Android silently blocks activity launches from boot broadcasts.
+        // The camera will be initialized either:
+        // 1. When user visits web interface (first stream/snapshot request auto-activates)
+        // 2. Via explicit /activateCamera endpoint
+        // 3. On Android 11-13, camera starts immediately as before
+        //
+        // This allows the service to start reliably at boot while maintaining
+        // remote camera activation capability for Android 14+.
+        cameraInitDeferred = false // Will be set by onStartCommand if needed
+        
         // Delay camera start to ensure foreground service is fully established
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
-        // Increased delay from 500ms to 1500ms for better reliability
+        // Note: This will be skipped if cameraInitDeferred is set to true
         serviceScope.launch {
             delay(1500) // Longer delay to ensure service permissions are fully initialized
-            startCamera()
+            // Check if camera initialization was deferred
+            if (!cameraInitDeferred) {
+                startCamera()
+            } else {
+                Log.i(TAG, "Camera initialization deferred - waiting for remote activation")
+                Log.i(TAG, "Camera will auto-activate on first stream/snapshot request")
+                Log.i(TAG, "Or manually activate via /activateCamera endpoint")
+            }
         }
         
         // Auto-start RTSP if it was enabled in settings
@@ -513,18 +538,27 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
         
+        // Check if camera initialization should be deferred (Android 14+ boot scenario)
+        val deferCameraInit = intent?.getBooleanExtra(EXTRA_DEFER_CAMERA_INIT, false) ?: false
+        if (deferCameraInit && !cameraActivated) {
+            cameraInitDeferred = true
+            Log.i(TAG, "Camera initialization deferred per intent flag")
+            Log.i(TAG, "Service running but camera not initialized")
+            Log.i(TAG, "Camera will activate on first client connection or via /activateCamera")
+        }
+        
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
             startServer()
         }
         
-        // Try to start camera if not already bound
+        // Try to start camera if not already bound AND not deferred
         // This handles cases where:
         // 1. Service started before MainActivity granted permission
         // 2. Service restarted after being killed
         // 3. Permission was granted after service onCreate
-        if (cameraProvider == null) {
+        if (cameraProvider == null && !cameraInitDeferred) {
             startCamera()
         }
         
@@ -1772,6 +1806,49 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getCurrentCamera(): CameraSelector = currentCamera
+    
+    /**
+     * Manually activate camera when initialization was deferred (Android 14+ boot scenario)
+     * Returns true if camera activation was triggered, false if already active or failed
+     */
+    fun activateCamera(): Boolean {
+        if (cameraActivated) {
+            Log.d(TAG, "Camera already activated")
+            return false
+        }
+        
+        if (!cameraInitDeferred) {
+            Log.d(TAG, "Camera initialization was not deferred, already running")
+            return false
+        }
+        
+        Log.i(TAG, "============================================")
+        Log.i(TAG, "Manual camera activation triggered")
+        Log.i(TAG, "============================================")
+        
+        cameraActivated = true
+        cameraInitDeferred = false
+        
+        // Start camera immediately
+        startCamera()
+        
+        Log.i(TAG, "Camera activation initiated successfully")
+        return true
+    }
+    
+    /**
+     * Check if camera is currently active
+     */
+    fun isCameraActive(): Boolean {
+        return cameraProvider != null && !cameraInitDeferred
+    }
+    
+    /**
+     * Check if camera activation is deferred (waiting for manual trigger)
+     */
+    fun isCameraDeferred(): Boolean {
+        return cameraInitDeferred
+    }
     
     override fun getSupportedResolutions(): List<Size> {
         return getSupportedResolutions(currentCamera)
