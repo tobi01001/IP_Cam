@@ -185,11 +185,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Track if service is stopping due to missing permissions or other fatal errors
     @Volatile private var isStopping = false
     
-    // Track if camera initialization is deferred (Android 14+ boot scenario)
-    // When true, service runs but camera is not initialized until explicitly activated
-    @Volatile private var cameraInitDeferred = false
-    @Volatile private var cameraActivated = false // True once camera has been activated
-    
     // ATOMIC FRAME UPDATES: Single source of truth for frame data
     // AtomicReference ensures the UI and web stream always display the same frame
     // by atomically updating bitmap, JPEG bytes, and timestamp together.
@@ -379,7 +374,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
          const val EXTRA_START_SERVER = "start_server"
-         const val EXTRA_DEFER_CAMERA_INIT = "defer_camera_init"
          // Thread pool settings for NanoHTTPD
          // Maximum parallel connections: HTTP_MAX_POOL_SIZE (32 concurrent connections)
          // Separate pools for request handlers and long-lived streaming connections
@@ -502,23 +496,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // 3. On Android 11-13, camera starts immediately as before
         //
         // This allows the service to start reliably at boot while maintaining
-        // remote camera activation capability for Android 14+.
-        cameraInitDeferred = false // Will be set by onStartCommand if needed
-        
         // Delay camera start to ensure foreground service is fully established
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
-        // Note: This will be skipped if cameraInitDeferred is set to true
         serviceScope.launch {
             delay(1500) // Longer delay to ensure service permissions are fully initialized
-            // Check if camera initialization was deferred
-            if (!cameraInitDeferred) {
-                startCamera()
-            } else {
-                Log.i(TAG, "Camera initialization deferred - waiting for remote activation")
-                Log.i(TAG, "Camera will auto-activate on first stream/snapshot request")
-                Log.i(TAG, "Or manually activate via /activateCamera endpoint")
-            }
+            startCamera()
         }
         
         // Auto-start RTSP if it was enabled in settings
@@ -538,27 +521,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         acquireLocks()
         
-        // Check if camera initialization should be deferred (Android 14+ boot scenario)
-        val deferCameraInit = intent?.getBooleanExtra(EXTRA_DEFER_CAMERA_INIT, false) ?: false
-        if (deferCameraInit && !cameraActivated) {
-            cameraInitDeferred = true
-            Log.i(TAG, "Camera initialization deferred per intent flag")
-            Log.i(TAG, "Service running but camera not initialized")
-            Log.i(TAG, "Camera will activate on first client connection or via /activateCamera")
-        }
-        
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
             startServer()
         }
         
-        // Try to start camera if not already bound AND not deferred
+        // Try to start camera if not already bound
         // This handles cases where:
         // 1. Service started before MainActivity granted permission
         // 2. Service restarted after being killed
         // 3. Permission was granted after service onCreate
-        if (cameraProvider == null && !cameraInitDeferred) {
+        if (cameraProvider == null) {
             startCamera()
         }
         
@@ -1806,86 +1780,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getCurrentCamera(): CameraSelector = currentCamera
-    
-    /**
-     * Manually activate camera when initialization was deferred (Android 14+ boot scenario)
-     * 
-     * On Android 14+, camera access requires the app to be in "recent tasks".
-     * This method launches MainActivity to satisfy this requirement, then starts the camera.
-     * 
-     * Returns true if camera activation was triggered, false if already active or failed
-     */
-    override fun activateCamera(): Boolean {
-        if (cameraActivated) {
-            Log.d(TAG, "Camera already activated")
-            return false
-        }
-        
-        if (!cameraInitDeferred) {
-            Log.d(TAG, "Camera initialization was not deferred, already running")
-            return false
-        }
-        
-        Log.i(TAG, "============================================")
-        Log.i(TAG, "Manual camera activation triggered")
-        Log.i(TAG, "============================================")
-        
-        // CRITICAL: On Android 14+, camera requires app to be in recent tasks
-        // Launch MainActivity to add app to recent tasks before starting camera
-        if (Build.VERSION.SDK_INT >= 34) {
-            Log.i(TAG, "Android 14+: Launching MainActivity to enable camera access")
-            Log.i(TAG, "Camera requires app to be in recent tasks per Android policy")
-            
-            val activityIntent = Intent(this, MainActivity::class.java).apply {
-                // Use CLEAR_TASK + NEW_TASK to force MainActivity as root task
-                // This is more reliable for adding app to recent tasks
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                putExtra("FROM_CAMERA_ACTIVATION", true)
-            }
-            
-            try {
-                startActivity(activityIntent)
-                Log.i(TAG, "MainActivity launch initiated with CLEAR_TASK flag")
-                Log.i(TAG, "This forces MainActivity to be root task, ensuring recent tasks entry")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch MainActivity for camera activation: ${e.message}", e)
-                // Continue anyway - camera will fail but we'll log the reason
-            }
-            
-            // Delay camera start to give MainActivity time to launch and register in recent tasks
-            // Increased delay to 5 seconds for more reliability
-            serviceScope.launch {
-                delay(5000) // 5 seconds to ensure MainActivity is fully visible and in recent tasks
-                Log.i(TAG, "5-second delay complete - proceeding with camera initialization")
-                Log.i(TAG, "MainActivity should now be in recent tasks, camera access should be allowed")
-                startCamera()
-            }
-        } else {
-            // Android 11-13: No recent tasks requirement, start camera immediately
-            Log.i(TAG, "Android 11-13: Starting camera directly (no recent tasks requirement)")
-            startCamera()
-        }
-        
-        cameraActivated = true
-        cameraInitDeferred = false
-        
-        Log.i(TAG, "Camera activation initiated successfully")
-        return true
-    }
-    
-    /**
-     * Check if camera is currently active
-     */
-    override fun isCameraActive(): Boolean {
-        return cameraProvider != null && !cameraInitDeferred
-    }
-    
-    /**
-     * Check if camera activation is deferred (waiting for manual trigger)
-     */
-    override fun isCameraDeferred(): Boolean {
-        return cameraInitDeferred
-    }
     
     override fun getSupportedResolutions(): List<Size> {
         return getSupportedResolutions(currentCamera)

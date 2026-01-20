@@ -40,7 +40,6 @@ class HttpServer(
     companion object {
         private const val TAG = "HttpServer"
         private const val JPEG_QUALITY_STREAM = 75
-        private const val CAMERA_ACTIVATION_DELAY_MS = 2000L // Delay to allow camera initialization
     }
     
     /**
@@ -91,7 +90,6 @@ class HttpServer(
                 // Camera control
                 get("/switch") { serveSwitch() }
                 get("/toggleFlashlight") { serveToggleFlashlight() }
-                get("/activateCamera") { serveActivateCamera() }
                 
                 // Status and monitoring
                 get("/status") { serveStatus() }
@@ -298,15 +296,6 @@ class HttpServer(
                     <div id="batteryStatusDisplay" class="battery-status">
                         <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
                         <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
-                    </div>
-                    <div id="cameraStatusDisplay" class="status-info" style="display: none; background-color: #fff3cd; border-left-color: #ffc107;">
-                        <strong>⚠️ Camera Not Active:</strong> <span id="cameraStatusText">Camera initialization deferred</span>
-                        <br>
-                        <button id="activateCameraBtn" onclick="activateCamera()" style="margin-top: 10px; background-color: #2196F3;">
-                            🎥 Activate Camera
-                        </button>
-                        <p class="note" style="margin: 5px 0 0 0;"><em><strong>Android 14+ Notice:</strong> Clicking this button will launch the IP_Cam app on your device to satisfy Android's "recent tasks" requirement for camera access. Please ensure device is accessible.</em></p>
-                        <p class="note" style="margin: 5px 0 0 0;"><em>Alternatively, camera will auto-activate when you start streaming.</em></p>
                     </div>
                     <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
                     <h2>Live Stream</h2>
@@ -1389,74 +1378,6 @@ class HttpServer(
                                     '<strong style="color: red;">Error:</strong> ' + error;
                             });
                     }
-                    
-                    // Camera activation functions
-                    function activateCamera() {
-                        const btn = document.getElementById('activateCameraBtn');
-                        const statusText = document.getElementById('cameraStatusText');
-                        
-                        btn.disabled = true;
-                        btn.textContent = '⏳ Activating...';
-                        statusText.textContent = 'Initializing camera... Please wait.';
-                        
-                        fetch('/activateCamera')
-                            .then(response => response.json())
-                            .then(data => {
-                                if (data.status === 'ok') {
-                                    statusText.textContent = data.message;
-                                    btn.style.backgroundColor = '#4CAF50';
-                                    btn.textContent = '✓ Camera Activated';
-                                    
-                                    // Refresh camera status after 3 seconds to hide the activation banner
-                                    setTimeout(() => {
-                                        checkCameraStatus();
-                                    }, 3000);
-                                } else {
-                                    statusText.textContent = 'Error: ' + data.message;
-                                    btn.disabled = false;
-                                    btn.textContent = '🎥 Activate Camera';
-                                }
-                            })
-                            .catch(error => {
-                                statusText.textContent = 'Error activating camera: ' + error;
-                                btn.disabled = false;
-                                btn.textContent = '🎥 Activate Camera';
-                            });
-                    }
-                    
-                    function checkCameraStatus() {
-                        fetch('/status')
-                            .then(response => response.json())
-                            .then(data => {
-                                const statusDisplay = document.getElementById('cameraStatusDisplay');
-                                const statusText = document.getElementById('cameraStatusText');
-                                
-                                if (data.cameraDeferred) {
-                                    // Camera is deferred - show activation UI
-                                    statusDisplay.style.display = 'block';
-                                    statusText.textContent = 'Camera initialization deferred (Android 14+ boot). Activate to start streaming.';
-                                } else if (data.cameraActive) {
-                                    // Camera is active - hide activation UI
-                                    statusDisplay.style.display = 'none';
-                                } else {
-                                    // Camera is not active but also not deferred (might be starting)
-                                    statusDisplay.style.display = 'block';
-                                    statusDisplay.style.backgroundColor = '#e3f2fd';
-                                    statusDisplay.style.borderLeftColor = '#2196F3';
-                                    statusText.textContent = 'Camera is initializing...';
-                                    document.getElementById('activateCameraBtn').style.display = 'none';
-                                }
-                            })
-                            .catch(error => {
-                                console.error('Failed to check camera status:', error);
-                            });
-                    }
-                    
-                    // Check camera status on page load
-                    checkCameraStatus();
-                    // Recheck every 10 seconds to catch camera activation
-                    // (Camera activation is typically a one-time event, so less frequent polling is acceptable)
-                    setInterval(checkCameraStatus, 10000);
                 </script>
             </body>
             </html>
@@ -1466,14 +1387,6 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
-        // Auto-activate camera if deferred (Android 14+ boot scenario)
-        if (cameraService.isCameraDeferred()) {
-            Log.i(TAG, "First snapshot request received - auto-activating camera")
-            cameraService.activateCamera()
-            // Give camera a moment to initialize
-            delay(CAMERA_ACTIVATION_DELAY_MS)
-        }
-        
         val jpegBytes = cameraService.getLastFrameJpegBytes()
         
         if (jpegBytes != null) {
@@ -1488,14 +1401,6 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
-        // Auto-activate camera if deferred (Android 14+ boot scenario)
-        if (cameraService.isCameraDeferred()) {
-            Log.i(TAG, "First stream request received - auto-activating camera")
-            cameraService.activateCamera()
-            // Give camera a moment to initialize
-            delay(CAMERA_ACTIVATION_DELAY_MS)
-        }
-        
         // Check if streaming is allowed based on battery status
         if (!cameraService.isStreamingAllowed()) {
             // Serve battery-limited info page instead of stream
@@ -1656,10 +1561,8 @@ class HttpServer(
         val batteryMode = cameraService.getBatteryMode()
         val streamingAllowed = cameraService.isStreamingAllowed()
         val deviceName = cameraService.getDeviceName()
-        val cameraActive = cameraService.isCameraActive()
-        val cameraDeferred = cameraService.isCameraDeferred()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/activateCamera\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
         
         val json = """
             {
@@ -1667,8 +1570,6 @@ class HttpServer(
                 "server": "Ktor",
                 "deviceName": "$deviceName",
                 "camera": "$cameraName",
-                "cameraActive": $cameraActive,
-                "cameraDeferred": $cameraDeferred,
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
@@ -2148,41 +2049,6 @@ class HttpServer(
             """{"status":"ok","message":"Flashlight ${if (newState) "enabled" else "disabled"}","flashlight":$newState}""",
             ContentType.Application.Json
         )
-    }
-    
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
-        // Check if camera is deferred (waiting for activation)
-        if (!cameraService.isCameraDeferred()) {
-            // Camera is already active or was never deferred
-            if (cameraService.isCameraActive()) {
-                call.respondText(
-                    """{"status":"ok","message":"Camera already active","cameraActive":true,"wasDeferred":false}""",
-                    ContentType.Application.Json
-                )
-            } else {
-                call.respondText(
-                    """{"status":"error","message":"Camera initialization was not deferred. Camera may be starting or failed.","cameraActive":false}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.BadRequest
-                )
-            }
-            return
-        }
-        
-        // Attempt to activate camera
-        val activated = cameraService.activateCamera()
-        if (activated) {
-            call.respondText(
-                """{"status":"ok","message":"Camera activation initiated successfully. Camera should be ready in 2-3 seconds.","cameraActive":true,"activated":true}""",
-                ContentType.Application.Json
-            )
-        } else {
-            call.respondText(
-                """{"status":"error","message":"Failed to activate camera. Camera may already be active or initialization failed.","cameraActive":false,"activated":false}""",
-                ContentType.Application.Json,
-                HttpStatusCode.InternalServerError
-            )
-        }
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveRestartServer() {

@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_AUTO_START = "autoStartServer"
         private const val PREF_BATTERY_DIALOG_SHOWN = "batteryDialogShown"
         private const val PREF_FIRST_LAUNCH_DONE = "firstLaunchDone"
+        private const val PREF_HOME_LAUNCHER_PROMPTED = "homeLauncherPrompted"
         private const val TAG = "MainActivity"
     }
     
@@ -293,6 +294,13 @@ class MainActivity : AppCompatActivity() {
             toggleServer()
         }
         
+        // Check if we should prompt to set as home launcher (Android 14+ optimization)
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val homeLauncherPrompted = prefs.getBoolean(PREF_HOME_LAUNCHER_PROMPTED, false)
+        if (!homeLauncherPrompted && Build.VERSION.SDK_INT >= 34) {
+            promptToSetAsHomeLauncher()
+        }
+        
         // Check if launched from boot or camera activation
         val fromBoot = intent.getBooleanExtra("FROM_BOOT", false)
         val fromCameraActivation = intent.getBooleanExtra("FROM_CAMERA_ACTIVATION", false)
@@ -491,6 +499,42 @@ class MainActivity : AppCompatActivity() {
             .setNegativeButton("Cancel") { dialog, _ ->
                 dialog.dismiss()
             }
+            .create()
+            .show()
+    }
+    
+    private fun promptToSetAsHomeLauncher() {
+        AlertDialog.Builder(this)
+            .setTitle("Set as Home Launcher (Recommended)")
+            .setMessage("For optimal camera access on Android 14+, this app should be set as your device's home launcher.\n\n" +
+                        "Benefits:\n" +
+                        "• Reliable camera access at boot\n" +
+                        "• Prevents accidental app closure\n" +
+                        "• Optimized for dedicated surveillance devices\n\n" +
+                        "Press HOME button and select 'IP Camera' as default launcher.")
+            .setPositiveButton("Set Now") { _, _ ->
+                // Mark as prompted
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                prefs.edit().putBoolean(PREF_HOME_LAUNCHER_PROMPTED, true).apply()
+                
+                // Trigger home launcher selection by simulating HOME button
+                val intent = Intent(Intent.ACTION_MAIN)
+                intent.addCategory(Intent.CATEGORY_HOME)
+                intent.flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                try {
+                    startActivity(intent)
+                    Toast.makeText(this, "Select 'IP Camera' and tap 'Always' to set as default launcher", Toast.LENGTH_LONG).show()
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Press HOME button to select default launcher", Toast.LENGTH_LONG).show()
+                }
+            }
+            .setNegativeButton("Skip") { dialog, _ ->
+                // Mark as prompted so we don't ask again
+                val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                prefs.edit().putBoolean(PREF_HOME_LAUNCHER_PROMPTED, true).apply()
+                dialog.dismiss()
+            }
+            .setCancelable(false) // Prevent dismissing by tapping outside
             .create()
             .show()
     }

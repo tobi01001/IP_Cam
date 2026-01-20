@@ -95,46 +95,25 @@ class BootReceiver : BroadcastReceiver() {
             
             Log.i(TAG, "All permissions granted, proceeding with auto-start")
             
-            // Android 14+ Background Activity Launch Restriction:
-            // Starting with Android 14, the system silently blocks startActivity() calls from
-            // boot broadcasts. This is a privacy/security restriction with no workarounds.
-            // 
-            // Solution: Hybrid Approach (Service-First with Remote Activation)
-            // - Start CameraService at boot WITHOUT camera initialization
-            // - Camera remains inactive until user triggers it via web interface
-            // - User clicks "Activate Camera" button on web UI to initialize camera remotely
-            // - Once activated, camera persists through service lifecycle
-            //
-            // This approach:
-            // ✓ Complies with Android 14+ restrictions (no activity launch)
-            // ✓ Service auto-starts reliably at boot
-            // ✓ Camera accessible remotely without physical device access
-            // ✓ Works on all Android versions (11-15+)
+            // Android 14+ Camera Access Solution: Home Launcher Mode
+            // When app is set as home launcher, it's always in recent tasks, so camera works normally.
+            // Simply start the service as usual - no deferred initialization needed.
             
             Log.i(TAG, "============================================")
             Log.i(TAG, "Starting CameraService at boot")
             if (Build.VERSION.SDK_INT >= 34) {
-                Log.i(TAG, "Android 14+: Service starts WITHOUT camera")
-                Log.i(TAG, "Camera will activate when first client connects OR via /activateCamera endpoint")
-            } else {
-                Log.i(TAG, "Android 11-13: Service starts WITH camera auto-init")
+                Log.i(TAG, "Android 14+: Requires app to be set as home launcher for camera access")
+                Log.i(TAG, "If camera doesn't work, set app as default launcher (HOME button → Select IP Camera)")
             }
             Log.i(TAG, "============================================")
             
             val serviceIntent = Intent(context, CameraService::class.java).apply {
                 putExtra(CameraService.EXTRA_START_SERVER, true)
-                // On Android 14+, defer camera initialization
-                // Service will show notification with instructions for remote activation
-                putExtra(CameraService.EXTRA_DEFER_CAMERA_INIT, Build.VERSION.SDK_INT >= 34)
             }
             
             try {
                 ContextCompat.startForegroundService(context, serviceIntent)
                 Log.i(TAG, "CameraService started successfully on boot")
-                if (Build.VERSION.SDK_INT >= 34) {
-                    Log.i(TAG, "Connect to web interface to activate camera remotely")
-                    Log.i(TAG, "Visit http://DEVICE_IP:8080 and click 'Activate Camera'")
-                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start CameraService on boot: ${e.message}", e)
             }
