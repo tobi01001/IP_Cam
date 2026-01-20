@@ -11,6 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -437,9 +438,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // CRITICAL: Must call startForeground() within 5 seconds of startForegroundService()
         // Do this BEFORE any other operations to avoid ANR
+        //
+        // On Android 14+, camera-type foreground services cannot start from BOOT_COMPLETED.
+        // Solution: Start with connectedDevice type (allowed), switch to camera when needed.
         try {
-            startForeground(NOTIFICATION_ID, createNotification())
-            Log.d(TAG, "Foreground service started successfully")
+            val serviceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                // Android 14+: Start with connectedDevice type (camera type blocked at boot)
+                // Will switch to camera type when user activates camera
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+            } else {
+                // Android 11-13: Use camera type directly
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+            }
+            
+            startForeground(NOTIFICATION_ID, createNotification(), serviceType)
+            Log.d(TAG, "Foreground service started successfully with type: ${if (serviceType == ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE) "connectedDevice" else "camera"}")
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start foreground service: ${e.message}", e)
             // If foreground start fails, stop the service gracefully
@@ -1798,6 +1811,26 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
+     * Switch foreground service type to camera
+     * Call this when camera is about to be activated on Android 14+
+     */
+    private fun switchToCameraServiceType() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            try {
+                // Switch to camera service type now that camera will be active
+                startForeground(
+                    NOTIFICATION_ID,
+                    createNotification(),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                )
+                Log.d(TAG, "Switched foreground service type to camera")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to switch to camera service type: ${e.message}", e)
+            }
+        }
+    }
+    
+    /**
      * Check if camera is currently active (bound and running)
      */
     override fun isCameraActive(): Boolean {
@@ -1827,6 +1860,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Camera is already active")
             return true
         }
+        
+        // On Android 14+, switch service type to camera before activating
+        switchToCameraServiceType()
         
         // Start camera if not already initialized
         if (cameraProvider == null) {
