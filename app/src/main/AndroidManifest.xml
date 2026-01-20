@@ -32,10 +32,19 @@
             android:name=".MainActivity"
             android:exported="true"
             android:configChanges="orientation|screenSize|screenLayout"
-            android:screenOrientation="sensor">
+            android:screenOrientation="sensor"
+            android:excludeFromRecents="false"
+            android:launchMode="singleTask">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- Add HOME intent filter to make this a launcher app (keeps it in recent tasks) -->
+            <!-- For dedicated surveillance devices, this ensures camera access works -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.HOME" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 

@@ -487,10 +487,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
+        // ANDROID 14+ BOOT RESTRICTION HANDLING:
+        // When service starts from boot on Android 14+, we defer camera initialization
+        // because Android silently blocks activity launches from boot broadcasts.
+        // The camera will be initialized either:
+        // 1. When user visits web interface (first stream/snapshot request auto-activates)
+        // 2. Via explicit /activateCamera endpoint
+        // 3. On Android 11-13, camera starts immediately as before
+        //
+        // This allows the service to start reliably at boot while maintaining
         // Delay camera start to ensure foreground service is fully established
         // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
         // The foreground service needs to be in STARTED state before accessing camera
-        // Increased delay from 500ms to 1500ms for better reliability
         serviceScope.launch {
             delay(1500) // Longer delay to ensure service permissions are fully initialized
             startCamera()
