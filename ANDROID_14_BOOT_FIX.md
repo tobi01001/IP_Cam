@@ -2,37 +2,50 @@
 
 ## Overview
 
-This document describes the solution implemented to fix the boot auto-start issue on Android 14+, where the system silently blocks activity launches from boot broadcasts.
+This document describes the solution implemented to fix the boot auto-start issue on Android 14+, where the system enforces strict restrictions on both activity launches and camera access.
 
 ## Problem
 
 ### Symptoms
 - BootReceiver receives `BOOT_COMPLETED` broadcast successfully
-- BootReceiver attempts to launch MainActivity
-- `startActivity()` call completes without throwing exceptions
-- **However**: MainActivity never actually starts
-- Result: Camera service doesn't initialize, stream not available
+- Service starts at boot, HTTP server accessible
+- User clicks "Activate Camera" via web interface
+- Camera fails with `ERROR_CAMERA_DISABLED` and "Recent tasks don't include camera client package name"
+- Result: Camera cannot be activated remotely
 
-### Root Cause
-Android 14 introduced strict background activity launch restrictions as a privacy/security measure. Activities cannot be launched from background contexts (like boot broadcasts) without explicit user interaction. The system silently blocks these launches without logging errors or throwing exceptions.
+### Root Cause - Two Android 14+ Restrictions
+
+**Restriction 1: Background Activity Launch**
+Android 14 blocks activity launches from background contexts (like boot broadcasts) as a privacy/security measure. The system silently blocks these launches without errors.
+
+**Restriction 2: Camera Access Requires Recent Tasks** ⚠️ **CRITICAL**
+Android 14+ enforces a strict policy: **camera access requires the app to be in "recent tasks" list**. This is the key issue that prevents purely remote camera activation.
+
+- Starting service from boot doesn't add app to recent tasks
+- Without being in recent tasks, camera is "disabled by policy"
+- Only launching an Activity adds the app to recent tasks
+- Therefore, **physical device access is required** for camera activation on Android 14+
 
 Reference: [Android Background Activity Launch Restrictions](https://developer.android.com/guide/components/activities/background-starts)
 
 ## Solution Architecture
 
-### Hybrid Approach: Service-First with Remote Activation
+### Hybrid Approach: Service-First with MainActivity Launch for Camera Access
 
-Instead of trying to launch MainActivity (which Android blocks), we:
+Instead of trying to activate camera remotely (which Android blocks), we:
 
 1. **Start CameraService directly at boot** - HTTP server becomes accessible
 2. **Defer camera initialization** - Camera doesn't start until explicitly triggered
-3. **Provide remote activation** - User can activate camera via web interface
-4. **Auto-activate on first request** - Streaming auto-triggers camera initialization
+3. **Launch MainActivity when activating camera** - Adds app to recent tasks on Android 14+
+4. **Camera activates after MainActivity launch** - Now allowed by Android policy
+
+**IMPORTANT:** This solution requires **physical device access** to see MainActivity launch. Purely remote camera activation is **not possible** on Android 14+ due to Android's recent tasks requirement.
 
 This approach:
 - ✅ Complies with Android 14+ restrictions
 - ✅ Service auto-starts reliably at boot
-- ✅ Enables remote activation without physical device access
+- ⚠️ Requires device access for initial camera activation
+- ✅ Camera persists after MainActivity closes
 - ✅ Maintains backward compatibility with Android 11-13
 - ✅ Preserves single source of truth architecture
 
@@ -70,8 +83,33 @@ ContextCompat.startForegroundService(context, serviceIntent)
 **New Methods:**
 ```kotlin
 override fun activateCamera(): Boolean {
-    // Manually activate camera when deferred
+    // On Android 14+, launches MainActivity to add app to recent tasks
+    // This is REQUIRED for camera access per Android policy
+    // Then starts camera after 3-second delay
+    //
     // Returns true if activation triggered
+    
+    if (Build.VERSION.SDK_INT >= 34) {
+        // Launch MainActivity first to satisfy recent tasks requirement
+        val activityIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra("FROM_CAMERA_ACTIVATION", true)
+        }
+        startActivity(activityIntent)
+        
+        // Delay camera start to ensure MainActivity is registered in recent tasks
+        serviceScope.launch {
+            delay(3000)
+            startCamera()
+        }
+    } else {
+        // Android 11-13: No recent tasks requirement
+        startCamera()
+    }
+    
+    cameraActivated = true
+    cameraInitDeferred = false
+    return true
 }
 
 override fun isCameraActive(): Boolean {
@@ -195,6 +233,26 @@ setInterval(checkCameraStatus, 10000);
 ## User Experience
 
 ### Android 11-13 (Existing Behavior - Unchanged)
+1. Device boots
+2. BootReceiver starts CameraService with camera
+3. Camera initializes automatically after 1.5 seconds
+4. HTTP stream available immediately
+5. **No user action required**
+
+### Android 14+ (New Behavior)
+1. Device boots → Service starts (no camera)
+2. HTTP server starts, web interface accessible at `http://DEVICE_IP:8080`
+3. User visits web interface from another device
+4. **Banner shows "⚠️ Camera Not Active"**
+5. User clicks "🎥 Activate Camera" button
+6. **MainActivity launches on the device screen** ⚠️ **REQUIRES PHYSICAL DEVICE ACCESS**
+7. App is now in recent tasks
+8. Camera initializes (wait 3-5 seconds)
+9. Banner disappears automatically
+10. Stream works normally
+11. **User can close MainActivity** - Camera continues running in service
+
+**IMPORTANT LIMITATION:** Clicking "Activate Camera" from the web interface will launch MainActivity on the Android device's screen. This **requires physical access to the device** to see the app launch. This is not a purely remote activation - it's a "trigger remote launch" approach. Once MainActivity has launched once, the app stays in recent tasks and camera access works until the next reboot.
 1. Device boots
 2. BootReceiver starts CameraService with camera
 3. Camera initializes automatically after 1.5 seconds
