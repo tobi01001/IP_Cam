@@ -1435,13 +1435,21 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
+        // Auto-enable camera if not active (Android 14+ boot scenario)
+        if (!cameraService.isCameraActive()) {
+            Log.d(TAG, "Snapshot requested but camera inactive - auto-enabling camera")
+            cameraService.enableCamera()
+            // Wait briefly for camera to initialize
+            delay(2000)
+        }
+        
         val jpegBytes = cameraService.getLastFrameJpegBytes()
         
         if (jpegBytes != null) {
             call.respondBytes(jpegBytes, ContentType.Image.JPEG)
         } else {
             call.respondText(
-                "No frame available",
+                "No frame available. Camera may still be initializing - try again in a moment.",
                 ContentType.Text.Plain,
                 HttpStatusCode.ServiceUnavailable
             )
@@ -1449,6 +1457,14 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
+        // Auto-enable camera if not active (Android 14+ boot scenario)
+        if (!cameraService.isCameraActive()) {
+            Log.d(TAG, "Stream requested but camera inactive - auto-enabling camera")
+            cameraService.enableCamera()
+            // Wait briefly for camera to initialize before attempting stream
+            delay(2000)
+        }
+        
         // Check if streaming is allowed based on battery status
         if (!cameraService.isStreamingAllowed()) {
             // Serve battery-limited info page instead of stream
