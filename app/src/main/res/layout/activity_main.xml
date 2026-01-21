@@ -24,6 +24,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_margin="0dp"
+                app:cardBackgroundColor="@color/card_background"
                 app:cardElevation="4dp"
                 app:cardCornerRadius="0dp">
 
@@ -113,21 +114,25 @@
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
                             android:text="@string/start_server"
-                            android:layout_marginEnd="8dp"/>
+                            android:layout_marginEnd="4dp"/>
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/switchCameraButton"
-                            android:layout_width="wrap_content"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
+                            android:layout_weight="1"
                             android:text="@string/switch_camera"
-                            android:layout_marginEnd="8dp"
+                            android:layout_marginEnd="4dp"
+                            android:layout_marginStart="4dp"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/flashlightButton"
-                            android:layout_width="wrap_content"
+                            android:layout_width="0dp"
                             android:layout_height="wrap_content"
+                            android:layout_weight="1"
                             android:text="@string/flashlight_toggle"
+                            android:layout_marginStart="4dp"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
                     </LinearLayout>
                 </LinearLayout>
@@ -138,6 +143,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_margin="8dp"
+                app:cardBackgroundColor="@color/card_background"
                 app:cardElevation="2dp"
                 app:cardCornerRadius="8dp">
 
@@ -220,6 +226,7 @@
                 android:layout_marginStart="8dp"
                 android:layout_marginEnd="8dp"
                 android:layout_marginBottom="8dp"
+                app:cardBackgroundColor="@color/card_background"
                 app:cardElevation="2dp"
                 app:cardCornerRadius="8dp">
 
@@ -361,6 +368,7 @@
                 android:layout_marginStart="8dp"
                 android:layout_marginEnd="8dp"
                 android:layout_marginBottom="8dp"
+                app:cardBackgroundColor="@color/card_background"
                 app:cardElevation="2dp"
                 app:cardCornerRadius="8dp">
 
@@ -530,6 +538,7 @@
                 android:layout_marginStart="8dp"
                 android:layout_marginEnd="8dp"
                 android:layout_marginBottom="8dp"
+                app:cardBackgroundColor="@color/card_background"
                 app:cardElevation="2dp"
                 app:cardCornerRadius="8dp">
 
@@ -595,7 +604,7 @@
                 android:text="@string/version_info_placeholder"
                 android:textSize="11sp"
                 android:textStyle="italic"
-                android:textColor="#757575"
+                android:textColor="@color/text_secondary"
                 android:gravity="center"
                 android:padding="16dp"/>
 

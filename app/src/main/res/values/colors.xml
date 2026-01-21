@@ -8,6 +8,9 @@
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
     <color name="ic_launcher_background">#3DDC84</color>
-    <color name="launcher_background">#F5F5F5</color>
-    <color name="card_background">#FFFFFF</color>
+    <!-- Dark mode colors for launcher -->
+    <color name="launcher_background">#121212</color>
+    <color name="card_background">#1E1E1E</color>
+    <color name="text_primary">#E0E0E0</color>
+    <color name="text_secondary">#B0B0B0</color>
 </resources>
