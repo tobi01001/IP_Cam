@@ -58,6 +58,33 @@ class MainActivity : AppCompatActivity() {
     private lateinit var currentFpsText: TextView
     private lateinit var mjpegFpsSpinner: Spinner
     
+    // New UI elements for launcher layout
+    private lateinit var deviceNameDisplay: TextView
+    private lateinit var quickSettingsButton: Button
+    
+    // Collapsible section elements
+    private lateinit var previewSectionHeader: View
+    private lateinit var previewContent: View
+    private lateinit var previewExpandIcon: ImageView
+    
+    private lateinit var videoSectionHeader: View
+    private lateinit var videoContent: View
+    private lateinit var videoExpandIcon: ImageView
+    
+    private lateinit var serverSectionHeader: View
+    private lateinit var serverContent: View
+    private lateinit var serverExpandIcon: ImageView
+    
+    private lateinit var apiSectionHeader: View
+    private lateinit var apiContent: View
+    private lateinit var apiExpandIcon: ImageView
+    
+    // Section expanded states (save to preferences)
+    private var isPreviewExpanded = false
+    private var isVideoExpanded = false
+    private var isServerExpanded = false
+    private var isApiExpanded = false
+    
     private var cameraService: CameraService? = null
     private var isServiceBound = false
     private var hasCameraPermission = false
@@ -76,6 +103,10 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_BATTERY_DIALOG_SHOWN = "batteryDialogShown"
         private const val PREF_FIRST_LAUNCH_DONE = "firstLaunchDone"
         private const val PREF_HOME_LAUNCHER_PROMPTED = "homeLauncherPrompted"
+        private const val PREF_PREVIEW_EXPANDED = "previewExpanded"
+        private const val PREF_VIDEO_EXPANDED = "videoExpanded"
+        private const val PREF_SERVER_EXPANDED = "serverExpanded"
+        private const val PREF_API_EXPANDED = "apiExpanded"
         private const val TAG = "MainActivity"
     }
     
@@ -286,6 +317,51 @@ class MainActivity : AppCompatActivity() {
         currentFpsText = findViewById(R.id.currentFpsText)
         mjpegFpsSpinner = findViewById(R.id.mjpegFpsSpinner)
         
+        // New UI elements
+        deviceNameDisplay = findViewById(R.id.deviceNameDisplay)
+        quickSettingsButton = findViewById(R.id.quickSettingsButton)
+        
+        // Collapsible section elements
+        previewSectionHeader = findViewById(R.id.previewSectionHeader)
+        previewContent = findViewById(R.id.previewContent)
+        previewExpandIcon = findViewById(R.id.previewExpandIcon)
+        
+        videoSectionHeader = findViewById(R.id.videoSectionHeader)
+        videoContent = findViewById(R.id.videoContent)
+        videoExpandIcon = findViewById(R.id.videoExpandIcon)
+        
+        serverSectionHeader = findViewById(R.id.serverSectionHeader)
+        serverContent = findViewById(R.id.serverContent)
+        serverExpandIcon = findViewById(R.id.serverExpandIcon)
+        
+        apiSectionHeader = findViewById(R.id.apiSectionHeader)
+        apiContent = findViewById(R.id.apiContent)
+        apiExpandIcon = findViewById(R.id.apiExpandIcon)
+        
+        // Load section expanded states
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        isPreviewExpanded = prefs.getBoolean(PREF_PREVIEW_EXPANDED, false)
+        isVideoExpanded = prefs.getBoolean(PREF_VIDEO_EXPANDED, false)
+        isServerExpanded = prefs.getBoolean(PREF_SERVER_EXPANDED, false)
+        isApiExpanded = prefs.getBoolean(PREF_API_EXPANDED, false)
+        
+        // Set initial section visibility
+        updateSectionVisibility(previewContent, previewExpandIcon, isPreviewExpanded)
+        updateSectionVisibility(videoContent, videoExpandIcon, isVideoExpanded)
+        updateSectionVisibility(serverContent, serverExpandIcon, isServerExpanded)
+        updateSectionVisibility(apiContent, apiExpandIcon, isApiExpanded)
+        
+        // Setup collapsible sections
+        setupCollapsibleSection(previewSectionHeader, previewContent, previewExpandIcon, PREF_PREVIEW_EXPANDED) { isPreviewExpanded = it }
+        setupCollapsibleSection(videoSectionHeader, videoContent, videoExpandIcon, PREF_VIDEO_EXPANDED) { isVideoExpanded = it }
+        setupCollapsibleSection(serverSectionHeader, serverContent, serverExpandIcon, PREF_SERVER_EXPANDED) { isServerExpanded = it }
+        setupCollapsibleSection(apiSectionHeader, apiContent, apiExpandIcon, PREF_API_EXPANDED) { isApiExpanded = it }
+        
+        // Setup quick settings button to open device settings
+        quickSettingsButton.setOnClickListener {
+            openDeviceSettings()
+        }
+        
         // Set version information
         versionInfoText.text = BuildInfo.getFullVersionString()
         
@@ -312,7 +388,6 @@ class MainActivity : AppCompatActivity() {
         }
         
         // Check if we should prompt to set as home launcher (Android 14+ optimization)
-        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val homeLauncherPrompted = prefs.getBoolean(PREF_HOME_LAUNCHER_PROMPTED, false)
         if (!homeLauncherPrompted && Build.VERSION.SDK_INT >= 34) {
             promptToSetAsHomeLauncher()
@@ -968,6 +1043,7 @@ class MainActivity : AppCompatActivity() {
             val newName = deviceNameEditText.text.toString().trim()
             if (newName.isNotEmpty()) {
                 cameraService?.setDeviceName(newName)
+                deviceNameDisplay.text = newName  // Update display name
                 Toast.makeText(this, "Device name saved: $newName", Toast.LENGTH_SHORT).show()
             } else {
                 Toast.makeText(this, "Please enter a device name", Toast.LENGTH_SHORT).show()
@@ -981,6 +1057,8 @@ class MainActivity : AppCompatActivity() {
         // Load current device name
         val currentName = service.getDeviceName()
         deviceNameEditText.setText(currentName)
+        // Update the display name at the top
+        deviceNameDisplay.text = currentName
     }
     
     private fun updateConnectionsUI() {
@@ -1185,6 +1263,43 @@ class MainActivity : AppCompatActivity() {
         super.onConfigurationChanged(newConfig)
         // Configuration changes (like rotation) are automatically handled by OrientationEventListener
         // in the CameraService, so no action needed here
+    }
+    
+    // Helper method to setup collapsible sections
+    private fun setupCollapsibleSection(
+        header: View,
+        content: View,
+        icon: ImageView,
+        prefKey: String,
+        updateState: (Boolean) -> Unit
+    ) {
+        header.setOnClickListener {
+            val isExpanded = content.visibility == View.VISIBLE
+            val newState = !isExpanded
+            updateState(newState)
+            updateSectionVisibility(content, icon, newState)
+            
+            // Save state to preferences
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean(prefKey, newState).apply()
+        }
+    }
+    
+    // Helper method to update section visibility with animation
+    private fun updateSectionVisibility(content: View, icon: ImageView, isExpanded: Boolean) {
+        content.visibility = if (isExpanded) View.VISIBLE else View.GONE
+        icon.rotation = if (isExpanded) 180f else 0f
+    }
+    
+    // Helper method to open device settings
+    private fun openDeviceSettings() {
+        try {
+            val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
+            startActivity(intent)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Could not open device settings", Toast.LENGTH_SHORT).show()
+            Log.e(TAG, "Error opening device settings", e)
+        }
     }
     
     override fun onDestroy() {
