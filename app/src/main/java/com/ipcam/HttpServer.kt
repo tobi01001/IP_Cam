@@ -1394,11 +1394,23 @@ class HttpServer(
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
         // Check if camera is idle and needs activation
         val cameraState = cameraService.getCameraStateString()
-        if (cameraState == "IDLE") {
+        val needsActivation = cameraState == "IDLE"
+        
+        if (needsActivation) {
             Log.d(TAG, "Camera IDLE, temporarily activating for snapshot...")
             cameraService.registerMjpegConsumer()
-            // Give camera time to initialize
-            delay(2000)
+            
+            // Poll for camera to become active with timeout
+            var attempts = 0
+            val maxAttempts = 20 // 2 seconds total (20 * 100ms)
+            while (attempts < maxAttempts && cameraService.getCameraStateString() != "ACTIVE") {
+                delay(100)
+                attempts++
+            }
+            
+            if (cameraService.getCameraStateString() != "ACTIVE") {
+                Log.w(TAG, "Camera failed to activate within timeout for snapshot")
+            }
         }
         
         val jpegBytes = cameraService.getLastFrameJpegBytes()
@@ -1414,7 +1426,7 @@ class HttpServer(
         }
         
         // If we activated camera just for snapshot and no streams are active, deactivate
-        if (cameraState == "IDLE" && activeStreams.get() == 0) {
+        if (needsActivation && activeStreams.get() == 0) {
             Log.d(TAG, "No active streams, deactivating camera after snapshot")
             cameraService.unregisterMjpegConsumer()
         }
@@ -2293,10 +2305,10 @@ class HttpServer(
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
         try {
-            cameraService.registerMjpegConsumer()
+            cameraService.manualActivateCamera()
             val cameraState = cameraService.getCameraStateString()
             call.respondText(
-                """{"status":"ok","cameraState":"$cameraState","message":"Camera activation requested - registered MJPEG consumer"}""",
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera activation requested - registered MANUAL consumer"}""",
                 ContentType.Application.Json
             )
         } catch (e: Exception) {
@@ -2315,10 +2327,10 @@ class HttpServer(
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveDeactivateCamera() {
         try {
-            cameraService.unregisterMjpegConsumer()
+            cameraService.manualDeactivateCamera()
             val cameraState = cameraService.getCameraStateString()
             call.respondText(
-                """{"status":"ok","cameraState":"$cameraState","message":"Camera deactivation requested - unregistered MJPEG consumer. Camera will stop if no other consumers remain."}""",
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera deactivation requested - unregistered MANUAL consumer. Camera will stop if no other consumers remain."}""",
                 ContentType.Application.Json
             )
         } catch (e: Exception) {

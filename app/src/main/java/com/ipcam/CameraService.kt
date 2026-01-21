@@ -377,12 +377,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Consumer tracking for on-demand camera activation
-     * Consumers: Preview (MainActivity), MJPEG clients, RTSP clients
+     * Consumers: Preview (MainActivity), MJPEG clients, RTSP clients, Manual API
      */
     private enum class ConsumerType {
         PREVIEW,    // MainActivity preview
         MJPEG,      // MJPEG stream clients
-        RTSP        // RTSP streaming
+        RTSP,       // RTSP streaming
+        MANUAL      // Manual activation via API (for testing/debugging)
     }
     
     private val consumers = mutableSetOf<ConsumerType>()
@@ -421,6 +422,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
          // Battery cache update interval
          private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
+         // Camera activation delay
+         private const val CAMERA_ACTIVATION_DELAY_MS = 500L // Delay before activating camera when consumer registers
          // Settings keys
          private const val PREF_MAX_CONNECTIONS = "maxConnections"
      }
@@ -3603,7 +3606,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.d(TAG, "Camera IDLE → INITIALIZING (on-demand activation)")
                     cameraState = CameraState.INITIALIZING
                     serviceScope.launch {
-                        delay(500) // Brief delay to ensure service is ready
+                        delay(CAMERA_ACTIVATION_DELAY_MS)
                         startCamera()
                     }
                 }
@@ -3611,7 +3614,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.d(TAG, "Camera in ERROR state, retrying initialization...")
                     cameraState = CameraState.INITIALIZING
                     serviceScope.launch {
-                        delay(500)
+                        delay(CAMERA_ACTIVATION_DELAY_MS)
                         startCamera()
                     }
                 }
@@ -3656,22 +3659,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
     }
     
-    /**
-     * Manual camera activation endpoint (for testing/debugging)
-     */
-    fun manualActivateCamera() {
-        Log.d(TAG, "Manual camera activation requested")
-        registerConsumer(ConsumerType.PREVIEW) // Use PREVIEW as proxy for manual activation
-    }
-    
-    /**
-     * Manual camera deactivation endpoint (for testing/debugging)
-     */
-    fun manualDeactivateCamera() {
-        Log.d(TAG, "Manual camera deactivation requested")
-        unregisterConsumer(ConsumerType.PREVIEW)
-    }
-    
     // Consumer registration methods for HttpServer interface
     override fun registerMjpegConsumer() {
         registerConsumer(ConsumerType.MJPEG)
@@ -3694,5 +3681,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     fun unregisterPreviewConsumer() {
         unregisterConsumer(ConsumerType.PREVIEW)
+    }
+    
+    // Manual activation methods implementing interface (for testing/debugging)
+    override fun manualActivateCamera() {
+        Log.d(TAG, "Manual camera activation requested")
+        registerConsumer(ConsumerType.MANUAL)
+    }
+    
+    override fun manualDeactivateCamera() {
+        Log.d(TAG, "Manual camera deactivation requested")
+        unregisterConsumer(ConsumerType.MANUAL)
     }
 }

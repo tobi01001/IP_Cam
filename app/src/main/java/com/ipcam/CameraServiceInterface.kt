@@ -91,4 +91,6 @@ interface CameraServiceInterface {
     fun registerMjpegConsumer()
     fun unregisterMjpegConsumer()
     fun getCameraStateString(): String
+    fun manualActivateCamera()
+    fun manualDeactivateCamera()
 }
