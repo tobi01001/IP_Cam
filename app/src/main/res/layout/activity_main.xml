@@ -582,7 +582,7 @@
                             android:id="@+id/endpointsText"
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:text="@string/endpoints_title"
+                            android:text=""
                             android:textSize="11sp"
                             android:fontFamily="monospace"
                             android:textColor="?attr/colorOnSurfaceVariant"/>
