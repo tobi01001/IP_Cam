@@ -131,6 +131,11 @@ class HttpServer(
                 
                 // Battery management endpoints
                 get("/overrideBatteryLimit") { serveOverrideBatteryLimit() }
+                
+                // Camera state management endpoints (for testing/debugging)
+                get("/cameraState") { serveCameraState() }
+                get("/activateCamera") { serveActivateCamera() }
+                get("/deactivateCamera") { serveDeactivateCamera() }
             }
         }
         
@@ -1589,8 +1594,9 @@ class HttpServer(
         val batteryMode = cameraService.getBatteryMode()
         val streamingAllowed = cameraService.isStreamingAllowed()
         val deviceName = cameraService.getDeviceName()
+        val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\"]"
         
         val json = """
             {
@@ -1598,6 +1604,7 @@ class HttpServer(
                 "server": "Ktor",
                 "deviceName": "$deviceName",
                 "camera": "$cameraName",
+                "cameraState": "$cameraState",
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
@@ -2263,4 +2270,66 @@ class HttpServer(
     }
     
     // ==================== End Battery Management Endpoints ====================
+    
+    // ==================== Camera State Management Endpoints ====================
+    
+    /**
+     * Get current camera state (IDLE, INITIALIZING, ACTIVE, STOPPING, ERROR)
+     * Includes consumer count for debugging
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCameraState() {
+        val cameraState = cameraService.getCameraStateString()
+        val activeStreamCount = activeStreams.get()
+        
+        call.respondText(
+            """{"status":"ok","cameraState":"$cameraState","mjpegStreams":$activeStreamCount,"message":"Camera state retrieved"}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    /**
+     * Manually activate camera (for testing/debugging)
+     * This registers a temporary consumer to keep camera active
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
+        try {
+            cameraService.registerMjpegConsumer()
+            val cameraState = cameraService.getCameraStateString()
+            call.respondText(
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera activation requested - registered MJPEG consumer"}""",
+                ContentType.Application.Json
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error activating camera", e)
+            call.respondText(
+                """{"status":"error","message":"Failed to activate camera: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Manually deactivate camera (for testing/debugging)
+     * This unregisters the temporary consumer, camera will stop if no other consumers
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDeactivateCamera() {
+        try {
+            cameraService.unregisterMjpegConsumer()
+            val cameraState = cameraService.getCameraStateString()
+            call.respondText(
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera deactivation requested - unregistered MJPEG consumer. Camera will stop if no other consumers remain."}""",
+                ContentType.Application.Json
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deactivating camera", e)
+            call.respondText(
+                """{"status":"error","message":"Failed to deactivate camera: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    // ==================== End Camera State Management Endpoints ====================
 }
