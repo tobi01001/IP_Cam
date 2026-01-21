@@ -60,7 +60,7 @@
                                 android:text="@string/app_name"
                                 android:textSize="18sp"
                                 android:textStyle="bold"
-                                android:textColor="?attr/colorOnSurface"/>
+                                />
 
                             <TextView
                                 android:id="@+id/serverStatusText"
@@ -68,7 +68,7 @@
                                 android:layout_height="wrap_content"
                                 android:text="@string/server_status"
                                 android:textSize="14sp"
-                                android:textColor="?attr/colorOnSurfaceVariant"/>
+                                android:textColor="#757575"/>
                         </LinearLayout>
 
                         <!-- Quick Settings Button -->
@@ -97,7 +97,7 @@
                         android:textIsSelectable="true"
                         android:fontFamily="monospace"
                         android:layout_marginTop="8dp"
-                        android:textColor="?attr/colorOnSurfaceVariant"/>
+                        android:textColor="#757575"/>
 
                     <!-- Main Control Buttons -->
                     <LinearLayout
@@ -164,7 +164,7 @@
                             android:text="Camera Preview"
                             android:textSize="16sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <ImageView
                             android:id="@+id/previewExpandIcon"
@@ -188,7 +188,7 @@
                             android:layout_height="wrap_content"
                             android:text="Use preview to position camera. Collapse to save resources."
                             android:textSize="12sp"
-                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:textColor="#757575"
                             android:layout_marginBottom="8dp"/>
 
                         <ImageView
@@ -208,7 +208,7 @@
                             android:textSize="12sp"
                             android:gravity="center"
                             android:layout_marginTop="8dp"
-                            android:textColor="?attr/colorOnSurfaceVariant"/>
+                            android:textColor="#757575"/>
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
@@ -246,7 +246,7 @@
                             android:text="Video Settings"
                             android:textSize="16sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <ImageView
                             android:id="@+id/videoExpandIcon"
@@ -272,7 +272,7 @@
                             android:text="@string/resolution_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <Spinner
                             android:id="@+id/resolutionSpinner"
@@ -288,7 +288,7 @@
                             android:text="@string/camera_orientation_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <Spinner
                             android:id="@+id/cameraOrientationSpinner"
@@ -304,7 +304,7 @@
                             android:text="@string/rotation_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <Spinner
                             android:id="@+id/rotationSpinner"
@@ -321,7 +321,7 @@
                             android:textSize="14sp"
                             android:textStyle="bold"
                             android:layout_marginTop="4dp"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <CheckBox
                             android:id="@+id/showDateTimeCheckBox"
@@ -387,7 +387,7 @@
                             android:text="Server Settings"
                             android:textSize="16sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <ImageView
                             android:id="@+id/serverExpandIcon"
@@ -413,7 +413,7 @@
                             android:text="@string/device_name_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <LinearLayout
                             android:layout_width="match_parent"
@@ -446,7 +446,7 @@
                             android:text="@string/fps_settings_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <TextView
                             android:id="@+id/currentFpsText"
@@ -454,7 +454,7 @@
                             android:layout_height="wrap_content"
                             android:text="Current: 0.0 fps"
                             android:textSize="12sp"
-                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:textColor="#757575"
                             android:layout_marginBottom="8dp"/>
 
                         <TextView
@@ -462,7 +462,7 @@
                             android:layout_height="wrap_content"
                             android:text="@string/mjpeg_target_fps_label"
                             android:textSize="13sp"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <Spinner
                             android:id="@+id/mjpegFpsSpinner"
@@ -478,7 +478,7 @@
                             android:text="@string/active_connections_label"
                             android:textSize="14sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <TextView
                             android:id="@+id/activeConnectionsText"
@@ -486,7 +486,7 @@
                             android:layout_height="wrap_content"
                             android:text="@string/connections_count"
                             android:textSize="13sp"
-                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:textColor="#757575"
                             android:layout_marginBottom="8dp"/>
 
                         <TextView
@@ -494,7 +494,7 @@
                             android:layout_height="wrap_content"
                             android:text="@string/max_connections_label"
                             android:textSize="13sp"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <Spinner
                             android:id="@+id/maxConnectionsSpinner"
@@ -509,7 +509,7 @@
                             android:text="@string/restart_required"
                             android:textSize="11sp"
                             android:textStyle="italic"
-                            android:textColor="?attr/colorOnSurfaceVariant"
+                            android:textColor="#757575"
                             android:layout_marginBottom="12dp"/>
 
                         <!-- Auto-start -->
@@ -556,7 +556,7 @@
                             android:text="API Endpoints"
                             android:textSize="16sp"
                             android:textStyle="bold"
-                            android:textColor="?attr/colorOnSurface"/>
+                            />
 
                         <ImageView
                             android:id="@+id/apiExpandIcon"
@@ -582,7 +582,7 @@
                             android:text=""
                             android:textSize="11sp"
                             android:fontFamily="monospace"
-                            android:textColor="?attr/colorOnSurfaceVariant"/>
+                            android:textColor="#757575"/>
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
@@ -595,7 +595,7 @@
                 android:text="@string/version_info_placeholder"
                 android:textSize="11sp"
                 android:textStyle="italic"
-                android:textColor="?attr/colorOnSurfaceVariant"
+                android:textColor="#757575"
                 android:gravity="center"
                 android:padding="16dp"/>
 
