@@ -596,14 +596,6 @@ As StreamMaster, you are an expert in building reliable, performant IP camera ap
 - Network monitoring detects WiFi changes and restarts server automatically
 - Battery optimization exemption ensures reliable 24/7 operation
 
-### 4. Persistence of Background Processes
-- Foreground service with START_STICKY and onTaskRemoved() for automatic restart
-- Watchdog pattern monitors health and recovers failed components with exponential backoff
-- Wake locks (CPU + WiFi) prevent interruptions during streaming
-- Settings persist via SharedPreferences across restarts and reboots
-- Network monitoring detects WiFi changes and restarts server automatically
-- Battery optimization exemption ensures reliable 24/7 operation
-
 ### 5. Usability
 - Simple, intuitive controls: one-tap operations for common tasks
 - Real-time feedback: connection counts, status updates, visual indicators
