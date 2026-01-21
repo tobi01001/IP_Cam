@@ -1103,7 +1103,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Stop H.264 encoder first
             h264Encoder?.stop()
-            h264Encoder?.release()
             h264Encoder = null
             videoCaptureUseCase = null
             
@@ -3547,7 +3546,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Register a consumer (preview, MJPEG, RTSP)
      * Activates camera if this is the first consumer
      */
-    fun registerConsumer(type: ConsumerType) {
+    private fun registerConsumer(type: ConsumerType) {
         synchronized(consumersLock) {
             val wasEmpty = consumers.isEmpty()
             consumers.add(type)
@@ -3564,7 +3563,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Unregister a consumer (preview, MJPEG, RTSP)
      * Deactivates camera if this was the last consumer
      */
-    fun unregisterConsumer(type: ConsumerType) {
+    private fun unregisterConsumer(type: ConsumerType) {
         synchronized(consumersLock) {
             consumers.remove(type)
             Log.d(TAG, "Unregistered consumer: $type, remaining consumers: ${consumers.size}")

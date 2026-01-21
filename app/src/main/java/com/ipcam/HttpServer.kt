@@ -1414,7 +1414,6 @@ class HttpServer(
             cameraService.unregisterMjpegConsumer()
         }
     }
-    }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
         // Check if streaming is allowed based on battery status
