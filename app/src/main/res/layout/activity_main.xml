@@ -25,8 +25,7 @@
                 android:layout_height="wrap_content"
                 android:layout_margin="0dp"
                 app:cardElevation="4dp"
-                app:cardCornerRadius="0dp"
-                style="@style/Widget.Material3.CardView.Filled">
+                app:cardCornerRadius="0dp">
 
                 <LinearLayout
                     android:layout_width="match_parent"
@@ -84,7 +83,7 @@
                             app:icon="@android:drawable/ic_menu_preferences"
                             app:iconGravity="textStart"
                             app:iconPadding="0dp"
-                            style="@style/Widget.Material3.Button.IconButton"
+                            style="@style/Widget.MaterialComponents.Button.TextButton.Icon"
                             android:contentDescription="Device Settings"/>
                     </LinearLayout>
 
@@ -114,8 +113,7 @@
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
                             android:text="@string/start_server"
-                            android:layout_marginEnd="8dp"
-                            style="@style/Widget.Material3.Button.TonalButton"/>
+                            android:layout_marginEnd="8dp"/>
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/switchCameraButton"
@@ -123,14 +121,14 @@
                             android:layout_height="wrap_content"
                             android:text="@string/switch_camera"
                             android:layout_marginEnd="8dp"
-                            style="@style/Widget.Material3.Button.OutlinedButton"/>
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
 
                         <com.google.android.material.button.MaterialButton
                             android:id="@+id/flashlightButton"
                             android:layout_width="wrap_content"
                             android:layout_height="wrap_content"
                             android:text="@string/flashlight_toggle"
-                            style="@style/Widget.Material3.Button.OutlinedButton"/>
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
@@ -438,8 +436,7 @@
                                 android:id="@+id/saveDeviceNameButton"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:text="@string/save_device_name"
-                                style="@style/Widget.Material3.Button"/>
+                                android:text="@string/save_device_name"/>
                         </LinearLayout>
 
                         <!-- FPS Settings -->
