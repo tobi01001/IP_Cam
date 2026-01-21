@@ -252,6 +252,12 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 isUpdatingSpinners = false
             }
+            
+            // Register preview consumer if preview is expanded
+            if (isPreviewExpanded) {
+                Log.d(TAG, "Service connected with expanded preview, registering consumer...")
+                cameraService?.registerPreviewConsumer()
+            }
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -352,7 +358,8 @@ class MainActivity : AppCompatActivity() {
         updateSectionVisibility(apiContent, apiExpandIcon, isApiExpanded)
         
         // Setup collapsible sections
-        setupCollapsibleSection(previewSectionHeader, previewContent, previewExpandIcon, PREF_PREVIEW_EXPANDED) { isPreviewExpanded = it }
+        // Preview section has special handling for consumer registration
+        setupPreviewSection()
         setupCollapsibleSection(videoSectionHeader, videoContent, videoExpandIcon, PREF_VIDEO_EXPANDED) { isVideoExpanded = it }
         setupCollapsibleSection(serverSectionHeader, serverContent, serverExpandIcon, PREF_SERVER_EXPANDED) { isServerExpanded = it }
         setupCollapsibleSection(apiSectionHeader, apiContent, apiExpandIcon, PREF_API_EXPANDED) { isApiExpanded = it }
@@ -1285,6 +1292,31 @@ class MainActivity : AppCompatActivity() {
         }
     }
     
+    // Special handler for preview section with consumer registration
+    private fun setupPreviewSection() {
+        previewSectionHeader.setOnClickListener {
+            val isExpanded = previewContent.visibility == View.VISIBLE
+            val newState = !isExpanded
+            isPreviewExpanded = newState
+            updateSectionVisibility(previewContent, previewExpandIcon, newState)
+            
+            // Save state to preferences
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putBoolean(PREF_PREVIEW_EXPANDED, newState).apply()
+            
+            // Register/unregister preview consumer when expanding/collapsing
+            if (newState) {
+                // Expanding preview - register consumer to activate camera
+                Log.d(TAG, "Preview expanded, registering preview consumer...")
+                cameraService?.registerPreviewConsumer()
+            } else {
+                // Collapsing preview - unregister consumer
+                Log.d(TAG, "Preview collapsed, unregistering preview consumer...")
+                cameraService?.unregisterPreviewConsumer()
+            }
+        }
+    }
+    
     // Helper method to update section visibility with animation
     private fun updateSectionVisibility(content: View, icon: ImageView, isExpanded: Boolean) {
         content.visibility = if (isExpanded) View.VISIBLE else View.GONE
@@ -1304,6 +1336,11 @@ class MainActivity : AppCompatActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
+        // Unregister preview consumer if it was registered
+        if (isPreviewExpanded) {
+            Log.d(TAG, "Activity destroying with expanded preview, unregistering consumer...")
+            cameraService?.unregisterPreviewConsumer()
+        }
         if (isServiceBound) {
             cameraService?.clearCallbacks()
             unbindService(serviceConnection)

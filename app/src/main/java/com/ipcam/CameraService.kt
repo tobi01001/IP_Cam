@@ -359,6 +359,35 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Bitmap pool for memory-efficient bitmap reuse
     private val bitmapPool = BitmapPool(maxPoolSizeBytes = 64L * 1024 * 1024) // 64 MB pool
     
+    // ==================== Camera State Management ====================
+    
+    /**
+     * CameraState - Tracks camera lifecycle for on-demand activation
+     */
+    private enum class CameraState {
+        IDLE,           // Camera not initialized, no consumers
+        INITIALIZING,   // Camera binding in progress
+        ACTIVE,         // Camera bound and providing frames
+        STOPPING,       // Camera unbinding in progress
+        ERROR           // Camera failed to initialize
+    }
+    
+    @Volatile private var cameraState: CameraState = CameraState.IDLE
+    private val cameraStateLock = Any()
+    
+    /**
+     * Consumer tracking for on-demand camera activation
+     * Consumers: Preview (MainActivity), MJPEG clients, RTSP clients
+     */
+    private enum class ConsumerType {
+        PREVIEW,    // MainActivity preview
+        MJPEG,      // MJPEG stream clients
+        RTSP        // RTSP streaming
+    }
+    
+    private val consumers = mutableSetOf<ConsumerType>()
+    private val consumersLock = Any()
+    
     companion object {
          private const val TAG = "CameraService"
          private const val CHANNEL_ID = "CameraServiceChannel"
@@ -487,30 +516,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
         
-        // ANDROID 14+ BOOT RESTRICTION HANDLING:
-        // When service starts from boot on Android 14+, we defer camera initialization
-        // because Android silently blocks activity launches from boot broadcasts.
-        // The camera will be initialized either:
-        // 1. When user visits web interface (first stream/snapshot request auto-activates)
-        // 2. Via explicit /activateCamera endpoint
-        // 3. On Android 11-13, camera starts immediately as before
-        //
-        // This allows the service to start reliably at boot while maintaining
-        // Delay camera start to ensure foreground service is fully established
-        // This prevents "Camera disabled by policy" errors on Android 14+ (API 34+)
-        // The foreground service needs to be in STARTED state before accessing camera
-        serviceScope.launch {
-            delay(1500) // Longer delay to ensure service permissions are fully initialized
-            startCamera()
-        }
+        // CAMERA INITIALIZATION:
+        // DO NOT automatically start camera on service creation
+        // Camera will start on-demand when first consumer (preview, MJPEG, RTSP) connects
+        // This saves resources when the app is running as a launcher without active use
+        Log.d(TAG, "Camera initialization deferred until first consumer connects")
+        cameraState = CameraState.IDLE
         
         // Auto-start RTSP if it was enabled in settings
         // This ensures RTSP persists across app/service restarts
         if (rtspEnabled) {
-            Log.d(TAG, "RTSP was enabled in settings, starting RTSP server...")
+            Log.d(TAG, "RTSP was enabled in settings, registering RTSP consumer...")
             serviceScope.launch {
-                // Delay slightly to let camera initialize first
-                delay(2500) // Increased delay to account for camera init delay
+                delay(1000) // Brief delay to ensure service is ready
+                registerConsumer(ConsumerType.RTSP)
                 enableRTSPStreaming()
             }
         }
@@ -527,21 +546,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             startServer()
         }
         
-        // Try to start camera if not already bound
-        // This handles cases where:
-        // 1. Service started before MainActivity granted permission
-        // 2. Service restarted after being killed
-        // 3. Permission was granted after service onCreate
-        if (cameraProvider == null) {
-            startCamera()
-        }
-        
-        // If camera is already bound, ensure it's in correct state
-        // This handles configuration changes or service restarts where camera binding might have been lost
-        if (cameraProvider != null && camera == null) {
-            Log.d(TAG, "Camera provider exists but camera not bound, rebinding...")
-            bindCamera()
-        }
+        // NOTE: Camera is NOT automatically started in onStartCommand
+        // Camera will be initialized on-demand when first consumer connects
+        // This prevents unnecessary camera usage when app is idle
         
         return START_STICKY
     }
@@ -1055,12 +1062,24 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             camera?.cameraInfo?.cameraState?.observe(this, cameraStateObserver)
             
+            // Camera binding successful - update state
+            synchronized(cameraStateLock) {
+                cameraState = CameraState.ACTIVE
+                Log.d(TAG, "Camera binding successful → ACTIVE state")
+            }
+            
             // Notify observers that camera state has changed (binding completed)
             // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
             safeInvokeCameraStateCallback(currentCamera)
         } catch (e: Exception) {
             Log.e(TAG, "Camera binding failed with exception: ${e.message}", e)
             e.printStackTrace()
+            
+            // Set error state
+            synchronized(cameraStateLock) {
+                cameraState = CameraState.ERROR
+                Log.d(TAG, "Camera binding failed → ERROR state")
+            }
             
             // Clear camera reference on failure to allow watchdog to retry
             camera = null
@@ -1076,11 +1095,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Properly stop camera activities before applying new settings.
      * This ensures clean state transition and prevents resource conflicts.
+     * Also used for on-demand deactivation when no consumers remain.
      */
     private fun stopCamera() {
         try {
+            Log.d(TAG, "Stopping camera...")
+            
             // Stop H.264 encoder first
             h264Encoder?.stop()
+            h264Encoder?.release()
             h264Encoder = null
             videoCaptureUseCase = null
             
@@ -1093,9 +1116,31 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear camera reference
             camera = null
             
+            // Clear frame data
+            lastProcessedFrame.set(null)
+            
+            // Update state to IDLE (unless already in ERROR)
+            synchronized(cameraStateLock) {
+                if (cameraState != CameraState.ERROR) {
+                    cameraState = CameraState.IDLE
+                    Log.d(TAG, "Camera stopped → IDLE state")
+                } else {
+                    Log.d(TAG, "Camera stopped (state remains ERROR)")
+                }
+            }
+            
+            // Update notification
+            updateNotification("Camera inactive - No consumers")
+            
+            // Broadcast state change
+            broadcastCameraState()
+            
             Log.d(TAG, "Camera stopped successfully (including H.264 encoder if active)")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping camera", e)
+            synchronized (cameraStateLock) {
+                cameraState = CameraState.ERROR
+            }
         }
     }
     
@@ -2764,40 +2809,80 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 var needsRecovery = false
                 
-                // Check camera provider health - ensure camera is initialized
-                // This handles cases where permission was granted after service started
-                if (cameraProvider == null) {
-                    val hasPermission = ContextCompat.checkSelfPermission(
-                        this@CameraService, 
-                        Manifest.permission.CAMERA
-                    ) == PackageManager.PERMISSION_GRANTED
-                    
-                    if (hasPermission) {
-                        Log.w(TAG, "Watchdog: Camera provider not initialized but permission granted, starting camera...")
-                        startCamera()
+                // Only check camera health if there are active consumers
+                val hasActiveConsumers = hasConsumers()
+                
+                if (hasActiveConsumers) {
+                    // Check camera provider health - ensure camera is initialized when consumers need it
+                    // This handles cases where permission was granted after service started
+                    if (cameraProvider == null) {
+                        val hasPermission = ContextCompat.checkSelfPermission(
+                            this@CameraService, 
+                            Manifest.permission.CAMERA
+                        ) == PackageManager.PERMISSION_GRANTED
+                        
+                        if (hasPermission) {
+                            Log.w(TAG, "Watchdog: Camera provider not initialized but consumers waiting, starting camera...")
+                            startCamera()
+                            needsRecovery = true
+                        } else {
+                            // Permission not granted - don't count as recovery needed
+                            // Log every 30 seconds to avoid spam
+                            if (watchdogRetryDelay >= 30_000L) {
+                                Log.d(TAG, "Watchdog: Camera provider not initialized, waiting for permission...")
+                            }
+                        }
+                    } else if (camera == null) {
+                        // Camera provider exists but camera not bound, with active consumers
+                        // This happens after ERROR_CAMERA_DISABLED or other binding failures
+                        Log.w(TAG, "Watchdog: Camera provider exists but camera not bound (${getConsumerCount()} consumers), binding camera...")
+                        
+                        // CameraX requires main thread for binding operations
+                        // Post to main thread to avoid IllegalStateException
+                        android.os.Handler(android.os.Looper.getMainLooper()).post {
+                            try {
+                                bindCamera()
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
+                            }
+                        }
                         needsRecovery = true
-                    } else {
-                        // Permission not granted - don't count as recovery needed
-                        // Log every 30 seconds to avoid spam
-                        if (watchdogRetryDelay >= 30_000L) {
-                            Log.d(TAG, "Watchdog: Camera provider not initialized, waiting for permission...")
-                        }
                     }
-                } else if (camera == null) {
-                    // Camera provider exists but camera not bound
-                    // This happens after ERROR_CAMERA_DISABLED or other binding failures
-                    Log.w(TAG, "Watchdog: Camera provider exists but camera not bound, binding camera...")
                     
-                    // CameraX requires main thread for binding operations
-                    // Post to main thread to avoid IllegalStateException
-                    android.os.Handler(android.os.Looper.getMainLooper()).post {
-                        try {
-                            bindCamera()
+                    // Check camera health - only if camera is bound
+                    if (camera != null) {
+                        // ATOMIC FRAME ACCESS: Get timestamp from atomic reference
+                        val currentFrame = lastProcessedFrame.get()
+                        val lastTimestamp = currentFrame?.timestamp ?: 0L
+                        val frameAge = System.currentTimeMillis() - lastTimestamp
+                        if (frameAge > FRAME_STALE_THRESHOLD_MS) {
+                            Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
+                            requestBindCamera()
+                            needsRecovery = true
+                        }
+                        
+                        // Check camera state - detect CLOSED state which indicates camera was released
+                        val cameraState = try {
+                            camera?.cameraInfo?.cameraState?.value
                         } catch (e: Exception) {
-                            Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
+                            Log.w(TAG, "Watchdog: Error reading camera state", e)
+                            null
+                        }
+                        
+                        if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
+                            Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
+                            requestBindCamera()
+                            needsRecovery = true
                         }
                     }
-                    needsRecovery = true
+                } else {
+                    // No active consumers - camera should be idle
+                    // Log consumer count periodically for monitoring
+                    if (watchdogRetryDelay >= 10_000L) {
+                        synchronized(cameraStateLock) {
+                            Log.d(TAG, "Watchdog: No consumers, camera state: $cameraState")
+                        }
+                    }
                 }
                 
                 // Check server health - only restart if it wasn't intentionally stopped
@@ -2805,33 +2890,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.w(TAG, "Watchdog: Server not alive, restarting...")
                     startServer()
                     needsRecovery = true
-                }
-                
-                // Check camera health - only if camera is bound
-                if (camera != null) {
-                    // ATOMIC FRAME ACCESS: Get timestamp from atomic reference
-                    val currentFrame = lastProcessedFrame.get()
-                    val lastTimestamp = currentFrame?.timestamp ?: 0L
-                    val frameAge = System.currentTimeMillis() - lastTimestamp
-                    if (frameAge > FRAME_STALE_THRESHOLD_MS) {
-                        Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
-                        requestBindCamera()
-                        needsRecovery = true
-                    }
-                    
-                    // Check camera state - detect CLOSED state which indicates camera was released
-                    val cameraState = try {
-                        camera?.cameraInfo?.cameraState?.value
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Watchdog: Error reading camera state", e)
-                        null
-                    }
-                    
-                    if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
-                        Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
-                        requestBindCamera()
-                        needsRecovery = true
-                    }
                 }
                 
                 // Check battery level and manage power/streaming accordingly
@@ -3334,6 +3392,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             rtspEnabled = true
             
+            // Register RTSP consumer to activate camera if needed
+            registerConsumer(ConsumerType.RTSP)
+            
             // Reset RTSP FPS counter when enabling to start fresh
             currentRtspFps = 0f
             synchronized(rtspFpsLock) {
@@ -3372,6 +3433,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             rtspEnabled = false
             rtspServer?.stop()
             rtspServer = null
+            
+            // Unregister RTSP consumer to deactivate camera if no other consumers
+            unregisterConsumer(ConsumerType.RTSP)
             
             // Reset RTSP FPS counter to avoid showing stale values
             currentRtspFps = 0f
@@ -3475,5 +3539,161 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Broadcast state change to web clients
             broadcastCameraState()
         }
+    }
+    
+    // ==================== Consumer Management ====================
+    
+    /**
+     * Register a consumer (preview, MJPEG, RTSP)
+     * Activates camera if this is the first consumer
+     */
+    fun registerConsumer(type: ConsumerType) {
+        synchronized(consumersLock) {
+            val wasEmpty = consumers.isEmpty()
+            consumers.add(type)
+            Log.d(TAG, "Registered consumer: $type, total consumers: ${consumers.size}")
+            
+            if (wasEmpty) {
+                Log.d(TAG, "First consumer registered, activating camera...")
+                activateCameraForConsumers()
+            }
+        }
+    }
+    
+    /**
+     * Unregister a consumer (preview, MJPEG, RTSP)
+     * Deactivates camera if this was the last consumer
+     */
+    fun unregisterConsumer(type: ConsumerType) {
+        synchronized(consumersLock) {
+            consumers.remove(type)
+            Log.d(TAG, "Unregistered consumer: $type, remaining consumers: ${consumers.size}")
+            
+            if (consumers.isEmpty()) {
+                Log.d(TAG, "Last consumer unregistered, deactivating camera...")
+                deactivateCameraForConsumers()
+            }
+        }
+    }
+    
+    /**
+     * Check if camera has any active consumers
+     */
+    fun hasConsumers(): Boolean {
+        synchronized(consumersLock) {
+            return consumers.isNotEmpty()
+        }
+    }
+    
+    /**
+     * Get consumer count
+     */
+    fun getConsumerCount(): Int {
+        synchronized(consumersLock) {
+            return consumers.size
+        }
+    }
+    
+    /**
+     * Activate camera when first consumer appears
+     */
+    private fun activateCameraForConsumers() {
+        synchronized(cameraStateLock) {
+            when (cameraState) {
+                CameraState.IDLE -> {
+                    Log.d(TAG, "Camera IDLE → INITIALIZING (on-demand activation)")
+                    cameraState = CameraState.INITIALIZING
+                    serviceScope.launch {
+                        delay(500) // Brief delay to ensure service is ready
+                        startCamera()
+                    }
+                }
+                CameraState.ERROR -> {
+                    Log.d(TAG, "Camera in ERROR state, retrying initialization...")
+                    cameraState = CameraState.INITIALIZING
+                    serviceScope.launch {
+                        delay(500)
+                        startCamera()
+                    }
+                }
+                CameraState.INITIALIZING -> {
+                    Log.d(TAG, "Camera already initializing, waiting...")
+                }
+                CameraState.ACTIVE -> {
+                    Log.d(TAG, "Camera already active")
+                }
+                CameraState.STOPPING -> {
+                    Log.d(TAG, "Camera stopping, will restart after stopping completes")
+                    // Will be handled by the stopping process
+                }
+            }
+        }
+    }
+    
+    /**
+     * Deactivate camera when last consumer disconnects
+     */
+    private fun deactivateCameraForConsumers() {
+        synchronized(cameraStateLock) {
+            when (cameraState) {
+                CameraState.ACTIVE, CameraState.INITIALIZING -> {
+                    Log.d(TAG, "Camera $cameraState → STOPPING (no consumers)")
+                    cameraState = CameraState.STOPPING
+                    serviceScope.launch {
+                        stopCamera()
+                    }
+                }
+                CameraState.IDLE -> {
+                    Log.d(TAG, "Camera already idle")
+                }
+                CameraState.STOPPING -> {
+                    Log.d(TAG, "Camera already stopping")
+                }
+                CameraState.ERROR -> {
+                    Log.d(TAG, "Camera in error state, marking as idle")
+                    cameraState = CameraState.IDLE
+                }
+            }
+        }
+    }
+    
+    /**
+     * Manual camera activation endpoint (for testing/debugging)
+     */
+    fun manualActivateCamera() {
+        Log.d(TAG, "Manual camera activation requested")
+        registerConsumer(ConsumerType.PREVIEW) // Use PREVIEW as proxy for manual activation
+    }
+    
+    /**
+     * Manual camera deactivation endpoint (for testing/debugging)
+     */
+    fun manualDeactivateCamera() {
+        Log.d(TAG, "Manual camera deactivation requested")
+        unregisterConsumer(ConsumerType.PREVIEW)
+    }
+    
+    // Consumer registration methods for HttpServer interface
+    override fun registerMjpegConsumer() {
+        registerConsumer(ConsumerType.MJPEG)
+    }
+    
+    override fun unregisterMjpegConsumer() {
+        unregisterConsumer(ConsumerType.MJPEG)
+    }
+    
+    override fun getCameraStateString(): String {
+        synchronized(cameraStateLock) {
+            return cameraState.name
+        }
+    }
+    
+    // Public methods for MainActivity to register/unregister preview consumer
+    fun registerPreviewConsumer() {
+        registerConsumer(ConsumerType.PREVIEW)
+    }
+    
+    fun unregisterPreviewConsumer() {
+        unregisterConsumer(ConsumerType.PREVIEW)
     }
 }

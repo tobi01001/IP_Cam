@@ -1387,17 +1387,33 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
+        // Check if camera is idle and needs activation
+        val cameraState = cameraService.getCameraStateString()
+        if (cameraState == "IDLE") {
+            Log.d(TAG, "Camera IDLE, temporarily activating for snapshot...")
+            cameraService.registerMjpegConsumer()
+            // Give camera time to initialize
+            delay(2000)
+        }
+        
         val jpegBytes = cameraService.getLastFrameJpegBytes()
         
         if (jpegBytes != null) {
             call.respondBytes(jpegBytes, ContentType.Image.JPEG)
         } else {
             call.respondText(
-                "No frame available",
+                "No frame available - Camera may be initializing",
                 ContentType.Text.Plain,
                 HttpStatusCode.ServiceUnavailable
             )
         }
+        
+        // If we activated camera just for snapshot and no streams are active, deactivate
+        if (cameraState == "IDLE" && activeStreams.get() == 0) {
+            Log.d(TAG, "No active streams, deactivating camera after snapshot")
+            cameraService.unregisterMjpegConsumer()
+        }
+    }
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
@@ -1489,7 +1505,14 @@ class HttpServer(
         
         // Normal streaming logic
         val clientId = clientIdCounter.incrementAndGet()
-        activeStreams.incrementAndGet()
+        val isFirstStream = activeStreams.incrementAndGet() == 1
+        
+        // Register MJPEG consumer when first stream connects
+        if (isFirstStream) {
+            Log.d(TAG, "First MJPEG stream connecting, registering consumer...")
+            cameraService.registerMjpegConsumer()
+        }
+        
         Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
         
         call.respondBytesWriter(ContentType.parse("multipart/x-mixed-replace; boundary=--jpgboundary")) {
@@ -1530,8 +1553,14 @@ class HttpServer(
                 }
             } finally {
                 cameraService.removeClient(clientId)
-                activeStreams.decrementAndGet()
-                Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
+                val remainingStreams = activeStreams.decrementAndGet()
+                Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: $remainingStreams")
+                
+                // Unregister MJPEG consumer when last stream disconnects
+                if (remainingStreams == 0) {
+                    Log.d(TAG, "Last MJPEG stream disconnected, unregistering consumer...")
+                    cameraService.unregisterMjpegConsumer()
+                }
             }
         }
     }
