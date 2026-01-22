@@ -2386,15 +2386,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getActiveConnectionsCount(): Int {
-        // Return the count of connections from HttpServer
+        // Return the count of all HTTP connections from HttpServer
         // This includes MJPEG streams + SSE clients
         return (httpServer?.getActiveStreamsCount() ?: 0) + (httpServer?.getActiveSseClientsCount() ?: 0)
     }
     
     override fun getMjpegClientCount(): Int {
-        // HTTP-based streaming clients: MJPEG streams + SSE (Server-Sent Events) clients
-        // Get the actual count from HttpServer
-        return getActiveConnectionsCount()
+        // MJPEG streaming clients: only count actual video streams (/stream endpoint)
+        // SSE clients are for status updates, not video streaming
+        return httpServer?.getActiveStreamsCount() ?: 0
     }
     
     override fun getRtspClientCount(): Int {
@@ -3354,11 +3354,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getBandwidthBps(): Long {
-        // Calculate total bandwidth across all clients
-        // This is an estimate based on global stats
-        val globalStats = bandwidthMonitor.getGlobalStats()
-        // Return average throughput in bits per second
-        return (globalStats.averageThroughputMbps * 1_000_000).toLong()
+        // Get current bandwidth from all active clients
+        // This is more responsive than lifetime average
+        return bandwidthMonitor.getCurrentBandwidthBps()
     }
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {
