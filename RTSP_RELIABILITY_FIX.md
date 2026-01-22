@@ -54,8 +54,9 @@ private fun createServerSocket(port: Int): ServerSocket {
 **Key improvements**:
 - Creates unbound socket first to allow option configuration
 - Sets `SO_REUSEADDR = true` to enable binding to sockets in TIME_WAIT state
-- Adds socket timeout for accept() operations
+- Adds socket timeout (5 seconds) for accept() operations to allow graceful shutdown
 - Only binds after configuration is complete
+- Socket timeout is expected behavior - allows the accept loop to wake up periodically and check if the server should stop
 
 ### 2. Retry Logic with Exponential Backoff
 
@@ -160,6 +161,38 @@ fun stop() {
 - 100ms delay allows OS-level socket cleanup
 - Separate error handling for encoder release
 - Better logging for diagnostics
+
+### 5. Socket Timeout Handling
+
+The accept loop properly handles socket timeouts:
+
+```kotlin
+private suspend fun acceptConnections() {
+    while (isRunning.get()) {
+        try {
+            val clientSocket = serverSocket?.accept()
+            if (clientSocket != null) {
+                serverScope.launch {
+                    handleClient(clientSocket)
+                }
+            }
+        } catch (e: java.net.SocketTimeoutException) {
+            // Expected - socket timeout allows periodic checking of isRunning
+            // Not an error, just continue the loop
+        } catch (e: Exception) {
+            if (isRunning.get()) {
+                Log.e(TAG, "Error accepting connection", e)
+            }
+        }
+    }
+}
+```
+
+**Key improvements**:
+- Socket timeout (5 seconds) is expected behavior, not an error
+- Allows the accept loop to wake up periodically to check if server should stop
+- Enables graceful shutdown without indefinite blocking
+- Only logs actual errors, not expected timeout behavior
 
 ## Testing
 

@@ -724,6 +724,9 @@ class RTSPServer(
                         handleClient(clientSocket)
                     }
                 }
+            } catch (e: java.net.SocketTimeoutException) {
+                // Expected - socket timeout allows periodic checking of isRunning
+                // Not an error, just continue the loop
             } catch (e: Exception) {
                 if (isRunning.get()) {
                     Log.e(TAG, "Error accepting connection", e)
