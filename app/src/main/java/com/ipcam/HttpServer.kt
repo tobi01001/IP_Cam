@@ -131,6 +131,11 @@ class HttpServer(
                 
                 // Battery management endpoints
                 get("/overrideBatteryLimit") { serveOverrideBatteryLimit() }
+                
+                // Camera state management endpoints (for testing/debugging)
+                get("/cameraState") { serveCameraState() }
+                get("/activateCamera") { serveActivateCamera() }
+                get("/deactivateCamera") { serveDeactivateCamera() }
             }
         }
         
@@ -1387,16 +1392,43 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
+        // Check if camera is idle and needs activation
+        val cameraState = cameraService.getCameraStateString()
+        val needsActivation = cameraState == "IDLE"
+        
+        if (needsActivation) {
+            Log.d(TAG, "Camera IDLE, temporarily activating for snapshot...")
+            cameraService.registerMjpegConsumer()
+            
+            // Poll for camera to become active with timeout
+            var attempts = 0
+            val maxAttempts = 20 // 2 seconds total (20 * 100ms)
+            while (attempts < maxAttempts && cameraService.getCameraStateString() != "ACTIVE") {
+                delay(100)
+                attempts++
+            }
+            
+            if (cameraService.getCameraStateString() != "ACTIVE") {
+                Log.w(TAG, "Camera failed to activate within timeout for snapshot")
+            }
+        }
+        
         val jpegBytes = cameraService.getLastFrameJpegBytes()
         
         if (jpegBytes != null) {
             call.respondBytes(jpegBytes, ContentType.Image.JPEG)
         } else {
             call.respondText(
-                "No frame available",
+                "No frame available - Camera may be initializing",
                 ContentType.Text.Plain,
                 HttpStatusCode.ServiceUnavailable
             )
+        }
+        
+        // If we activated camera just for snapshot and no streams are active, deactivate
+        if (needsActivation && activeStreams.get() == 0) {
+            Log.d(TAG, "No active streams, deactivating camera after snapshot")
+            cameraService.unregisterMjpegConsumer()
         }
     }
     
@@ -1489,7 +1521,14 @@ class HttpServer(
         
         // Normal streaming logic
         val clientId = clientIdCounter.incrementAndGet()
-        activeStreams.incrementAndGet()
+        val isFirstStream = activeStreams.incrementAndGet() == 1
+        
+        // Register MJPEG consumer when first stream connects
+        if (isFirstStream) {
+            Log.d(TAG, "First MJPEG stream connecting, registering consumer...")
+            cameraService.registerMjpegConsumer()
+        }
+        
         Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
         
         call.respondBytesWriter(ContentType.parse("multipart/x-mixed-replace; boundary=--jpgboundary")) {
@@ -1530,8 +1569,14 @@ class HttpServer(
                 }
             } finally {
                 cameraService.removeClient(clientId)
-                activeStreams.decrementAndGet()
-                Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: ${activeStreams.get()}")
+                val remainingStreams = activeStreams.decrementAndGet()
+                Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: $remainingStreams")
+                
+                // Unregister MJPEG consumer when last stream disconnects
+                if (remainingStreams == 0) {
+                    Log.d(TAG, "Last MJPEG stream disconnected, unregistering consumer...")
+                    cameraService.unregisterMjpegConsumer()
+                }
             }
         }
     }
@@ -1561,8 +1606,9 @@ class HttpServer(
         val batteryMode = cameraService.getBatteryMode()
         val streamingAllowed = cameraService.isStreamingAllowed()
         val deviceName = cameraService.getDeviceName()
+        val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\"]"
         
         val json = """
             {
@@ -1570,6 +1616,7 @@ class HttpServer(
                 "server": "Ktor",
                 "deviceName": "$deviceName",
                 "camera": "$cameraName",
+                "cameraState": "$cameraState",
                 "url": "${cameraService.getServerUrl()}",
                 "resolution": "${cameraService.getSelectedResolutionLabel()}",
                 "flashlightAvailable": ${cameraService.isFlashlightAvailable()},
@@ -2235,4 +2282,66 @@ class HttpServer(
     }
     
     // ==================== End Battery Management Endpoints ====================
+    
+    // ==================== Camera State Management Endpoints ====================
+    
+    /**
+     * Get current camera state (IDLE, INITIALIZING, ACTIVE, STOPPING, ERROR)
+     * Includes consumer count for debugging
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCameraState() {
+        val cameraState = cameraService.getCameraStateString()
+        val activeStreamCount = activeStreams.get()
+        
+        call.respondText(
+            """{"status":"ok","cameraState":"$cameraState","mjpegStreams":$activeStreamCount,"message":"Camera state retrieved"}""",
+            ContentType.Application.Json
+        )
+    }
+    
+    /**
+     * Manually activate camera (for testing/debugging)
+     * This registers a temporary consumer to keep camera active
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
+        try {
+            cameraService.manualActivateCamera()
+            val cameraState = cameraService.getCameraStateString()
+            call.respondText(
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera activation requested - registered MANUAL consumer"}""",
+                ContentType.Application.Json
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error activating camera", e)
+            call.respondText(
+                """{"status":"error","message":"Failed to activate camera: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Manually deactivate camera (for testing/debugging)
+     * This unregisters the temporary consumer, camera will stop if no other consumers
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDeactivateCamera() {
+        try {
+            cameraService.manualDeactivateCamera()
+            val cameraState = cameraService.getCameraStateString()
+            call.respondText(
+                """{"status":"ok","cameraState":"$cameraState","message":"Camera deactivation requested - unregistered MANUAL consumer. Camera will stop if no other consumers remain."}""",
+                ContentType.Application.Json
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error deactivating camera", e)
+            call.respondText(
+                """{"status":"error","message":"Failed to deactivate camera: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    // ==================== End Camera State Management Endpoints ====================
 }

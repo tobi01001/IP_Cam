@@ -86,4 +86,11 @@ interface CameraServiceInterface {
     // Device identification
     fun getDeviceName(): String
     fun setDeviceName(name: String)
+    
+    // Consumer management for on-demand camera activation
+    fun registerMjpegConsumer()
+    fun unregisterMjpegConsumer()
+    fun getCameraStateString(): String
+    fun manualActivateCamera()
+    fun manualDeactivateCamera()
 }

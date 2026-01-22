@@ -53,6 +53,9 @@ class RTSPServer(
     private var serverJob: Job? = null
     private val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
+    // Track number of actively playing sessions for consumer management
+    private val activePlayingSessions = AtomicInteger(0)
+    
     @Volatile private var encoderName: String = "unknown"
     @Volatile private var isHardwareEncoder: Boolean = false
     @Volatile private var lastError: String? = null
@@ -710,6 +713,20 @@ class RTSPServer(
         } catch (e: Exception) {
             Log.e(TAG, "Error handling client $sessionId", e)
         } finally {
+            // Handle cleanup and consumer unregistration if session was playing
+            val wasPlaying = session.state == SessionState.PLAYING
+            
+            if (wasPlaying) {
+                val playingCount = activePlayingSessions.decrementAndGet()
+                Log.d(TAG, "Client $sessionId disconnected while playing (active sessions: $playingCount)")
+                
+                if (playingCount == 0) {
+                    // Last client disconnected - unregister RTSP consumer to deactivate camera
+                    Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
+                    cameraService?.unregisterRtspConsumer()
+                }
+            }
+            
             sessions.remove(sessionId)
             try {
                 socket.close()
@@ -884,7 +901,21 @@ class RTSPServer(
     private fun handlePlay(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
+        // Update session state to playing
+        val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.PLAYING
+        
+        // Register RTSP consumer when first client starts playing
+        if (!wasPlaying) {
+            val playingCount = activePlayingSessions.incrementAndGet()
+            Log.d(TAG, "Client ${session.sessionId} started playing (active sessions: $playingCount)")
+            
+            if (playingCount == 1) {
+                // First client to play - register RTSP consumer to activate camera
+                Log.i(TAG, "First RTSP client playing - registering consumer to activate camera")
+                cameraService?.registerRtspConsumer()
+            }
+        }
         
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
@@ -897,7 +928,20 @@ class RTSPServer(
     private fun handleTeardown(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
+        // Handle consumer unregistration if session was playing
+        val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.INIT
+        
+        if (wasPlaying) {
+            val playingCount = activePlayingSessions.decrementAndGet()
+            Log.d(TAG, "Client ${session.sessionId} teardown (active sessions: $playingCount)")
+            
+            if (playingCount == 0) {
+                // Last client disconnected - unregister RTSP consumer to deactivate camera
+                Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
+                cameraService?.unregisterRtspConsumer()
+            }
+        }
         
         // Close RTP/RTCP sockets
         try {
@@ -917,7 +961,20 @@ class RTSPServer(
     private fun handlePause(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
+        // Update session state and handle consumer unregistration
+        val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.READY
+        
+        if (wasPlaying) {
+            val playingCount = activePlayingSessions.decrementAndGet()
+            Log.d(TAG, "Client ${session.sessionId} paused (active sessions: $playingCount)")
+            
+            if (playingCount == 0) {
+                // Last client paused - unregister RTSP consumer to deactivate camera
+                Log.i(TAG, "Last RTSP client paused - unregistering consumer to deactivate camera")
+                cameraService?.unregisterRtspConsumer()
+            }
+        }
         
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
@@ -1596,6 +1653,13 @@ class RTSPServer(
         
         isRunning.set(false)
         isEncoding.set(false)
+        
+        // Unregister RTSP consumer if there were active sessions
+        if (activePlayingSessions.get() > 0) {
+            Log.i(TAG, "RTSP server stopping with ${activePlayingSessions.get()} active sessions - unregistering consumer")
+            cameraService?.unregisterRtspConsumer()
+            activePlayingSessions.set(0)
+        }
         
         try {
             // Close all sessions
