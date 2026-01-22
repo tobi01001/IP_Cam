@@ -1305,14 +1305,17 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putBoolean(PREF_PREVIEW_EXPANDED, newState).apply()
             
             // Register/unregister preview consumer when expanding/collapsing
-            if (newState) {
-                // Expanding preview - register consumer to activate camera
-                Log.d(TAG, "Preview expanded, registering preview consumer...")
-                cameraService?.registerPreviewConsumer()
-            } else {
-                // Collapsing preview - unregister consumer
-                Log.d(TAG, "Preview collapsed, unregistering preview consumer...")
-                cameraService?.unregisterPreviewConsumer()
+            // Post to avoid blocking UI thread and interfering with scroll events
+            previewSectionHeader.post {
+                if (newState) {
+                    // Expanding preview - register consumer to activate camera
+                    Log.d(TAG, "Preview expanded, registering preview consumer...")
+                    cameraService?.registerPreviewConsumer()
+                } else {
+                    // Collapsing preview - unregister consumer
+                    Log.d(TAG, "Preview collapsed, unregistering preview consumer...")
+                    cameraService?.unregisterPreviewConsumer()
+                }
             }
         }
     }

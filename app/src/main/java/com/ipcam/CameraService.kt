@@ -526,16 +526,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.d(TAG, "Camera initialization deferred until first consumer connects")
         cameraState = CameraState.IDLE
         
-        // Auto-start RTSP if it was enabled in settings
-        // This ensures RTSP persists across app/service restarts
-        if (rtspEnabled) {
-            Log.d(TAG, "RTSP was enabled in settings, registering RTSP consumer...")
-            serviceScope.launch {
-                delay(1000) // Brief delay to ensure service is ready
-                registerConsumer(ConsumerType.RTSP)
-                enableRTSPStreaming()
-            }
-        }
+        // NOTE: RTSP is now fully on-demand and does not auto-start
+        // RTSP will activate when clients connect via the RTSP server
+        // No need to persist RTSP enabled state across restarts
         
         startWatchdog()
     }
@@ -1099,6 +1092,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Properly stop camera activities before applying new settings.
      * This ensures clean state transition and prevents resource conflicts.
      * Also used for on-demand deactivation when no consumers remain.
+     * 
+     * MUST be called on main thread due to CameraX unbindAll() requirement.
      */
     private fun stopCamera() {
         try {
@@ -1112,8 +1107,15 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
             
-            // Unbind all use cases from lifecycle
-            cameraProvider?.unbindAll()
+            // Unbind all use cases from lifecycle - MUST be on main thread
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                try {
+                    cameraProvider?.unbindAll()
+                    Log.d(TAG, "Camera unbound from lifecycle")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Error unbinding camera", e)
+                }
+            }
             
             // Clear camera reference
             camera = null
@@ -2159,8 +2161,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
         isFlashlightOn = prefs.getBoolean("flashlightOn", false)
         
-        // Load RTSP settings (with persistence)
-        rtspEnabled = prefs.getBoolean("rtspEnabled", false)
+        // NOTE: RTSP is now on-demand only, no persistence of enabled state
+        // Only persist RTSP configuration (bitrate, mode) for when it's activated
         rtspBitrate = prefs.getInt("rtspBitrate", -1)
         rtspBitrateMode = prefs.getString("rtspBitrateMode", "VBR") ?: "VBR"
         
@@ -2239,9 +2241,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
             
-            // Save RTSP settings (with persistence for bitrate and mode)
-            putBoolean("rtspEnabled", rtspEnabled)
-            // Save current RTSP metrics if server is running, otherwise save stored values
+            // NOTE: RTSP enabled state is NOT persisted (on-demand only)
+            // Only save RTSP configuration for when it's activated
             if (rtspServer != null) {
                 rtspServer?.getMetrics()?.let { metrics ->
                     rtspBitrate = (metrics.bitrateMbps * 1_000_000).toInt()
@@ -3394,8 +3395,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             rtspEnabled = true
             
-            // Register RTSP consumer to activate camera if needed
-            registerConsumer(ConsumerType.RTSP)
+            // NOTE: RTSP consumer is NOT automatically registered here
+            // Consumer registration happens on-demand when RTSP clients connect
+            // This keeps camera idle until actually needed
             
             // Reset RTSP FPS counter when enabling to start fresh
             currentRtspFps = 0f
@@ -3405,6 +3407,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             saveSettings()
             Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
+            Log.i(TAG, "Camera will activate on-demand when RTSP clients connect")
             
             // Rebind camera to create H.264 encoder use case
             // This is critical - the H264PreviewEncoder is only created in bindCamera()
@@ -3436,8 +3439,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             rtspServer?.stop()
             rtspServer = null
             
-            // Unregister RTSP consumer to deactivate camera if no other consumers
-            unregisterConsumer(ConsumerType.RTSP)
+            // NOTE: RTSP consumer unregistration is NOT done here
+            // Consumers are managed on-demand based on client connections
+            // If camera is active only for RTSP, it will stay active until clients disconnect
             
             // Reset RTSP FPS counter to avoid showing stale values
             currentRtspFps = 0f
@@ -3634,9 +3638,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Deactivate camera when last consumer disconnects
+     * Double-checks consumer count for safety
      */
     private fun deactivateCameraForConsumers() {
         synchronized(cameraStateLock) {
+            // Double-check that there are really no consumers
+            // This prevents race conditions where a new consumer registered
+            // between the check in unregisterConsumer and this call
+            if (hasConsumers()) {
+                Log.d(TAG, "Consumers still present (${getConsumerCount()}), skipping deactivation")
+                return
+            }
+            
             when (cameraState) {
                 CameraState.ACTIVE, CameraState.INITIALIZING -> {
                     Log.d(TAG, "Camera $cameraState → STOPPING (no consumers)")
@@ -3652,7 +3665,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.d(TAG, "Camera already stopping")
                 }
                 CameraState.ERROR -> {
-                    Log.d(TAG, "Camera in error state, marking as idle")
+                    // On ERROR state, mark as IDLE to allow re-initialization when next consumer appears
+                    // This is safe because:
+                    // 1. No consumers need the camera right now
+                    // 2. Next consumer registration will trigger fresh initialization
+                    // 3. ERROR state is preserved in logs for debugging
+                    Log.d(TAG, "Camera in ERROR state with no consumers, resetting to IDLE for next activation attempt")
                     cameraState = CameraState.IDLE
                 }
             }
@@ -3681,6 +3699,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     fun unregisterPreviewConsumer() {
         unregisterConsumer(ConsumerType.PREVIEW)
+    }
+    
+    // Public methods for RTSP client connections to register/unregister consumers
+    fun registerRtspConsumer() {
+        Log.d(TAG, "RTSP client connected, registering consumer")
+        registerConsumer(ConsumerType.RTSP)
+    }
+    
+    fun unregisterRtspConsumer() {
+        Log.d(TAG, "RTSP client disconnected, unregistering consumer")
+        unregisterConsumer(ConsumerType.RTSP)
     }
     
     // Manual activation methods implementing interface (for testing/debugging)
