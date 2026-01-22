@@ -253,302 +253,511 @@ class HttpServer(
                 <title>$displayName</title>
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <style>
-                    body { font-family: Arial, sans-serif; margin: 20px; background-color: #f0f0f0; }
-                    h1 { color: #333; }
-                    .container { background: white; padding: 20px; border-radius: 8px; max-width: 800px; margin: 0 auto; }
-                    img { max-width: 100%; height: auto; border: 1px solid #ddd; background: #000; }
-                    button { background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
-                    button:hover { background-color: #45a049; }
-                    #streamContainer:fullscreen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
-                    #streamContainer:-webkit-full-screen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
-                    #streamContainer:-moz-full-screen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
-                    #streamContainer:-ms-fullscreen { background: #000; display: flex; align-items: center; justify-content: center; width: 100vw; height: 100vh; }
-                    #streamContainer:fullscreen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-                    #streamContainer:-webkit-full-screen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-                    #streamContainer:-moz-full-screen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-                    #streamContainer:-ms-fullscreen #stream { max-width: 100%; max-height: 100%; width: auto; height: auto; object-fit: contain; }
-                    #fullscreenBtn { background-color: #2196F3; }
-                    #fullscreenBtn:hover { background-color: #0b7dda; }
-                    .endpoint { background-color: #f9f9f9; padding: 10px; margin: 10px 0; border-left: 4px solid #4CAF50; }
-                    code { background-color: #e0e0e0; padding: 2px 6px; border-radius: 3px; }
-                    .endpoint a { color: #1976D2; text-decoration: none; font-weight: 500; }
-                    .endpoint a:hover { text-decoration: underline; color: #1565C0; }
-                    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
-                    select { padding: 8px; border-radius: 4px; }
-                    .note { font-size: 13px; color: #444; }
-                    .status-info { background-color: #e8f5e9; padding: 12px; margin: 10px 0; border-radius: 4px; border-left: 4px solid #4CAF50; }
-                    .status-info strong { color: #2e7d32; }
-                    #connectionsContainer { margin: 10px 0; overflow-x: auto; }
-                    #connectionsContainer table { width: 100%; border-collapse: collapse; }
-                    #connectionsContainer th { padding: 8px; text-align: left; border: 1px solid #ddd; background-color: #f0f0f0; font-weight: bold; }
-                    #connectionsContainer td { padding: 8px; border: 1px solid #ddd; }
-                    #connectionsContainer tr:hover { background-color: #f5f5f5; }
-                    #connectionsContainer button { padding: 4px 8px; font-size: 12px; background-color: #f44336; }
-                    #connectionsContainer button:hover { background-color: #d32f2f; }
-                    .battery-status { background-color: #fff3cd; padding: 10px; border-radius: 4px; margin: 10px 0; border-left: 4px solid #ffc107; }
-                    .battery-status.normal { background-color: #d4edda; border-left-color: #28a745; }
-                    .battery-status.low { background-color: #fff3cd; border-left-color: #ffc107; }
-                    .battery-status.critical { background-color: #f8d7da; border-left-color: #dc3545; }
+                    * { box-sizing: border-box; margin: 0; padding: 0; }
+                    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+                    .container { max-width: 1200px; margin: 0 auto; }
+                    
+                    /* Header */
+                    .header { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-bottom: 20px; }
+                    .header h1 { color: #333; font-size: 28px; margin-bottom: 10px; }
+                    .header .version { color: #666; font-size: 12px; }
+                    
+                    /* Navigation Tabs */
+                    .tabs { display: flex; gap: 5px; margin-bottom: 20px; flex-wrap: wrap; }
+                    .tab { background: rgba(255,255,255,0.9); border: none; padding: 12px 20px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px; font-weight: 500; color: #666; transition: all 0.3s; }
+                    .tab:hover { background: white; color: #333; }
+                    .tab.active { background: white; color: #667eea; box-shadow: 0 -2px 6px rgba(0,0,0,0.1); }
+                    
+                    /* Tab Content */
+                    .tab-content { display: none; background: white; padding: 20px; border-radius: 0 12px 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                    .tab-content.active { display: block; }
+                    
+                    /* Cards */
+                    .card { background: #f8f9fa; border-radius: 8px; padding: 16px; margin-bottom: 16px; border-left: 4px solid #667eea; }
+                    .card h3 { color: #333; font-size: 18px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+                    .card h3::before { content: ''; width: 4px; height: 20px; background: #667eea; border-radius: 2px; }
+                    
+                    /* Status Badges */
+                    .status-badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+                    .status-badge.success { background: #d4edda; color: #155724; }
+                    .status-badge.warning { background: #fff3cd; color: #856404; }
+                    .status-badge.danger { background: #f8d7da; color: #721c24; }
+                    .status-badge.info { background: #d1ecf1; color: #0c5460; }
+                    
+                    /* Buttons */
+                    button { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s; margin: 4px; }
+                    button:hover { background: #5568d3; transform: translateY(-1px); box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
+                    button:disabled { background: #ccc; cursor: not-allowed; transform: none; }
+                    button.secondary { background: #6c757d; }
+                    button.secondary:hover { background: #5a6268; }
+                    button.danger { background: #dc3545; }
+                    button.danger:hover { background: #c82333; }
+                    button.success { background: #28a745; }
+                    button.success:hover { background: #218838; }
+                    
+                    /* Form Elements */
+                    .form-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+                    .form-row label { font-size: 14px; color: #555; font-weight: 500; }
+                    select, input[type="number"] { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+                    select:focus, input[type="number"]:focus { outline: none; border-color: #667eea; }
+                    
+                    /* Stream Container */
+                    #streamContainer { background: #000; border-radius: 8px; overflow: hidden; min-height: 400px; display: flex; align-items: center; justify-content: center; margin-bottom: 12px; }
+                    #stream { max-width: 100%; height: auto; display: none; }
+                    #streamPlaceholder { color: #888; font-size: 16px; }
+                    #streamContainer:fullscreen { width: 100vw; height: 100vh; border-radius: 0; }
+                    #streamContainer:fullscreen #stream { max-width: 100%; max-height: 100%; object-fit: contain; }
+                    
+                    /* Stats Grid */
+                    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+                    .stat-card { background: white; padding: 16px; border-radius: 8px; border-left: 4px solid #667eea; }
+                    .stat-label { font-size: 12px; color: #666; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px; }
+                    .stat-value { font-size: 24px; font-weight: 700; color: #333; }
+                    
+                    /* Table */
+                    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+                    th { background: #f8f9fa; padding: 12px; text-align: left; font-weight: 600; color: #555; border-bottom: 2px solid #dee2e6; }
+                    td { padding: 12px; border-bottom: 1px solid #dee2e6; }
+                    tr:hover { background: #f8f9fa; }
+                    
+                    /* API Endpoints */
+                    .endpoint { background: #f8f9fa; padding: 12px; margin: 8px 0; border-radius: 6px; border-left: 3px solid #667eea; }
+                    .endpoint strong { color: #333; }
+                    .endpoint code { background: #e9ecef; padding: 2px 6px; border-radius: 4px; font-family: 'Courier New', monospace; font-size: 13px; }
+                    .endpoint a { color: #667eea; text-decoration: none; font-weight: 500; }
+                    .endpoint a:hover { text-decoration: underline; }
+                    
+                    /* Alert/Info boxes */
+                    .alert { padding: 12px 16px; border-radius: 6px; margin-bottom: 12px; font-size: 14px; }
+                    .alert.info { background: #d1ecf1; color: #0c5460; border-left: 4px solid #17a2b8; }
+                    .alert.warning { background: #fff3cd; color: #856404; border-left: 4px solid #ffc107; }
+                    .alert.success { background: #d4edda; color: #155724; border-left: 4px solid #28a745; }
+                    
+                    /* Responsive */
+                    @media (max-width: 768px) {
+                        body { padding: 10px; }
+                        .header h1 { font-size: 22px; }
+                        .tabs { gap: 2px; }
+                        .tab { padding: 10px 12px; font-size: 12px; }
+                        .tab-content { padding: 12px; }
+                        .stats-grid { grid-template-columns: 1fr 1fr; }
+                        .stat-value { font-size: 20px; }
+                    }
+                    
+                    /* Collapsible sections */
+                    .collapsible-header { cursor: pointer; user-select: none; padding: 12px; background: #f8f9fa; border-radius: 6px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center; }
+                    .collapsible-header:hover { background: #e9ecef; }
+                    .collapsible-content { display: none; padding-left: 12px; }
+                    .collapsible-content.expanded { display: block; }
+                    .collapsible-icon { transition: transform 0.3s; }
+                    .collapsible-icon.expanded { transform: rotate(90deg); }
                 </style>
             </head>
             <body>
                 <div class="container">
-                    <h1>$displayName</h1>
-                    <div class="status-info">
-                        <strong>Server Status:</strong> Running (Ktor) | 
-                        <strong>Active Connections:</strong> <span id="connectionCount">$connectionDisplay</span>
+                    <!-- Header -->
+                    <div class="header">
+                        <h1>$displayName</h1>
+                        <div class="version">
+                            ${BuildInfo.getVersionString()} | ${BuildInfo.getBuildString()}
+                        </div>
                     </div>
-                    <div id="batteryStatusDisplay" class="battery-status">
-                        <strong>Battery Status:</strong> <span id="batteryModeText">Loading...</span> | 
-                        <strong>Streaming:</strong> <span id="streamingStatusText">Checking...</span>
-                    </div>
-                    <p class="note"><em>Connection count and battery status update in real-time via Server-Sent Events. Initial count: $connectionDisplay</em></p>
-                    <h2>Live Stream</h2>
-                    <div id="streamContainer" style="text-align: center; background: #000; min-height: 300px; display: flex; align-items: center; justify-content: center;">
-                        <img id="stream" style="display: none; max-width: 100%; height: auto;" alt="Camera Stream">
-                        <div id="streamPlaceholder" style="color: #888; font-size: 18px;">Click "Start Stream" to begin</div>
-                    </div>
-                    <br>
-                    <div class="row">
-                        <button id="toggleStreamBtn" onclick="toggleStream()">Start Stream</button>
-                        <button onclick="reloadStream()">Refresh</button>
-                        <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
-                        <button onclick="switchCamera()">Switch Camera</button>
-                        <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
-                        <select id="formatSelect"></select>
-                        <button onclick="applyFormat()">Apply Format</button>
-                    </div>
-                    <div class="row">
-                        <label for="orientationSelect">Camera Orientation:</label>
-                        <select id="orientationSelect">
-                            <option value="landscape">Landscape (Default)</option>
-                            <option value="portrait">Portrait</option>
-                        </select>
-                        <button onclick="applyCameraOrientation()">Apply Orientation</button>
-                    </div>
-                    <div class="row">
-                        <label for="rotationSelect">Rotation:</label>
-                        <select id="rotationSelect">
-                            <option value="0">0° (Normal)</option>
-                            <option value="90">90° (Right)</option>
-                            <option value="180">180° (Upside Down)</option>
-                            <option value="270">270° (Left)</option>
-                        </select>
-                        <button onclick="applyRotation()">Apply Rotation</button>
-                    </div>
-                    <h2>OSD Overlays</h2>
-                    <p class="note">Customize what information appears on the video stream overlay.</p>
-                    <div class="row">
-                        <label>
-                            <input type="checkbox" id="dateTimeOverlayCheckbox" checked onchange="toggleDateTimeOverlay()">
-                            Show Date/Time (Top Left)
-                        </label>
-                    </div>
-                    <div class="row">
-                        <label>
-                            <input type="checkbox" id="batteryOverlayCheckbox" checked onchange="toggleBatteryOverlay()">
-                            Show Battery (Top Right)
-                        </label>
-                    </div>
-                    <div class="row">
-                        <label>
-                            <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
-                            Show Resolution (Bottom Right)
-                        </label>
-                    </div>
-                    <div class="row">
-                        <label>
-                            <input type="checkbox" id="fpsOverlayCheckbox" checked onchange="toggleFpsOverlay()">
-                            Show FPS (Bottom Left)
-                        </label>
-                    </div>
-                    <h2>FPS Settings</h2>
-                    <p class="note">Adjust streaming frame rates. 
-                        <strong>Camera FPS:</strong> <span id="currentCameraFpsDisplay">0.0</span> fps | 
-                        <strong>MJPEG FPS:</strong> <span id="currentMjpegFpsDisplay">0.0</span> fps | 
-                        <strong>RTSP FPS:</strong> <span id="currentRtspFpsDisplay">0.0</span> fps | 
-                        <strong>CPU:</strong> <span id="cpuUsageDisplay">0.0</span>%
-                    </p>
-                    <div class="row">
-                        <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
-                        <select id="mjpegFpsSelect">
-                            <option value="1">1 fps</option>
-                            <option value="5">5 fps</option>
-                            <option value="10" selected>10 fps</option>
-                            <option value="15">15 fps</option>
-                            <option value="20">20 fps</option>
-                            <option value="24">24 fps</option>
-                            <option value="30">30 fps</option>
-                            <option value="60">60 fps</option>
-                        </select>
-                        <button onclick="applyMjpegFps()">Apply FPS</button>
-                    </div>
-                    <div class="row">
-                        <label for="rtspFpsSelect">RTSP Target FPS:</label>
-                        <select id="rtspFpsSelect">
-                            <option value="1">1 fps</option>
-                            <option value="5">5 fps</option>
-                            <option value="10">10 fps</option>
-                            <option value="15">15 fps</option>
-                            <option value="20">20 fps</option>
-                            <option value="24">24 fps</option>
-                            <option value="30" selected>30 fps</option>
-                            <option value="60">60 fps</option>
-                        </select>
-                        <button onclick="applyRtspFps()">Apply FPS</button>
-                    </div>
-                    <p class="note"><em>Note: RTSP FPS change requires RTSP server restart (disable/enable) to take effect.</em></p>
-                    <div class="note" id="formatStatus"></div>
-                    <h2>Active Connections</h2>
-                    <p class="note"><em>Note: Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.</em></p>
-                    <div id="connectionsContainer">
-                        <p>Loading connections...</p>
-                    </div>
-                    <button onclick="refreshConnections()">Refresh Connections</button>
-                    <h2>Server Management</h2>
-                    <div class="row">
-                        <button onclick="restartServer()">Restart Server</button>
-                    </div>
-                    <p class="note"><em>Note: Server restart will briefly interrupt all connections. Clients will automatically reconnect.</em></p>
-                    <h2>Max Connections</h2>
-                    <div class="row">
-                        <label for="maxConnectionsSelect">Max Connections:</label>
-                        <select id="maxConnectionsSelect">
-                            <option value="4">4</option>
-                            <option value="8">8</option>
-                            <option value="16">16</option>
-                            <option value="32" selected>32</option>
-                            <option value="64">64</option>
-                            <option value="100">100</option>
-                        </select>
-                        <button onclick="applyMaxConnections()">Apply</button>
-                    </div>
-                    <p class="note"><em>Note: Server restart required for max connections change to take effect.</em></p>
-                    <h2>API Endpoints</h2>
-                    <div class="endpoint">
-                        <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
-                        Returns a single JPEG image
-                    </div>
-                    <div class="endpoint">
-                        <strong>Stream:</strong> <a href="/stream" target="_blank"><code>GET /stream</code></a><br>
-                        Returns MJPEG stream
-                    </div>
-                    <div class="endpoint">
-                        <strong>Switch Camera:</strong> <a href="/switch" target="_blank"><code>GET /switch</code></a><br>
-                        Switches between front and back camera
-                    </div>
-                    <div class="endpoint">
-                        <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
-                        Returns server status as JSON
-                    </div>
-                    <div class="endpoint">
-                        <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
-                        Server-Sent Events stream for real-time connection count updates
-                    </div>
-                    <div class="endpoint">
-                        <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
-                        Lists supported camera resolutions for the active lens
-                    </div>
-                    <div class="endpoint">
-                        <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
-                        Apply a supported resolution (or omit to return to auto). Requires <code>value</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
-                        Set the base camera recording mode (landscape or portrait). Requires <code>value</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
-                        Rotate the video feed by the specified degrees. Requires <code>value</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
-                        Toggle resolution display in bottom right corner for debugging. Requires <code>value</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
-                        Returns list of active connections as JSON
-                    </div>
-                    <div class="endpoint">
-                        <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
-                        Close a specific connection by ID. Requires <code>id</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
-                        Set maximum number of simultaneous connections (4-100). Requires server restart. Requires <code>value</code> parameter.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
-                        Toggle flashlight on/off for back camera. Only works if back camera is active and device has flash unit.
-                    </div>
-                    <div class="endpoint">
-                        <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
-                        Restart the HTTP server remotely. Useful for applying configuration changes or recovering from issues.
-                    </div>
-                    <h2>RTSP Streaming (Hardware-Accelerated H.264)</h2>
-                    <p class="note"><em>RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency. Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.</em></p>
-                    <div class="row">
-                        <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
-                        <button id="disableRTSPBtn" onclick="disableRTSP()">Disable RTSP</button>
-                        <button onclick="checkRTSPStatus()">Check Status</button>
-                    </div>
-                    <div id="rtspStatus" class="note" style="margin-top: 10px;"></div>
                     
-                    <h3 style="margin-top: 20px;">Encoder Settings</h3>
-                    <div class="row">
-                        <label for="bitrateInput" style="margin-right: 10px;">Bitrate (Mbps):</label>
-                        <input type="number" id="bitrateInput" min="0.5" max="20" step="0.5" value="3.0" style="width: 80px; margin-right: 10px;">
-                        <button onclick="setBitrate()">Set Bitrate</button>
+                    <!-- Status Dashboard (Always Visible) -->
+                    <div class="card">
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Server Status</div>
+                                <div class="stat-value">
+                                    <span class="status-badge success">Running</span>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Connections</div>
+                                <div class="stat-value" id="connectionCount">$connectionDisplay</div>
+                            </div>
+                            <div class="stat-card" id="batteryStatusCard">
+                                <div class="stat-label">Battery Status</div>
+                                <div class="stat-value">
+                                    <span id="batteryModeText" class="status-badge info">Loading...</span>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Streaming Status</div>
+                                <div class="stat-value">
+                                    <span id="streamingStatusText" class="status-badge success">Active</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Camera FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentCameraFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">MJPEG FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentMjpegFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">RTSP FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentRtspFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">CPU Usage</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="cpuUsageDisplay">0.0</span>%</div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="row" style="margin-top: 10px;">
-                        <label for="bitrateModeSelect" style="margin-right: 10px;">Bitrate Mode:</label>
-                        <select id="bitrateModeSelect" style="margin-right: 10px; padding: 5px;">
-                            <option value="VBR">VBR (Variable, best quality)</option>
-                            <option value="CBR">CBR (Constant, stable bandwidth)</option>
-                            <option value="CQ">CQ (Constant Quality)</option>
-                        </select>
-                        <button onclick="setBitrateMode()">Set Mode</button>
-                    </div>
-                    <div id="encoderSettings" class="note" style="margin-top: 10px;"></div>
                     
-                    <div class="endpoint">
-                        <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
-                        Enable hardware-accelerated RTSP streaming on port 8554
+                    <!-- Navigation Tabs -->
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('stream')">Live Stream</button>
+                        <button class="tab" onclick="switchTab('camera')">Camera Controls</button>
+                        <button class="tab" onclick="switchTab('settings')">Stream Settings</button>
+                        <button class="tab" onclick="switchTab('rtsp')">RTSP</button>
+                        <button class="tab" onclick="switchTab('server')">Server Management</button>
+                        <button class="tab" onclick="switchTab('api')">API Reference</button>
                     </div>
-                    <div class="endpoint">
-                        <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
-                        Disable RTSP streaming to save resources
+                    
+                    <!-- Tab 1: Live Stream -->
+                    <div id="tab-stream" class="tab-content active">
+                        <div class="card">
+                            <h3>Live Video Preview</h3>
+                        <div class="card">
+                            <h3>Live Video Preview</h3>
+                            <div id="streamContainer">
+                                <img id="stream" alt="Camera Stream">
+                                <div id="streamPlaceholder">Click "Start Stream" to begin</div>
+                            </div>
+                            <div class="form-row">
+                                <button id="toggleStreamBtn" onclick="toggleStream()" class="success">Start Stream</button>
+                                <button onclick="reloadStream()" class="secondary">Refresh</button>
+                                <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="endpoint">
-                        <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
-                        Get RTSP server status and metrics (JSON)
+                    
+                    <!-- Tab 2: Camera Controls -->
+                    <div id="tab-camera" class="tab-content">
+                        <div class="card">
+                            <h3>Camera Selection</h3>
+                            <div class="form-row">
+                                <button onclick="switchCamera()">Switch Camera</button>
+                                <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Resolution & Format</h3>
+                            <div class="form-row">
+                                <label for="formatSelect">Resolution:</label>
+                                <select id="formatSelect"></select>
+                                <button onclick="applyFormat()">Apply Format</button>
+                            </div>
+                            <div class="alert info" id="formatStatus"></div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Camera Orientation</h3>
+                            <div class="form-row">
+                                <label for="orientationSelect">Base Orientation:</label>
+                                <select id="orientationSelect">
+                                    <option value="landscape">Landscape (Default)</option>
+                                    <option value="portrait">Portrait</option>
+                                </select>
+                                <button onclick="applyCameraOrientation()">Apply Orientation</button>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Rotation</h3>
+                            <div class="form-row">
+                                <label for="rotationSelect">Rotate Video:</label>
+                                <select id="rotationSelect">
+                                    <option value="0">0° (Normal)</option>
+                                    <option value="90">90° (Right)</option>
+                                    <option value="180">180° (Upside Down)</option>
+                                    <option value="270">270° (Left)</option>
+                                </select>
+                                <button onclick="applyRotation()">Apply Rotation</button>
+                            </div>
+                        </div>
                     </div>
-                    <div class="endpoint">
-                        <strong>Set Bitrate:</strong> <a href="/setRTSPBitrate?value=5.0" target="_blank"><code>GET /setRTSPBitrate?value=5.0</code></a><br>
-                        Set encoder bitrate (value in Mbps, e.g., 3.0, 5.0, 8.0)
+                    
+                    <!-- Tab 3: Stream Settings -->
+                    <div id="tab-settings" class="tab-content">
+                        <div class="card">
+                            <h3>OSD Overlays</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">Customize what information appears on the video stream overlay.</p>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="dateTimeOverlayCheckbox" checked onchange="toggleDateTimeOverlay()">
+                                    Show Date/Time (Top Left)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="batteryOverlayCheckbox" checked onchange="toggleBatteryOverlay()">
+                                    Show Battery (Top Right)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
+                                    Show Resolution (Bottom Right)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="fpsOverlayCheckbox" checked onchange="toggleFpsOverlay()">
+                                    Show FPS (Bottom Left)
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Frame Rate Settings</h3>
+                            <div class="form-row">
+                                <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
+                                <select id="mjpegFpsSelect">
+                                    <option value="1">1 fps</option>
+                                    <option value="5">5 fps</option>
+                                    <option value="10" selected>10 fps</option>
+                                    <option value="15">15 fps</option>
+                                    <option value="20">20 fps</option>
+                                    <option value="24">24 fps</option>
+                                    <option value="30">30 fps</option>
+                                    <option value="60">60 fps</option>
+                                </select>
+                                <button onclick="applyMjpegFps()">Apply FPS</button>
+                            </div>
+                            <div class="form-row">
+                                <label for="rtspFpsSelect">RTSP Target FPS:</label>
+                                <select id="rtspFpsSelect">
+                                    <option value="1">1 fps</option>
+                                    <option value="5">5 fps</option>
+                                    <option value="10">10 fps</option>
+                                    <option value="15">15 fps</option>
+                                    <option value="20">20 fps</option>
+                                    <option value="24">24 fps</option>
+                                    <option value="30" selected>30 fps</option>
+                                    <option value="60">60 fps</option>
+                                </select>
+                                <button onclick="applyRtspFps()">Apply FPS</button>
+                            </div>
+                            <div class="alert info">RTSP FPS change requires RTSP server restart (disable/enable) to take effect.</div>
+                        </div>
                     </div>
-                    <div class="endpoint">
-                        <strong>Set Bitrate Mode:</strong> <a href="/setRTSPBitrateMode?value=VBR" target="_blank"><code>GET /setRTSPBitrateMode?value=VBR</code></a><br>
-                        Set bitrate mode: VBR (variable), CBR (constant), or CQ (constant quality)
+                    
+                    <!-- Tab 4: RTSP Configuration -->
+                    <div id="tab-rtsp" class="tab-content">
+                        <div class="card">
+                            <h3>RTSP Streaming (Hardware-Accelerated H.264)</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                                RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency. 
+                                Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.
+                            </p>
+                            <div class="form-row">
+                                <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
+                                <button id="disableRTSPBtn" onclick="disableRTSP()" class="secondary">Disable RTSP</button>
+                                <button onclick="checkRTSPStatus()">Check Status</button>
+                            </div>
+                            <div id="rtspStatus" class="alert info" style="margin-top: 12px;"></div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Encoder Settings</h3>
+                            <div class="form-row">
+                                <label for="bitrateInput">Bitrate (Mbps):</label>
+                                <input type="number" id="bitrateInput" min="0.5" max="20" step="0.5" value="3.0" style="width: 100px;">
+                                <button onclick="setBitrate()">Set Bitrate</button>
+                            </div>
+                            <div class="form-row">
+                                <label for="bitrateModeSelect">Bitrate Mode:</label>
+                                <select id="bitrateModeSelect">
+                                    <option value="VBR">VBR (Variable, best quality)</option>
+                                    <option value="CBR">CBR (Constant, stable bandwidth)</option>
+                                    <option value="CQ">CQ (Constant Quality)</option>
+                                </select>
+                                <button onclick="setBitrateMode()">Set Mode</button>
+                            </div>
+                            <div id="encoderSettings" class="alert info" style="margin-top: 12px;"></div>
+                        </div>
                     </div>
-                    <h2>Keep the stream alive</h2>
-                    <ul>
-                        <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
-                        <li>Allow background activity and keep the phone plugged in for long sessions</li>
-                        <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
-                        <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
-                    </ul>
-                    <hr style="margin-top: 30px; margin-bottom: 15px; border: none; border-top: 1px solid #ddd;">
-                    <div style="text-align: center; color: #666; font-size: 11px; font-style: italic;">
-                        <p style="margin: 5px 0;">IP Camera Server</p>
-                        <p style="margin: 5px 0;">${BuildInfo.getVersionString()}</p>
-                        <p style="margin: 5px 0;">${BuildInfo.getBuildString()}</p>
+                    
+                    <!-- Tab 5: Server Management -->
+                    <div id="tab-server" class="tab-content">
+                        <div class="card">
+                            <h3>Active Connections</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                                Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.
+                            </p>
+                            <div id="connectionsContainer">
+                                <p>Loading connections...</p>
+                            </div>
+                            <button onclick="refreshConnections()" style="margin-top: 12px;">Refresh Connections</button>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Server Configuration</h3>
+                            <div class="form-row">
+                                <label for="maxConnectionsSelect">Max Connections:</label>
+                                <select id="maxConnectionsSelect">
+                                    <option value="4">4</option>
+                                    <option value="8">8</option>
+                                    <option value="16">16</option>
+                                    <option value="32" selected>32</option>
+                                    <option value="64">64</option>
+                                    <option value="100">100</option>
+                                </select>
+                                <button onclick="applyMaxConnections()">Apply</button>
+                            </div>
+                            <div class="alert info">Server restart required for max connections change to take effect.</div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Server Control</h3>
+                            <div class="form-row">
+                                <button onclick="restartServer()" class="danger">Restart Server</button>
+                            </div>
+                            <div class="alert warning">Server restart will briefly interrupt all connections. Clients will automatically reconnect.</div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Keep the stream alive</h3>
+                            <ul style="padding-left: 20px; line-height: 1.8; color: #555;">
+                                <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
+                                <li>Allow background activity and keep the phone plugged in for long sessions</li>
+                                <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
+                                <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 6: API Reference -->
+                    <div id="tab-api" class="tab-content">
+                        <div class="card">
+                            <h3>Streaming Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>MJPEG Stream:</strong> <a href="/stream" target="_blank"><code>GET /stream</code></a><br>
+                                Returns MJPEG video stream (multipart/x-mixed-replace)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
+                                Returns a single JPEG image
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Camera Control</h3>
+                            <div class="endpoint">
+                                <strong>Switch Camera:</strong> <a href="/switch" target="_blank"><code>GET /switch</code></a><br>
+                                Switches between front and back camera
+                            </div>
+                            <div class="endpoint">
+                                <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
+                                Toggle flashlight on/off for back camera
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
+                                Apply a supported resolution (or omit value to return to auto)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
+                                Set the base camera recording mode
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
+                                Rotate the video feed by the specified degrees
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Status & Information</h3>
+                            <div class="endpoint">
+                                <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
+                                Returns server status as JSON
+                            </div>
+                            <div class="endpoint">
+                                <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
+                                Server-Sent Events stream for real-time updates
+                            </div>
+                            <div class="endpoint">
+                                <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
+                                Lists supported camera resolutions for the active lens
+                            </div>
+                            <div class="endpoint">
+                                <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
+                                Returns list of active connections as JSON
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>RTSP Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
+                                Enable hardware-accelerated RTSP streaming on port 8554
+                            </div>
+                            <div class="endpoint">
+                                <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
+                                Disable RTSP streaming to save resources
+                            </div>
+                            <div class="endpoint">
+                                <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
+                                Get RTSP server status and metrics (JSON)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Bitrate:</strong> <code>GET /setRTSPBitrate?value=5.0</code><br>
+                                Set encoder bitrate in Mbps (e.g., 3.0, 5.0, 8.0)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Bitrate Mode:</strong> <code>GET /setRTSPBitrateMode?value=VBR|CBR|CQ</code><br>
+                                Set bitrate mode: VBR (variable), CBR (constant), or CQ (constant quality)
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Additional Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
+                                Toggle resolution display in bottom right corner
+                            </div>
+                            <div class="endpoint">
+                                <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
+                                Close a specific connection by ID
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
+                                Set maximum number of simultaneous connections (4-100), requires server restart
+                            </div>
+                            <div class="endpoint">
+                                <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
+                                Restart the HTTP server remotely
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <script>
                     // Configuration constants
-                    const STREAM_RELOAD_DELAY_MS = 200;  // Delay before reloading stream after state change
-                    const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;  // Debounce time for connection list refresh
+                    const STREAM_RELOAD_DELAY_MS = 200;
+                    const CONNECTIONS_REFRESH_DEBOUNCE_MS = 500;
+                    
+                    // Tab switching functionality
+                    function switchTab(tabName) {
+                        // Hide all tab contents
+                        const contents = document.querySelectorAll('.tab-content');
+                        contents.forEach(content => content.classList.remove('active'));
+                        
+                        // Remove active class from all tabs
+                        const tabs = document.querySelectorAll('.tab');
+                        tabs.forEach(tab => tab.classList.remove('active'));
+                        
+                        // Show selected tab content
+                        document.getElementById('tab-' + tabName).classList.add('active');
+                        
+                        // Add active class to clicked tab
+                        event.target.classList.add('active');
+                    }
                     
                     const streamImg = document.getElementById('stream');
                     const streamPlaceholder = document.getElementById('streamPlaceholder');
@@ -571,10 +780,9 @@ class HttpServer(
                         streamImg.style.display = 'block';
                         streamPlaceholder.style.display = 'none';
                         toggleStreamBtn.textContent = 'Stop Stream';
-                        toggleStreamBtn.style.backgroundColor = '#f44336';  // Red for stop
+                        toggleStreamBtn.className = 'danger';
                         streamActive = true;
                         
-                        // Auto-reload if stream stops
                         if (autoReloadInterval) clearInterval(autoReloadInterval);
                         autoReloadInterval = setInterval(() => {
                             if (streamActive && Date.now() - lastFrame > 5000) {
@@ -588,7 +796,7 @@ class HttpServer(
                         streamImg.style.display = 'none';
                         streamPlaceholder.style.display = 'block';
                         toggleStreamBtn.textContent = 'Start Stream';
-                        toggleStreamBtn.style.backgroundColor = '#4CAF50';  // Green for start
+                        toggleStreamBtn.className = 'success';
                         streamActive = false;
                         if (autoReloadInterval) {
                             clearInterval(autoReloadInterval);
@@ -610,28 +818,24 @@ class HttpServer(
                     streamImg.onload = () => { lastFrame = Date.now(); };
 
                     function switchCamera() {
-                        // Remember if stream was active before switching
                         const wasStreamActive = streamActive;
                         
                         fetch('/switch')
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = 'Switched to ' + data.camera + ' camera';
+                                showAlert('Switched to ' + data.camera + ' camera', 'success');
                                 
-                                // If stream was active, keep it active with the new camera
                                 if (wasStreamActive) {
-                                    // Reload stream after a short delay to allow camera to switch
                                     setTimeout(() => {
                                         reloadStream();
                                     }, STREAM_RELOAD_DELAY_MS);
                                 }
                                 
-                                // Reload formats and update flashlight button for new camera
                                 loadFormats();
                                 updateFlashlightButton();
                             })
                             .catch(error => {
-                                document.getElementById('formatStatus').textContent = 'Error switching camera: ' + error;
+                                showAlert('Error switching camera: ' + error, 'danger');
                             });
                     }
 
@@ -640,14 +844,14 @@ class HttpServer(
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('formatStatus').textContent = data.message;
+                                    showAlert(data.message, 'success');
                                     updateFlashlightButton();
                                 } else {
-                                    document.getElementById('formatStatus').textContent = data.message;
+                                    showAlert(data.message, 'warning');
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('formatStatus').textContent = 'Error toggling flashlight: ' + error;
+                                showAlert('Error toggling flashlight: ' + error, 'danger');
                             });
                     }
 
@@ -659,11 +863,11 @@ class HttpServer(
                                 if (data.flashlightAvailable) {
                                     button.disabled = false;
                                     button.textContent = data.flashlightOn ? 'Flashlight: ON' : 'Flashlight: OFF';
-                                    button.style.backgroundColor = data.flashlightOn ? '#FFA500' : '#4CAF50';
+                                    button.className = data.flashlightOn ? 'warning' : 'success';
                                 } else {
                                     button.disabled = true;
                                     button.textContent = 'Flashlight N/A';
-                                    button.style.backgroundColor = '#9E9E9E';
+                                    button.className = 'secondary';
                                 }
                             })
                             .catch(error => {
@@ -672,32 +876,40 @@ class HttpServer(
                     }
                     
                     function updateBatteryStatusDisplay(batteryMode, streamingAllowed) {
-                        const statusDiv = document.getElementById('batteryStatusDisplay');
                         const modeText = document.getElementById('batteryModeText');
                         const streamingText = document.getElementById('streamingStatusText');
                         
-                        // Update mode text with descriptive labels
                         let modeLabel = batteryMode;
-                        let modeClass = 'normal';
+                        let modeClass = 'success';
                         
                         if (batteryMode === 'NORMAL') {
-                            modeLabel = 'Normal (Full Operation)';
-                            modeClass = 'normal';
+                            modeLabel = 'Normal';
+                            modeClass = 'success';
                         } else if (batteryMode === 'LOW_BATTERY') {
-                            modeLabel = 'Low Battery (Wakelocks Released)';
-                            modeClass = 'low';
+                            modeLabel = 'Low Battery';
+                            modeClass = 'warning';
                         } else if (batteryMode === 'CRITICAL_BATTERY') {
-                            modeLabel = 'CRITICAL - Streaming Paused';
-                            modeClass = 'critical';
+                            modeLabel = 'CRITICAL';
+                            modeClass = 'danger';
                         }
                         
                         modeText.textContent = modeLabel;
-                        streamingText.textContent = streamingAllowed ? 'Active' : 'Paused (Battery Too Low)';
-                        streamingText.style.color = streamingAllowed ? '#28a745' : '#dc3545';
-                        streamingText.style.fontWeight = streamingAllowed ? 'normal' : 'bold';
+                        modeText.className = 'status-badge ' + modeClass;
                         
-                        // Update status div styling based on mode
-                        statusDiv.className = 'battery-status ' + modeClass;
+                        streamingText.textContent = streamingAllowed ? 'Active' : 'Paused';
+                        streamingText.className = streamingAllowed ? 'status-badge success' : 'status-badge danger';
+                    }
+                    
+                    function showAlert(message, type) {
+                        const formatStatus = document.getElementById('formatStatus');
+                        if (formatStatus) {
+                            formatStatus.textContent = message;
+                            formatStatus.className = 'alert ' + type;
+                            setTimeout(() => {
+                                formatStatus.textContent = '';
+                                formatStatus.className = 'alert info';
+                            }, 5000);
+                        }
                     }
 
                     function loadFormats() {
@@ -719,8 +931,7 @@ class HttpServer(
                                     }
                                     select.appendChild(option);
                                 });
-                                document.getElementById('formatStatus').textContent = data.selected ? 
-                                    'Selected: ' + data.selected : 'Selected: Auto';
+                                showAlert(data.selected ? 'Selected: ' + data.selected : 'Selected: Auto', 'info');
                             });
                     }
 
@@ -730,11 +941,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to set format';
+                                showAlert('Failed to set format', 'danger');
                             });
                     }
 
@@ -744,11 +955,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to set camera orientation';
+                                showAlert('Failed to set camera orientation', 'danger');
                             });
                     }
 
@@ -758,11 +969,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to set rotation';
+                                showAlert('Failed to set rotation', 'danger');
                             });
                     }
 
@@ -773,11 +984,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to toggle resolution overlay';
+                                showAlert('Failed to toggle resolution overlay', 'danger');
                             });
                     }
 
@@ -788,11 +999,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to toggle date/time overlay';
+                                showAlert('Failed to toggle date/time overlay', 'danger');
                             });
                     }
 
@@ -803,11 +1014,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to toggle battery overlay';
+                                showAlert('Failed to toggle battery overlay', 'danger');
                             });
                     }
 
@@ -818,11 +1029,11 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 setTimeout(reloadStream, STREAM_RELOAD_DELAY_MS);
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to toggle FPS overlay';
+                                showAlert('Failed to toggle FPS overlay', 'danger');
                             });
                     }
 
@@ -832,10 +1043,10 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to set MJPEG FPS';
+                                showAlert('Failed to set MJPEG FPS', 'danger');
                             });
                     }
 
@@ -845,10 +1056,10 @@ class HttpServer(
                         fetch(url)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                             })
                             .catch(() => {
-                                document.getElementById('formatStatus').textContent = 'Failed to set RTSP FPS';
+                                showAlert('Failed to set RTSP FPS', 'danger');
                             });
                     }
 
@@ -866,7 +1077,7 @@ class HttpServer(
                             .catch(error => {
                                 console.error('Connection fetch error:', error);
                                 document.getElementById('connectionsContainer').innerHTML = 
-                                    '<p style="color: #f44336;">Error loading connections. Please refresh the page or check server status.</p>';
+                                    '<div class="alert danger">Error loading connections. Please refresh the page or check server status.</div>';
                             });
                     }
 
@@ -874,28 +1085,19 @@ class HttpServer(
                         const container = document.getElementById('connectionsContainer');
                         
                         if (!connections || connections.length === 0) {
-                            container.innerHTML = '<p>No active connections</p>';
+                            container.innerHTML = '<p style="color: #666;">No active connections</p>';
                             return;
                         }
                         
-                        let html = '<table style="width: 100%; border-collapse: collapse;">';
-                        html += '<tr style="background-color: #f0f0f0;">';
-                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">ID</th>';
-                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Remote Address</th>';
-                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Endpoint</th>';
-                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Duration (s)</th>';
-                        html += '<th style="padding: 8px; text-align: left; border: 1px solid #ddd;">Action</th>';
-                        html += '</tr>';
+                        let html = '<table><tr><th>ID</th><th>Remote Address</th><th>Endpoint</th><th>Duration (s)</th><th>Action</th></tr>';
                         
                         connections.forEach(conn => {
                             html += '<tr>';
-                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.id + '</td>';
-                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.remoteAddr + '</td>';
-                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + conn.endpoint + '</td>';
-                            html += '<td style="padding: 8px; border: 1px solid #ddd;">' + Math.floor(conn.duration / 1000) + '</td>';
-                            html += '<td style="padding: 8px; border: 1px solid #ddd;">';
-                            html += '<button onclick="closeConnection(' + conn.id + ')" style="padding: 4px 8px; font-size: 12px;">Close</button>';
-                            html += '</td>';
+                            html += '<td>' + conn.id + '</td>';
+                            html += '<td>' + conn.remoteAddr + '</td>';
+                            html += '<td>' + conn.endpoint + '</td>';
+                            html += '<td>' + Math.floor(conn.duration / 1000) + '</td>';
+                            html += '<td><button onclick="closeConnection(' + conn.id + ')" class="danger" style="padding: 6px 12px; font-size: 12px;">Close</button></td>';
                             html += '</tr>';
                         });
                         
@@ -911,11 +1113,11 @@ class HttpServer(
                         fetch('/closeConnection?id=' + id)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                                 refreshConnections();
                             })
                             .catch(error => {
-                                document.getElementById('formatStatus').textContent = 'Error closing connection: ' + error;
+                                showAlert('Error closing connection: ' + error, 'danger');
                             });
                     }
 
@@ -924,10 +1126,10 @@ class HttpServer(
                         fetch('/setMaxConnections?value=' + value)
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
+                                showAlert(data.message, 'success');
                             })
                             .catch(error => {
-                                document.getElementById('formatStatus').textContent = 'Error setting max connections: ' + error;
+                                showAlert('Error setting max connections: ' + error, 'danger');
                             });
                     }
 
@@ -936,39 +1138,33 @@ class HttpServer(
                             return;
                         }
                         
-                        document.getElementById('formatStatus').textContent = 'Restarting server...';
-                        
-                        // Remember if stream was active before restart
+                        showAlert('Restarting server...', 'info');
                         const wasStreamActive = streamActive;
                         
                         fetch('/restart')
                             .then(response => response.json())
                             .then(data => {
-                                document.getElementById('formatStatus').textContent = data.message;
-                                // Stop the stream during restart
+                                showAlert(data.message, 'success');
                                 if (streamActive) {
                                     stopStream();
                                 }
-                                // Auto-reconnect after 3 seconds if stream was active
                                 setTimeout(() => {
-                                    document.getElementById('formatStatus').textContent = 'Server restarted. Reconnecting...';
+                                    showAlert('Server restarted. Reconnecting...', 'info');
                                     if (wasStreamActive) {
                                         startStream();
                                     }
                                 }, 3000);
                             })
                             .catch(error => {
-                                document.getElementById('formatStatus').textContent = 'Error restarting server: ' + error;
+                                showAlert('Error restarting server: ' + error, 'danger');
                             });
                     }
 
                     function toggleFullscreen() {
                         const container = document.getElementById('streamContainer');
-                        const fullscreenBtn = document.getElementById('fullscreenBtn');
                         
                         if (!document.fullscreenElement && !document.webkitFullscreenElement && 
                             !document.mozFullScreenElement && !document.msFullscreenElement) {
-                            // Enter fullscreen
                             if (container.requestFullscreen) {
                                 container.requestFullscreen();
                             } else if (container.webkitRequestFullscreen) {
@@ -979,7 +1175,6 @@ class HttpServer(
                                 container.msRequestFullscreen();
                             }
                         } else {
-                            // Exit fullscreen
                             if (document.exitFullscreen) {
                                 document.exitFullscreen();
                             } else if (document.webkitExitFullscreen) {
@@ -992,7 +1187,6 @@ class HttpServer(
                         }
                     }
                     
-                    // Update fullscreen button text based on fullscreen state
                     document.addEventListener('fullscreenchange', updateFullscreenButton);
                     document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
                     document.addEventListener('mozfullscreenchange', updateFullscreenButton);
@@ -1025,13 +1219,12 @@ class HttpServer(
                                 }
                             }
                             
-                            // Initialize battery status display
                             if (data.batteryMode && data.streamingAllowed !== undefined) {
                                 updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed);
                             }
                         });
                     
-                    // Set up Server-Sent Events for real-time connection count updates
+                    // Set up Server-Sent Events for real-time updates
                     const eventSource = new EventSource('/events');
                     let lastConnectionCount = '';
                     
@@ -1041,10 +1234,8 @@ class HttpServer(
                             const connectionCount = document.getElementById('connectionCount');
                             if (connectionCount && data.connections) {
                                 connectionCount.textContent = data.connections;
-                                // Only refresh connection list if count changed
                                 if (lastConnectionCount !== data.connections) {
                                     lastConnectionCount = data.connections;
-                                    // Debounce refresh to avoid too many requests
                                     setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
                                 }
                             }
@@ -1053,16 +1244,11 @@ class HttpServer(
                         }
                     };
                     
-                    // Handle camera state updates pushed by server
-                    // Server now sends delta updates (only changed values) to reduce bandwidth
-                    let lastReceivedState = {};  // Track cumulative state
+                    let lastReceivedState = {};
                     
                     eventSource.addEventListener('state', function(event) {
                         try {
                             const deltaState = JSON.parse(event.data);
-                            console.log('Received delta state update from server:', deltaState);
-                            
-                            // Merge delta into cumulative state
                             Object.assign(lastReceivedState, deltaState);
                             const state = lastReceivedState;
                             
