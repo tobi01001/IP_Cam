@@ -2386,8 +2386,25 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getActiveConnectionsCount(): Int {
-        // Return the count of connections we can actually track
-        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+        // Return the count of all HTTP connections from HttpServer
+        // This includes MJPEG streams + SSE clients
+        return (httpServer?.getActiveStreamsCount() ?: 0) + (httpServer?.getActiveSseClientsCount() ?: 0)
+    }
+    
+    override fun getMjpegClientCount(): Int {
+        // MJPEG streaming clients: only count actual video streams (/stream endpoint)
+        // SSE clients are for status updates, not video streaming
+        return httpServer?.getActiveStreamsCount() ?: 0
+    }
+    
+    override fun getRtspClientCount(): Int {
+        // Count of active RTSP sessions
+        return rtspServer?.getMetrics()?.playingSessions ?: 0
+    }
+    
+    override fun getTotalCameraClientCount(): Int {
+        // Total of MJPEG clients plus RTSP clients
+        return getMjpegClientCount() + getRtspClientCount()
     }
     
     fun getActiveConnectionsList(): List<ConnectionInfo> {
@@ -3330,6 +3347,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             $adaptiveStats
         """.trimIndent()
+    }
+    
+    override fun getCpuUsagePercent(): Double {
+        return performanceMetrics.getCpuUsage().processUsagePercent
+    }
+    
+    override fun getBandwidthBps(): Long {
+        // Get current bandwidth from all active clients
+        // This is more responsive than lifetime average
+        return bandwidthMonitor.getCurrentBandwidthBps()
     }
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {

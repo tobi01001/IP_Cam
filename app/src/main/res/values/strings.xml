@@ -65,4 +65,11 @@
     <string name="device_name_label">Device Name:</string>
     <string name="device_name_hint">e.g., Living Room Camera</string>
     <string name="save_device_name">Save</string>
+    <string name="client_info_label">Client Information:</string>
+    <string name="mjpeg_clients">MJPEG Clients: %d</string>
+    <string name="rtsp_clients">RTSP Clients: %d</string>
+    <string name="total_clients">Total Clients: %d</string>
+    <string name="device_metrics_label">Device Metrics:</string>
+    <string name="cpu_usage">CPU Usage: %.1f%%</string>
+    <string name="bandwidth_usage">Bandwidth: %s</string>
 </resources>

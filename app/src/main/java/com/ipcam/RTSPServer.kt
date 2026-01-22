@@ -139,6 +139,9 @@ class RTSPServer(
         val socket: Socket,
         @Volatile var state: SessionState = SessionState.INIT
     ) {
+        // Numeric ID for bandwidth tracking (extracted from sessionId)
+        val numericId: Long = sessionId.removePrefix("session").toLongOrNull() ?: System.currentTimeMillis()
+        
         var clientAddress: InetAddress? = null
         var clientRtpPort: Int = 0
         var clientRtcpPort: Int = 0
@@ -159,6 +162,7 @@ class RTSPServer(
         fun sendRTP(nalUnit: ByteArray, isKeyFrame: Boolean, presentationTimeUs: Long) {
             try {
                 val rtpPackets = packetizeNALUnit(nalUnit, isKeyFrame, presentationTimeUs)
+                var totalBytesSent = 0
                 
                 if (useTCP) {
                     // TCP interleaved mode - send over RTSP socket
@@ -178,6 +182,7 @@ class RTSPServer(
                                 stream.write(packet)
                                 stream.flush()
                                 sentCount++
+                                totalBytesSent += header.size + packet.size
                             }
                         }
                         if (sequenceNumber == 0) {
@@ -214,11 +219,17 @@ class RTSPServer(
                         )
                         socket.send(dgPacket)
                         sentCount++
+                        totalBytesSent += packet.size
                     }
                     
                     if (sequenceNumber < 5) {
                         Log.d(TAG, "UDP: Sent ${sentCount} RTP packets to ${clientAddress}:${clientRtpPort} for session $sessionId, keyframe=$isKeyFrame, seq=$sequenceNumber")
                     }
+                }
+                
+                // Track bandwidth for this session
+                if (totalBytesSent > 0) {
+                    this@RTSPServer.cameraService?.recordBytesSent(numericId, totalBytesSent.toLong())
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending RTP packet for session $sessionId", e)

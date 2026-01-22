@@ -165,6 +165,16 @@ class HttpServer(
     fun isAlive(): Boolean = server != null
     
     /**
+     * Get the count of active MJPEG streams
+     */
+    fun getActiveStreamsCount(): Int = activeStreams.get()
+    
+    /**
+     * Get the count of active SSE clients
+     */
+    fun getActiveSseClientsCount(): Int = synchronized(sseClientsLock) { sseClients.size }
+    
+    /**
      * Broadcast connection count update to all SSE clients
      */
     fun broadcastConnectionCount() {

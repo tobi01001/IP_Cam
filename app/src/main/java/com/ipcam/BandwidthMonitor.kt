@@ -210,6 +210,16 @@ class BandwidthMonitor {
     }
     
     /**
+     * Get current bandwidth from all active clients (more responsive than lifetime average).
+     * Returns the sum of current throughput from all clients in bits per second.
+     */
+    fun getCurrentBandwidthBps(): Long {
+        return statsLock.read {
+            clientStats.values.sumOf { it.currentThroughputBps }
+        }
+    }
+    
+    /**
      * Reset all statistics.
      */
     fun reset() {
