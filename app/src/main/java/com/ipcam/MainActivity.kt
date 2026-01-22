@@ -1155,6 +1155,7 @@ class MainActivity : AppCompatActivity() {
     /**
      * Format bandwidth in human-readable format (bps, Kbps, Mbps)
      * Uses correct capitalization for bits (K, M) vs bytes (k, m)
+     * Uses decimal (1000) not binary (1024) divisions as per SI standard for network bandwidth
      */
     private fun formatBandwidth(bps: Long): String {
         return when {
