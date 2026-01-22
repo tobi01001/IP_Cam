@@ -58,6 +58,9 @@ class RTSPServer(
     // Track number of actively playing sessions for consumer management
     private val activePlayingSessions = AtomicInteger(0)
     
+    // Track if camera consumer has been registered (for DESCRIBE early activation)
+    private val cameraConsumerRegistered = AtomicBoolean(false)
+    
     // Synchronization lock for start/stop operations
     private val serverLock = Any()
     
@@ -790,10 +793,11 @@ class RTSPServer(
                 val playingCount = activePlayingSessions.decrementAndGet()
                 Log.d(TAG, "Client $sessionId disconnected while playing (active sessions: $playingCount)")
                 
-                if (playingCount == 0) {
+                if (playingCount == 0 && cameraConsumerRegistered.get()) {
                     // Last client disconnected - unregister RTSP consumer to deactivate camera
                     Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
                     cameraService?.unregisterRtspConsumer()
+                    cameraConsumerRegistered.set(false)
                 }
             }
             
@@ -819,7 +823,17 @@ class RTSPServer(
     private suspend fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
-        Log.d(TAG, "DESCRIBE request received, waiting for SPS/PPS...")
+        Log.d(TAG, "DESCRIBE request received")
+        
+        // Activate camera if not already active (needed to generate SPS/PPS)
+        // This ensures camera starts streaming before we wait for encoder data
+        if (!cameraConsumerRegistered.get()) {
+            Log.i(TAG, "DESCRIBE: Camera not active, registering consumer to start streaming")
+            cameraService?.registerRtspConsumer()
+            cameraConsumerRegistered.set(true)
+        }
+        
+        Log.d(TAG, "Waiting for SPS/PPS...")
         
         // Wait briefly for SPS/PPS to be available (encoder needs to start first)
         var retries = 0
@@ -975,15 +989,16 @@ class RTSPServer(
         val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.PLAYING
         
-        // Register RTSP consumer when first client starts playing
+        // Register RTSP consumer when first client starts playing (if not already registered by DESCRIBE)
         if (!wasPlaying) {
             val playingCount = activePlayingSessions.incrementAndGet()
             Log.d(TAG, "Client ${session.sessionId} started playing (active sessions: $playingCount)")
             
-            if (playingCount == 1) {
-                // First client to play - register RTSP consumer to activate camera
+            if (playingCount == 1 && !cameraConsumerRegistered.get()) {
+                // First client to play and not yet registered - register RTSP consumer to activate camera
                 Log.i(TAG, "First RTSP client playing - registering consumer to activate camera")
                 cameraService?.registerRtspConsumer()
+                cameraConsumerRegistered.set(true)
             }
         }
         
@@ -1725,11 +1740,12 @@ class RTSPServer(
             isRunning.set(false)
             isEncoding.set(false)
             
-            // Unregister RTSP consumer if there were active sessions
-            if (activePlayingSessions.get() > 0) {
+            // Unregister RTSP consumer if there were active sessions or camera was registered
+            if (activePlayingSessions.get() > 0 || cameraConsumerRegistered.get()) {
                 Log.i(TAG, "RTSP server stopping with ${activePlayingSessions.get()} active sessions - unregistering consumer")
                 cameraService?.unregisterRtspConsumer()
                 activePlayingSessions.set(0)
+                cameraConsumerRegistered.set(false)
             }
             
             try {
