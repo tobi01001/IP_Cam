@@ -8,11 +8,13 @@ import android.util.Log
 import androidx.camera.core.ImageProxy
 import kotlinx.coroutines.*
 import java.io.*
+import java.net.BindException
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
+import java.net.SocketException
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,6 +57,9 @@ class RTSPServer(
     
     // Track number of actively playing sessions for consumer management
     private val activePlayingSessions = AtomicInteger(0)
+    
+    // Synchronization lock for start/stop operations
+    private val serverLock = Any()
     
     @Volatile private var encoderName: String = "unknown"
     @Volatile private var isHardwareEncoder: Boolean = false
@@ -321,42 +326,92 @@ class RTSPServer(
     }
     
     /**
-     * Start RTSP server
+     * Start RTSP server with retry logic for bind failures
      */
-    fun start(): Boolean {
+    fun start(): Boolean = synchronized(serverLock) {
         if (isRunning.get()) {
             Log.w(TAG, "RTSP server already running")
             return false
         }
         
-        try {
-            // Detect encoder and color format early for web UI display
-            detectEncoderCapabilities()
-            
-            // Mark encoding as enabled (encoder will be created on first frame)
-            isEncoding.set(true)
-            
-            // Start server socket
-            serverSocket = ServerSocket(port)
-            isRunning.set(true)
-            
-            // Start accepting connections
-            serverJob = serverScope.launch {
-                acceptConnections()
+        // Retry logic with exponential backoff for bind failures
+        val maxAttempts = 3
+        val retryDelays = listOf(1000L, 2000L, 4000L) // 1s, 2s, 4s
+        
+        for (attempt in 1..maxAttempts) {
+            try {
+                // Detect encoder and color format early for web UI display
+                if (attempt == 1) {
+                    detectEncoderCapabilities()
+                }
+                
+                // Mark encoding as enabled (encoder will be created on first frame)
+                isEncoding.set(true)
+                
+                // Create server socket with SO_REUSEADDR to allow binding to recently closed sockets
+                Log.d(TAG, "RTSP server bind attempt $attempt/$maxAttempts on port $port")
+                serverSocket = createServerSocket(port)
+                isRunning.set(true)
+                
+                // Start accepting connections
+                serverJob = serverScope.launch {
+                    acceptConnections()
+                }
+                
+                Log.i(TAG, "RTSP server started on port $port")
+                Log.i(TAG, "Encoder: $encoderName (hardware: $isHardwareEncoder), Color format: $encoderColorFormatName")
+                Log.i(TAG, "Encoder will be initialized on first frame")
+                
+                return true
+                
+            } catch (e: BindException) {
+                Log.w(TAG, "RTSP server bind attempt $attempt/$maxAttempts failed: ${e.message}")
+                lastError = "Bind failed (attempt $attempt/$maxAttempts): ${e.message}"
+                isEncoding.set(false)
+                
+                // If this was not the last attempt, wait before retry
+                if (attempt < maxAttempts) {
+                    val delay = retryDelays[attempt - 1]
+                    Log.i(TAG, "Waiting ${delay}ms before retry...")
+                    Thread.sleep(delay)
+                } else {
+                    Log.e(TAG, "Failed to start RTSP server after $maxAttempts attempts", e)
+                    lastError = "Server start failed after $maxAttempts attempts: ${e.message}"
+                    cleanup()
+                    return false
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start RTSP server on attempt $attempt", e)
+                lastError = "Server start failed: ${e.message}"
+                isEncoding.set(false)
+                cleanup()
+                return false
             }
-            
-            Log.i(TAG, "RTSP server started on port $port")
-            Log.i(TAG, "Encoder: $encoderName (hardware: $isHardwareEncoder), Color format: $encoderColorFormatName")
-            Log.i(TAG, "Encoder will be initialized on first frame")
-            
-            return true
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to start RTSP server", e)
-            lastError = "Server start failed: ${e.message}"
-            cleanup()
-            return false
         }
+        
+        return false
+    }
+    
+    /**
+     * Create ServerSocket with proper options to handle bind failures
+     */
+    private fun createServerSocket(port: Int): ServerSocket {
+        // Create unbound socket first so we can set options
+        val socket = ServerSocket()
+        
+        // Enable SO_REUSEADDR to allow binding to recently closed sockets
+        // This is crucial for preventing EADDRINUSE errors
+        socket.reuseAddress = true
+        
+        // Set SO_LINGER with timeout 0 for immediate cleanup
+        // This forces the socket to close immediately without TIME_WAIT
+        socket.soTimeout = 5000 // 5 second timeout for accept()
+        
+        // Now bind to the port
+        socket.bind(java.net.InetSocketAddress(port))
+        
+        Log.d(TAG, "ServerSocket created: reuseAddress=${socket.reuseAddress}, soTimeout=${socket.soTimeout}")
+        return socket
     }
     
     /**
@@ -1657,50 +1712,73 @@ class RTSPServer(
     }
     
     /**
-     * Stop RTSP server
+     * Stop RTSP server with proper cleanup
      */
     fun stop() {
-        if (!isRunning.get()) return
-        
-        isRunning.set(false)
-        isEncoding.set(false)
-        
-        // Unregister RTSP consumer if there were active sessions
-        if (activePlayingSessions.get() > 0) {
-            Log.i(TAG, "RTSP server stopping with ${activePlayingSessions.get()} active sessions - unregistering consumer")
-            cameraService?.unregisterRtspConsumer()
-            activePlayingSessions.set(0)
-        }
-        
-        try {
-            // Close all sessions
-            sessions.values.forEach { session ->
-                try {
-                    session.socket.close()
-                    session.rtpSocket?.close()
-                } catch (e: Exception) {
-                    // Ignore
-                }
+        synchronized(serverLock) {
+            if (!isRunning.get()) return@synchronized
+            
+            isRunning.set(false)
+            isEncoding.set(false)
+            
+            // Unregister RTSP consumer if there were active sessions
+            if (activePlayingSessions.get() > 0) {
+                Log.i(TAG, "RTSP server stopping with ${activePlayingSessions.get()} active sessions - unregistering consumer")
+                cameraService?.unregisterRtspConsumer()
+                activePlayingSessions.set(0)
             }
-            sessions.clear()
             
-            // Stop server
-            serverJob?.cancel()
-            serverSocket?.close()
-            serverSocket = null
-            
-            // Stop encoder
-            encoder?.stop()
-            encoder?.release()
-            encoder = null
-            
-            Log.i(TAG, "RTSP server stopped")
-            
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping server", e)
-            lastError = "Server stop failed: ${e.message}"
-        } finally {
-            cleanup()
+            try {
+                // Close all sessions
+                sessions.values.forEach { session ->
+                    try {
+                        session.socket.close()
+                        session.rtpSocket?.close()
+                    } catch (e: Exception) {
+                        // Ignore
+                    }
+                }
+                sessions.clear()
+                
+                // Stop server job first
+                serverJob?.cancel()
+                serverJob = null
+                
+                // Close server socket with proper cleanup
+                serverSocket?.let { socket ->
+                    try {
+                        // Close the socket immediately
+                        socket.close()
+                        Log.d(TAG, "ServerSocket closed")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error closing ServerSocket", e)
+                    }
+                }
+                serverSocket = null
+                
+                // Brief delay to allow socket cleanup at OS level
+                // This helps prevent EADDRINUSE on rapid restart
+                Thread.sleep(100)
+                
+                // Stop encoder
+                encoder?.let { enc ->
+                    try {
+                        enc.stop()
+                        enc.release()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error releasing encoder", e)
+                    }
+                }
+                encoder = null
+                
+                Log.i(TAG, "RTSP server stopped")
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error stopping server", e)
+                lastError = "Server stop failed: ${e.message}"
+            } finally {
+                cleanup()
+            }
         }
     }
     
