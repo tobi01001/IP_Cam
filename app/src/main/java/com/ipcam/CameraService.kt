@@ -2386,13 +2386,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getActiveConnectionsCount(): Int {
-        // Return the count of connections we can actually track
-        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+        // Return the count of connections from HttpServer
+        // This includes MJPEG streams + SSE clients
+        return (httpServer?.getActiveStreamsCount() ?: 0) + (httpServer?.getActiveSseClientsCount() ?: 0)
     }
     
     override fun getMjpegClientCount(): Int {
         // HTTP-based streaming clients: MJPEG streams + SSE (Server-Sent Events) clients
-        // Both use the same connection tracking infrastructure
+        // Get the actual count from HttpServer
         return getActiveConnectionsCount()
     }
     
