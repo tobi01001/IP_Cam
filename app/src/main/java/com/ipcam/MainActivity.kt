@@ -106,6 +106,19 @@ class MainActivity : AppCompatActivity() {
     // Track last applied resolution to prevent infinite loop when setSelection triggers onItemSelected
     private var lastAppliedResolution: String? = null
     
+    // Handler and Runnable for periodic metrics updates
+    private val metricsUpdateHandler = Handler(Looper.getMainLooper())
+    private val metricsUpdateRunnable = object : Runnable {
+        override fun run() {
+            updateConnectionsUI()
+            updateFpsDisplay()
+            // Schedule next update in 2 seconds if service is still running
+            if (cameraService?.isServerRunning() == true) {
+                metricsUpdateHandler.postDelayed(this, 2000)
+            }
+        }
+    }
+    
     companion object {
         private const val PREFS_NAME = "IPCamSettings"
         private const val PREF_AUTO_START = "autoStartServer"
@@ -267,6 +280,11 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "Service connected with expanded preview, registering consumer...")
                 cameraService?.registerPreviewConsumer()
             }
+            
+            // Start periodic metrics updates if server is running
+            if (cameraService?.isServerRunning() == true) {
+                startMetricsUpdates()
+            }
         }
         
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -274,6 +292,8 @@ class MainActivity : AppCompatActivity() {
             cameraService = null
             isServiceBound = false
             updateUI()
+            // Stop metrics updates when service disconnects
+            stopMetricsUpdates()
         }
     }
     
@@ -1251,6 +1271,8 @@ class MainActivity : AppCompatActivity() {
             // Service already bound, just send command to start server
             ContextCompat.startForegroundService(this, intent)
             updateUI()
+            // Start periodic metrics updates
+            startMetricsUpdates()
         }
     }
     
@@ -1262,6 +1284,8 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Cannot stop server: service not connected", Toast.LENGTH_SHORT).show()
         }
         updateUI()
+        // Stop periodic metrics updates when server stops
+        stopMetricsUpdates()
     }
     
     private fun updateUI() {
@@ -1324,6 +1348,14 @@ class MainActivity : AppCompatActivity() {
             }
         }
         updateUI()
+        // Start periodic metrics updates
+        startMetricsUpdates()
+    }
+    
+    override fun onPause() {
+        super.onPause()
+        // Stop periodic metrics updates when activity is paused
+        stopMetricsUpdates()
     }
     
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
@@ -1409,5 +1441,25 @@ class MainActivity : AppCompatActivity() {
             unbindService(serviceConnection)
             isServiceBound = false
         }
+        // Stop metrics updates
+        stopMetricsUpdates()
+    }
+    
+    /**
+     * Start periodic updates of client metrics (CPU, bandwidth, connections)
+     * Updates every 2 seconds while the service is running
+     */
+    private fun startMetricsUpdates() {
+        stopMetricsUpdates() // Remove any pending updates first
+        if (cameraService?.isServerRunning() == true) {
+            metricsUpdateHandler.post(metricsUpdateRunnable)
+        }
+    }
+    
+    /**
+     * Stop periodic metrics updates
+     */
+    private fun stopMetricsUpdates() {
+        metricsUpdateHandler.removeCallbacks(metricsUpdateRunnable)
     }
 }
