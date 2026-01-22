@@ -273,13 +273,13 @@ class HttpServer(
                     .header .version { color: #666; font-size: 12px; }
                     
                     /* Navigation Tabs */
-                    .tabs { display: flex; gap: 5px; margin-bottom: 20px; flex-wrap: wrap; }
+                    .tabs { display: flex; gap: 5px; margin-bottom: 0; flex-wrap: wrap; }
                     .tab { background: rgba(255,255,255,0.9); border: none; padding: 12px 20px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 14px; font-weight: 500; color: #666; transition: all 0.3s; }
                     .tab:hover { background: white; color: #333; }
                     .tab.active { background: white; color: #667eea; box-shadow: 0 -2px 6px rgba(0,0,0,0.1); }
                     
                     /* Tab Content */
-                    .tab-content { display: none; background: white; padding: 20px; border-radius: 0 12px 12px 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+                    .tab-content { display: none; background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
                     .tab-content.active { display: block; }
                     
                     /* Cards */

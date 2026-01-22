@@ -1131,6 +1131,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Clear frame data
             lastProcessedFrame.set(null)
             
+            // Reset FPS counters when camera is stopped
+            currentCameraFps = 0f
+            synchronized(fpsFrameTimes) {
+                fpsFrameTimes.clear()
+            }
+            Log.d(TAG, "Camera FPS reset to 0")
+            
             // Update state to IDLE (unless already in ERROR)
             synchronized(cameraStateLock) {
                 if (cameraState != CameraState.ERROR) {
@@ -2050,9 +2057,49 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     } else {
                         currentMjpegFps = newFps
                     }
+                } else if (mjpegFpsFrameTimes.isEmpty() && currentMjpegFps != 0f) {
+                    // No frames in window - reset to 0
+                    currentMjpegFps = 0f
+                    broadcastCameraState()
                 }
                 lastMjpegFpsCalculation = now
             }
+        }
+    }
+    
+    /**
+     * Check and reset FPS counters when no clients are connected
+     * Called periodically to ensure FPS displays accurately reflect current state
+     */
+    fun checkAndResetFpsCounters() {
+        var needsBroadcast = false
+        
+        // Check MJPEG FPS - reset if no clients and FPS is not zero
+        if (getMjpegClientCount() == 0) {
+            synchronized(mjpegFpsLock) {
+                if (currentMjpegFps != 0f) {
+                    currentMjpegFps = 0f
+                    mjpegFpsFrameTimes.clear()
+                    needsBroadcast = true
+                    Log.d(TAG, "Reset MJPEG FPS to 0 (no clients)")
+                }
+            }
+        }
+        
+        // Check RTSP FPS - reset if no clients and FPS is not zero
+        if (getRtspClientCount() == 0) {
+            synchronized(rtspFpsLock) {
+                if (currentRtspFps != 0f) {
+                    currentRtspFps = 0f
+                    rtspFpsFrameTimes.clear()
+                    needsBroadcast = true
+                    Log.d(TAG, "Reset RTSP FPS to 0 (no clients)")
+                }
+            }
+        }
+        
+        if (needsBroadcast) {
+            broadcastCameraState()
         }
     }
     
