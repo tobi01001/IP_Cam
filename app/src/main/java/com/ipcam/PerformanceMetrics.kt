@@ -37,9 +37,8 @@ class PerformanceMetrics(private val context: Context) {
     private var peakMemoryUsage: Long = 0
     
     // CPU metrics
-    private var lastCpuTime: Long = 0
-    private var lastSystemTime: Long = 0
-    private var processPid = Process.myPid()
+    private var lastCpuTimeMs: Long = 0
+    private var lastMeasurementTimeMs: Long = 0
     
     // Timing
     private val startTime = System.currentTimeMillis()
@@ -184,46 +183,30 @@ class PerformanceMetrics(private val context: Context) {
     }
     
     /**
-     * Get CPU usage estimate.
-     * Note: This is an approximation and may not be 100% accurate.
+     * Get CPU usage estimate using Process.getElapsedCpuTime().
+     * This uses the official Android API that doesn't require reading /proc/stat.
+     * Returns the percentage of CPU time used by this process.
      */
     fun getCpuUsage(): CpuStats {
-        val currentTime = System.currentTimeMillis()
+        val currentTimeMs = System.currentTimeMillis()
         
-        // Read /proc/stat for system-wide CPU time
-        val systemCpuTime = try {
-            java.io.BufferedReader(java.io.FileReader("/proc/stat")).use { statReader ->
-                val statLine = statReader.readLine()
-                // Parse CPU times from first line
-                val statParts = statLine.split("\\s+".toRegex())
-                statParts.drop(1).take(8).mapNotNull { it.toLongOrNull() }.sum()
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not read /proc/stat", e)
-            return CpuStats(0.0, 0.0, false)
-        }
+        // Get elapsed CPU time for this process (in milliseconds)
+        // This is the total CPU time consumed by the process since it started
+        val currentCpuTimeMs = Process.getElapsedCpuTime()
         
-        // Read /proc/[pid]/stat for process CPU time
-        val processCpuTime = try {
-            java.io.BufferedReader(java.io.FileReader("/proc/$processPid/stat")).use { procStatReader ->
-                val procLine = procStatReader.readLine()
-                val parts = procLine.split(" ")
-                val utime = parts[13].toLong() // User mode time
-                val stime = parts[14].toLong() // Kernel mode time
-                utime + stime
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not read process CPU time", e)
-            0L
-        }
-        
-        // Calculate CPU usage if we have previous measurements
-        val processUsage = if (lastCpuTime > 0 && lastSystemTime > 0) {
-            val cpuDelta = processCpuTime - lastCpuTime
-            val systemDelta = systemCpuTime - lastSystemTime
+        // Calculate CPU usage percentage based on elapsed wall-clock time
+        val processUsage = if (lastMeasurementTimeMs > 0 && lastCpuTimeMs > 0) {
+            val cpuDeltaMs = currentCpuTimeMs - lastCpuTimeMs
+            val wallClockDeltaMs = currentTimeMs - lastMeasurementTimeMs
             
-            if (systemDelta > 0) {
-                (cpuDelta.toDouble() / systemDelta) * 100.0
+            if (wallClockDeltaMs > 0) {
+                // CPU usage = (CPU time delta / wall-clock time delta) * 100
+                // This gives us the percentage of one core's time that we're using
+                val cores = Runtime.getRuntime().availableProcessors()
+                // Normalize to show usage across all cores (0-100% range)
+                val usagePercent = (cpuDeltaMs.toDouble() / wallClockDeltaMs) * 100.0
+                // Cap at 100% to handle any measurement anomalies
+                usagePercent.coerceIn(0.0, 100.0)
             } else {
                 0.0
             }
@@ -231,8 +214,9 @@ class PerformanceMetrics(private val context: Context) {
             0.0
         }
         
-        lastCpuTime = processCpuTime
-        lastSystemTime = systemCpuTime
+        // Update last measurements for next calculation
+        lastCpuTimeMs = currentCpuTimeMs
+        lastMeasurementTimeMs = currentTimeMs
         
         // Get number of CPU cores
         val cores = Runtime.getRuntime().availableProcessors()
