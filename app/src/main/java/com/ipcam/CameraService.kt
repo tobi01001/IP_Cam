@@ -526,9 +526,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.d(TAG, "Camera initialization deferred until first consumer connects")
         cameraState = CameraState.IDLE
         
-        // NOTE: RTSP is now fully on-demand and does not auto-start
-        // RTSP will activate when clients connect via the RTSP server
-        // No need to persist RTSP enabled state across restarts
+        // AUTO-START RTSP SERVER (always running/idling)
+        // RTSP server starts immediately but camera activates only when clients connect
+        // This allows RTSP clients to connect without manual web activation
+        serviceScope.launch {
+            delay(2000) // Brief delay to ensure service is fully initialized
+            if (enableRTSPStreaming()) {
+                Log.i(TAG, "RTSP server auto-started and ready for connections")
+            } else {
+                Log.w(TAG, "Failed to auto-start RTSP server")
+            }
+        }
         
         startWatchdog()
     }
@@ -3395,9 +3403,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             rtspEnabled = true
             
-            // NOTE: RTSP consumer is NOT automatically registered here
-            // Consumer registration happens on-demand when RTSP clients connect
-            // This keeps camera idle until actually needed
+            // NOTE: Camera is NOT activated here - it stays idle
+            // RTSP server just starts listening for connections
+            // Camera will activate when clients send PLAY command
             
             // Reset RTSP FPS counter when enabling to start fresh
             currentRtspFps = 0f
@@ -3406,13 +3414,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             saveSettings()
-            Log.i(TAG, "RTSP streaming enabled on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
-            Log.i(TAG, "Camera will activate on-demand when RTSP clients connect")
+            Log.i(TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
+            Log.i(TAG, "Server is idling - camera will activate when clients connect and send PLAY")
             
-            // Rebind camera to create H.264 encoder use case
-            // This is critical - the H264PreviewEncoder is only created in bindCamera()
-            Log.d(TAG, "Rebinding camera to create H.264 encoder pipeline")
-            requestBindCamera()
+            // DO NOT rebind camera here - it will activate on-demand when clients connect
             
             return true
             
@@ -3436,12 +3441,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         try {
             rtspEnabled = false
+            
+            // Stop RTSP server (this will unregister consumers if clients were connected)
             rtspServer?.stop()
             rtspServer = null
             
-            // NOTE: RTSP consumer unregistration is NOT done here
-            // Consumers are managed on-demand based on client connections
-            // If camera is active only for RTSP, it will stay active until clients disconnect
+            // NOTE: Consumer unregistration is handled by RTSPServer.stop()
+            // which checks for active playing sessions and unregisters accordingly
             
             // Reset RTSP FPS counter to avoid showing stale values
             currentRtspFps = 0f
