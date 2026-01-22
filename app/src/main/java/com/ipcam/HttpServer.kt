@@ -423,8 +423,6 @@ class HttpServer(
                     <div id="tab-stream" class="tab-content active">
                         <div class="card">
                             <h3>Live Video Preview</h3>
-                        <div class="card">
-                            <h3>Live Video Preview</h3>
                             <div id="streamContainer">
                                 <img id="stream" alt="Camera Stream">
                                 <div id="streamPlaceholder">Click "Start Stream" to begin</div>
@@ -1437,50 +1435,60 @@ class HttpServer(
                     
                     // RTSP Control Functions
                     function enableRTSP() {
-                        document.getElementById('rtspStatus').textContent = 'Enabling RTSP...';
+                        const statusEl = document.getElementById('rtspStatus');
+                        statusEl.textContent = 'Enabling RTSP...';
+                        statusEl.className = 'alert info';
+                        
                         fetch('/enableRTSP')
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: green;">✓ RTSP Enabled</strong><br>' +
+                                    statusEl.className = 'alert success';
+                                    statusEl.innerHTML = 
+                                        '<strong>✓ RTSP Enabled</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
                                         'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port + '<br>' +
                                         'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
                                 } else {
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: red;">✗ Failed to enable RTSP</strong><br>' + data.message;
+                                    statusEl.className = 'alert danger';
+                                    statusEl.innerHTML = '<strong>✗ Failed to enable RTSP</strong><br>' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('rtspStatus').innerHTML = 
-                                    '<strong style="color: red;">Error:</strong> ' + error;
+                                statusEl.className = 'alert danger';
+                                statusEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
                     }
                     
                     function disableRTSP() {
-                        document.getElementById('rtspStatus').textContent = 'Disabling RTSP...';
+                        const statusEl = document.getElementById('rtspStatus');
+                        statusEl.textContent = 'Disabling RTSP...';
+                        statusEl.className = 'alert info';
+                        
                         fetch('/disableRTSP')
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: orange;">RTSP Disabled</strong>';
+                                    statusEl.className = 'alert warning';
+                                    statusEl.innerHTML = '<strong>RTSP Disabled</strong>';
                                 } else {
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: red;">Error:</strong> ' + data.message;
+                                    statusEl.className = 'alert danger';
+                                    statusEl.innerHTML = '<strong>Error:</strong> ' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('rtspStatus').innerHTML = 
-                                    '<strong style="color: red;">Error:</strong> ' + error;
+                                statusEl.className = 'alert danger';
+                                statusEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
                     }
                     
                     function checkRTSPStatus() {
-                        document.getElementById('rtspStatus').textContent = 'Checking RTSP status...';
+                        const statusEl = document.getElementById('rtspStatus');
+                        statusEl.textContent = 'Checking RTSP status...';
+                        statusEl.className = 'alert info';
+                        
                         fetch('/rtspStatus')
                             .then(response => response.json())
                             .then(data => {
@@ -1491,9 +1499,9 @@ class HttpServer(
                                         : '0.0';
                                     const bandwidthMbps = (data.bitrateMbps * encodedFps / data.targetFps).toFixed(2);
                                     
-                                    // Update status display
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: green;">✓ RTSP Active</strong><br>' +
+                                    statusEl.className = 'alert success';
+                                    statusEl.innerHTML = 
+                                        '<strong>✓ RTSP Active</strong><br>' +
                                         'Encoder: ' + data.encoder + ' (Hardware: ' + data.isHardware + ')<br>' +
                                         'Color Format: ' + data.colorFormat + ' (' + data.colorFormatHex + ')<br>' +
                                         'Resolution: ' + data.resolution + ' @ ' + data.bitrateMbps.toFixed(1) + ' Mbps (' + data.bitrateMode + ')<br>' +
@@ -1508,14 +1516,15 @@ class HttpServer(
                                     document.getElementById('bitrateInput').value = data.bitrateMbps.toFixed(1);
                                     document.getElementById('bitrateModeSelect').value = data.bitrateMode;
                                 } else {
-                                    document.getElementById('rtspStatus').innerHTML = 
-                                        '<strong style="color: orange;">RTSP Not Enabled</strong><br>' +
+                                    statusEl.className = 'alert info';
+                                    statusEl.innerHTML = 
+                                        '<strong>RTSP Not Enabled</strong><br>' +
                                         'Use "Enable RTSP" button to start hardware-accelerated H.264 streaming';
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('rtspStatus').innerHTML = 
-                                    '<strong style="color: red;">Error:</strong> ' + error;
+                                statusEl.className = 'alert danger';
+                                statusEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
                     }
                     
@@ -1526,47 +1535,53 @@ class HttpServer(
                     
                     function setBitrate() {
                         const bitrate = document.getElementById('bitrateInput').value;
-                        document.getElementById('encoderSettings').textContent = 'Setting bitrate to ' + bitrate + ' Mbps...';
+                        const settingsEl = document.getElementById('encoderSettings');
+                        settingsEl.textContent = 'Setting bitrate to ' + bitrate + ' Mbps...';
+                        settingsEl.className = 'alert info';
                         
                         fetch('/setRTSPBitrate?value=' + bitrate)
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('encoderSettings').innerHTML = 
-                                        '<strong style="color: green;">✓ Bitrate set to ' + bitrate + ' Mbps</strong><br>' +
+                                    settingsEl.className = 'alert success';
+                                    settingsEl.innerHTML = 
+                                        '<strong>✓ Bitrate set to ' + bitrate + ' Mbps</strong><br>' +
                                         'Encoder will restart with new settings. Check status for confirmation.';
                                     setTimeout(checkRTSPStatus, 2000);
                                 } else {
-                                    document.getElementById('encoderSettings').innerHTML = 
-                                        '<strong style="color: red;">✗ Failed:</strong> ' + data.message;
+                                    settingsEl.className = 'alert danger';
+                                    settingsEl.innerHTML = '<strong>✗ Failed:</strong> ' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('encoderSettings').innerHTML = 
-                                    '<strong style="color: red;">Error:</strong> ' + error;
+                                settingsEl.className = 'alert danger';
+                                settingsEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
                     }
                     
                     function setBitrateMode() {
                         const mode = document.getElementById('bitrateModeSelect').value;
-                        document.getElementById('encoderSettings').textContent = 'Setting bitrate mode to ' + mode + '...';
+                        const settingsEl = document.getElementById('encoderSettings');
+                        settingsEl.textContent = 'Setting bitrate mode to ' + mode + '...';
+                        settingsEl.className = 'alert info';
                         
                         fetch('/setRTSPBitrateMode?value=' + mode)
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
-                                    document.getElementById('encoderSettings').innerHTML = 
-                                        '<strong style="color: green;">✓ Bitrate mode set to ' + mode + '</strong><br>' +
+                                    settingsEl.className = 'alert success';
+                                    settingsEl.innerHTML = 
+                                        '<strong>✓ Bitrate mode set to ' + mode + '</strong><br>' +
                                         'Encoder will restart with new settings. Check status for confirmation.';
                                     setTimeout(checkRTSPStatus, 2000);
                                 } else {
-                                    document.getElementById('encoderSettings').innerHTML = 
-                                        '<strong style="color: red;">✗ Failed:</strong> ' + data.message;
+                                    settingsEl.className = 'alert danger';
+                                    settingsEl.innerHTML = '<strong>✗ Failed:</strong> ' + data.message;
                                 }
                             })
                             .catch(error => {
-                                document.getElementById('encoderSettings').innerHTML = 
-                                    '<strong style="color: red;">Error:</strong> ' + error;
+                                settingsEl.className = 'alert danger';
+                                settingsEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
                     }
                 </script>
