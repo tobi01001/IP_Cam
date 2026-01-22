@@ -2390,6 +2390,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
     }
     
+    override fun getMjpegClientCount(): Int {
+        // Count of MJPEG streams and SSE clients
+        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+    }
+    
+    override fun getRtspClientCount(): Int {
+        // Count of active RTSP sessions
+        return rtspServer?.getMetrics()?.playingSessions ?: 0
+    }
+    
+    override fun getTotalCameraClientCount(): Int {
+        // Total of MJPEG clients plus RTSP clients
+        return getMjpegClientCount() + getRtspClientCount()
+    }
+    
     fun getActiveConnectionsList(): List<ConnectionInfo> {
         synchronized(connectionsLock) {
             return activeConnections.values.filter { it.active }.toList()
@@ -3330,6 +3345,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             $adaptiveStats
         """.trimIndent()
+    }
+    
+    override fun getCpuUsagePercent(): Double {
+        return performanceMetrics.getCpuUsage().processUsagePercent
+    }
+    
+    override fun getBandwidthBps(): Long {
+        // Calculate total bandwidth across all clients
+        // This is an estimate based on global stats
+        val globalStats = bandwidthMonitor.getGlobalStats()
+        // Return average throughput in bits per second
+        return (globalStats.averageThroughputMbps * 1_000_000).toLong()
     }
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {

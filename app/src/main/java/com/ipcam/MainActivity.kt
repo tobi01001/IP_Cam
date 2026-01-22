@@ -58,6 +58,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var currentFpsText: TextView
     private lateinit var mjpegFpsSpinner: Spinner
     
+    // Client information UI elements
+    private lateinit var mjpegClientsText: TextView
+    private lateinit var rtspClientsText: TextView
+    private lateinit var totalClientsText: TextView
+    
+    // Device metrics UI elements
+    private lateinit var cpuUsageText: TextView
+    private lateinit var bandwidthUsageText: TextView
+    
     // New UI elements for launcher layout
     private lateinit var deviceNameDisplay: TextView
     private lateinit var quickSettingsButton: Button
@@ -322,6 +331,15 @@ class MainActivity : AppCompatActivity() {
         // FPS controls
         currentFpsText = findViewById(R.id.currentFpsText)
         mjpegFpsSpinner = findViewById(R.id.mjpegFpsSpinner)
+        
+        // Client information elements
+        mjpegClientsText = findViewById(R.id.mjpegClientsText)
+        rtspClientsText = findViewById(R.id.rtspClientsText)
+        totalClientsText = findViewById(R.id.totalClientsText)
+        
+        // Device metrics elements
+        cpuUsageText = findViewById(R.id.cpuUsageText)
+        bandwidthUsageText = findViewById(R.id.bandwidthUsageText)
         
         // New UI elements
         deviceNameDisplay = findViewById(R.id.deviceNameDisplay)
@@ -1069,18 +1087,60 @@ class MainActivity : AppCompatActivity() {
     }
     
     private fun updateConnectionsUI() {
-        val service = cameraService ?: return
+        val service = cameraService ?: run {
+            // Clear all displays when service is not available
+            activeConnectionsText.text = getString(R.string.connections_count, 0, 0)
+            mjpegClientsText.text = getString(R.string.mjpeg_clients, 0)
+            rtspClientsText.text = getString(R.string.rtsp_clients, 0)
+            totalClientsText.text = getString(R.string.total_clients, 0)
+            cpuUsageText.text = getString(R.string.cpu_usage, 0.0)
+            bandwidthUsageText.text = getString(R.string.bandwidth_usage, "0 bps")
+            return
+        }
         
         if (!service.isServerRunning()) {
             activeConnectionsText.text = getString(R.string.connections_count, 0, service.getMaxConnections())
+            mjpegClientsText.text = getString(R.string.mjpeg_clients, 0)
+            rtspClientsText.text = getString(R.string.rtsp_clients, 0)
+            totalClientsText.text = getString(R.string.total_clients, 0)
+            cpuUsageText.text = getString(R.string.cpu_usage, 0.0)
+            bandwidthUsageText.text = getString(R.string.bandwidth_usage, "0 bps")
             return
         }
         
         // Get active connection count from tracked connections
         val activeCount = service.getActiveConnectionsCount()
         val maxConns = service.getMaxConnections()
-        
         activeConnectionsText.text = getString(R.string.connections_count, activeCount, maxConns)
+        
+        // Get client counts
+        val mjpegCount = service.getMjpegClientCount()
+        val rtspCount = service.getRtspClientCount()
+        val totalCount = service.getTotalCameraClientCount()
+        
+        mjpegClientsText.text = getString(R.string.mjpeg_clients, mjpegCount)
+        rtspClientsText.text = getString(R.string.rtsp_clients, rtspCount)
+        totalClientsText.text = getString(R.string.total_clients, totalCount)
+        
+        // Get CPU usage
+        val cpuUsage = service.getCpuUsagePercent()
+        cpuUsageText.text = getString(R.string.cpu_usage, cpuUsage)
+        
+        // Get bandwidth and format it appropriately
+        val bandwidthBps = service.getBandwidthBps()
+        val bandwidthFormatted = formatBandwidth(bandwidthBps)
+        bandwidthUsageText.text = getString(R.string.bandwidth_usage, bandwidthFormatted)
+    }
+    
+    /**
+     * Format bandwidth in human-readable format (bps, kbps, mbps)
+     */
+    private fun formatBandwidth(bps: Long): String {
+        return when {
+            bps >= 1_000_000 -> String.format("%.2f Mbps", bps / 1_000_000.0)
+            bps >= 1_000 -> String.format("%.2f kbps", bps / 1_000.0)
+            else -> String.format("%d bps", bps)
+        }
     }
     
     private fun updateFpsDisplay() {

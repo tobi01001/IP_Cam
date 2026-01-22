@@ -48,6 +48,9 @@ interface CameraServiceInterface {
     // Server operations
     fun getServerUrl(): String
     fun getActiveConnectionsCount(): Int
+    fun getMjpegClientCount(): Int
+    fun getRtspClientCount(): Int
+    fun getTotalCameraClientCount(): Int
     fun getMaxConnections(): Int
     fun setMaxConnections(max: Int): Boolean
     fun restartServer()
@@ -57,6 +60,8 @@ interface CameraServiceInterface {
     fun removeClient(clientId: Long)
     fun getDetailedStats(): String
     fun getCameraStateJson(): String
+    fun getCpuUsagePercent(): Double
+    fun getBandwidthBps(): Long
 
     fun getCameraStateDeltaJson(): String?
     fun recordMjpegFrameServed() // Track MJPEG streaming FPS
