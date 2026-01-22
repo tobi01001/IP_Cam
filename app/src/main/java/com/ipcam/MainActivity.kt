@@ -112,6 +112,8 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             updateConnectionsUI()
             updateFpsDisplay()
+            // Check and reset FPS counters if no clients are connected
+            cameraService?.checkAndResetFpsCounters()
             // Schedule next update in 2 seconds if service is still running
             if (cameraService?.isServerRunning() == true) {
                 metricsUpdateHandler.postDelayed(this, 2000)
