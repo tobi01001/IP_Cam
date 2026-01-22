@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Test script to verify RTSP server reliability with rapid start/stop cycles
 # Usage: ./test_rtsp_reliability.sh <DEVICE_IP>
 

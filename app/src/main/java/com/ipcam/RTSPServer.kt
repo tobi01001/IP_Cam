@@ -373,6 +373,8 @@ class RTSPServer(
                 if (attempt < maxAttempts) {
                     val delay = retryDelays[attempt - 1]
                     Log.i(TAG, "Waiting ${delay}ms before retry...")
+                    // Thread.sleep is intentional here (not in coroutine context)
+                    // We want to block the calling thread to ensure sequential retry attempts
                     Thread.sleep(delay)
                 } else {
                     Log.e(TAG, "Failed to start RTSP server after $maxAttempts attempts", e)
@@ -403,9 +405,8 @@ class RTSPServer(
         // This is crucial for preventing EADDRINUSE errors
         socket.reuseAddress = true
         
-        // Set SO_LINGER with timeout 0 for immediate cleanup
-        // This forces the socket to close immediately without TIME_WAIT
-        socket.soTimeout = 5000 // 5 second timeout for accept()
+        // Set timeout for accept() operations (5 seconds)
+        socket.soTimeout = 5000
         
         // Now bind to the port
         socket.bind(java.net.InetSocketAddress(port))
@@ -1758,6 +1759,8 @@ class RTSPServer(
                 
                 // Brief delay to allow socket cleanup at OS level
                 // This helps prevent EADDRINUSE on rapid restart
+                // Thread.sleep is intentional here (not in coroutine context)
+                // We want to block to ensure proper socket cleanup before returning
                 Thread.sleep(100)
                 
                 // Stop encoder
