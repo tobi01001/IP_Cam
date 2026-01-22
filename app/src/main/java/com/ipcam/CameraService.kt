@@ -2391,8 +2391,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     override fun getMjpegClientCount(): Int {
-        // Count of MJPEG streams and SSE clients
-        return activeStreams.get() + synchronized(sseClientsLock) { sseClients.size }
+        // Delegate to getActiveConnectionsCount() as they track the same thing
+        return getActiveConnectionsCount()
     }
     
     override fun getRtspClientCount(): Int {

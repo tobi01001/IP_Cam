@@ -1153,12 +1153,13 @@ class MainActivity : AppCompatActivity() {
     }
     
     /**
-     * Format bandwidth in human-readable format (bps, kbps, mbps)
+     * Format bandwidth in human-readable format (bps, Kbps, Mbps)
+     * Uses correct capitalization for bits (K, M) vs bytes (k, m)
      */
     private fun formatBandwidth(bps: Long): String {
         return when {
             bps >= 1_000_000 -> String.format("%.2f Mbps", bps / 1_000_000.0)
-            bps >= 1_000 -> String.format("%.2f kbps", bps / 1_000.0)
+            bps >= 1_000 -> String.format("%.2f Kbps", bps / 1_000.0)
             else -> String.format("%d bps", bps)
         }
     }
