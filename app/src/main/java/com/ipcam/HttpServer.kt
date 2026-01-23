@@ -27,6 +27,16 @@ import java.util.concurrent.atomic.AtomicLong
  * 
  * This server is designed to work with CameraService as the single source of truth
  * for camera operations and frame management.
+ * 
+ * Web UI Structure:
+ * The web interface is separated into modular files for easy maintenance:
+ * - `/app/src/main/assets/web/index.html` - Main HTML structure with template placeholders
+ * - `/app/src/main/assets/web/styles.css` - All CSS styling (gradients, cards, responsive design)
+ * - `/app/src/main/assets/web/script.js` - All JavaScript functionality (SSE, controls, API calls)
+ * 
+ * Template variables in index.html ({{variable}}) are replaced at runtime with dynamic values.
+ * Static assets (CSS, JS) are served directly from the assets directory.
+ * No build step required - assets are bundled with the APK automatically.
  */
 class HttpServer(
     private val port: Int,
