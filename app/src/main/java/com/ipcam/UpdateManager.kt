@@ -123,7 +123,7 @@ class UpdateManager(private val context: Context) {
                 return@withContext null
             }
             
-            val currentVersionCode = BuildConfig.BUILD_NUMBER
+            val currentVersionCode = BuildInfo.buildNumber
             val isUpdateAvailable = versionCode > currentVersionCode
             
             Log.i(TAG, "Current: $currentVersionCode, Latest: $versionCode, Update available: $isUpdateAvailable")
@@ -173,13 +173,16 @@ class UpdateManager(private val context: Context) {
                     val buffer = ByteArray(8192)
                     var bytesRead: Int
                     var totalBytesRead = 0L
+                    var lastLoggedMB = 0L
                     
                     while (input.read(buffer).also { bytesRead = it } != -1) {
                         output.write(buffer, 0, bytesRead)
                         totalBytesRead += bytesRead
                         
                         // Log progress every 1MB
-                        if (totalBytesRead % (1024 * 1024) == 0L) {
+                        val currentMB = totalBytesRead / (1024 * 1024)
+                        if (currentMB > lastLoggedMB) {
+                            lastLoggedMB = currentMB
                             val progress = (totalBytesRead * 100 / updateInfo.apkSize).toInt()
                             Log.i(TAG, "Download progress: $progress%")
                         }

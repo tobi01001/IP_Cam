@@ -48,6 +48,7 @@ class HttpServer(
     private val sseClients = mutableListOf<SSEClient>()
     private val sseClientsLock = Any()
     private val clientIdCounter = AtomicLong(0)
+    private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     companion object {
         private const val TAG = "HttpServer"
@@ -175,6 +176,9 @@ class HttpServer(
             sseClients.forEach { it.active = false }
             sseClients.clear()
         }
+        
+        // Cancel any running update operations
+        serverScope.cancel()
         
         Log.d(TAG, "Ktor server stopped")
     }
@@ -1388,8 +1392,8 @@ class HttpServer(
         try {
             val updateManager = UpdateManager(this@HttpServer.context)
             
-            // Launch update in background coroutine
-            GlobalScope.launch(Dispatchers.IO) {
+            // Launch update in scoped coroutine
+            serverScope.launch {
                 val success = updateManager.performUpdate()
                 if (success) {
                     Log.i(TAG, "Update triggered successfully")

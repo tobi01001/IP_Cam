@@ -30,7 +30,10 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
     private lateinit var previewImageView: ImageView
@@ -1594,27 +1597,30 @@ class MainActivity : AppCompatActivity() {
         try {
             val apkFile = updateManager.downloadAPK(updateInfo)
             
-            if (apkFile != null) {
-                updateStatusText.text = "✓ Download complete. Installing...\nPlease confirm installation on your device."
-                updateStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
-                updateManager.installAPK(apkFile)
-                
-                // Re-enable button after a delay in case user cancels installation
-                Handler(Looper.getMainLooper()).postDelayed({
+            withContext(Dispatchers.Main) {
+                if (apkFile != null) {
+                    updateStatusText.text = "✓ Download complete. Installing...\nPlease confirm installation on your device."
+                    updateStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+                    updateManager.installAPK(apkFile)
+                    
+                    // Re-enable button after a delay in case user cancels installation
+                    delay(5000)
                     checkUpdateButton.isEnabled = true
                     checkUpdateButton.text = "Check for Update"
-                }, 5000)
-            } else {
-                updateStatusText.text = "✗ Download failed. Please try again."
+                } else {
+                    updateStatusText.text = "✗ Download failed. Please try again."
+                    updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                }
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                updateStatusText.text = "✗ Error: ${e.message}"
                 updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
                 checkUpdateButton.isEnabled = true
                 checkUpdateButton.text = "Check for Update"
             }
-        } catch (e: Exception) {
-            updateStatusText.text = "✗ Error: ${e.message}"
-            updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
-            checkUpdateButton.isEnabled = true
-            checkUpdateButton.text = "Check for Update"
         }
     }
 }
