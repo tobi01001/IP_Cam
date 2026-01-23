@@ -675,6 +675,76 @@
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
+            <!-- Software Update Section -->
+            <com.google.android.material.card.MaterialCardView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_margin="8dp"
+                app:cardBackgroundColor="@color/card_background"
+                app:cardElevation="2dp"
+                app:cardCornerRadius="8dp">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:padding="16dp">
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Software Update"
+                        android:textSize="16sp"
+                        android:textStyle="bold"
+                        android:layout_marginBottom="8dp"/>
+
+                    <TextView
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Check for and install app updates from GitHub Releases."
+                        android:textSize="12sp"
+                        android:textColor="#757575"
+                        android:layout_marginBottom="12dp"/>
+
+                    <TextView
+                        android:id="@+id/updateStatusText"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text=""
+                        android:textSize="12sp"
+                        android:visibility="gone"
+                        android:layout_marginBottom="12dp"
+                        android:padding="8dp"
+                        android:background="#F5F5F5"/>
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="horizontal"
+                        android:gravity="center_vertical">
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/checkUpdateButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Check for Update"
+                            android:layout_marginEnd="4dp"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/installUpdateButton"
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Install Update"
+                            android:layout_marginStart="4dp"
+                            android:visibility="gone"
+                            style="@style/Widget.MaterialComponents.Button"/>
+                    </LinearLayout>
+                </LinearLayout>
+            </com.google.android.material.card.MaterialCardView>
+
             <!-- Footer with version info -->
             <TextView
                 android:id="@+id/versionInfoText"

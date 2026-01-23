@@ -29,6 +29,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
 
 class MainActivity : AppCompatActivity() {
     private lateinit var previewImageView: ImageView
@@ -70,6 +72,12 @@ class MainActivity : AppCompatActivity() {
     // New UI elements for launcher layout
     private lateinit var deviceNameDisplay: TextView
     private lateinit var quickSettingsButton: Button
+    
+    // Software update UI elements
+    private lateinit var checkUpdateButton: Button
+    private lateinit var installUpdateButton: Button
+    private lateinit var updateStatusText: TextView
+    private lateinit var updateManager: UpdateManager
     
     // Collapsible section elements
     private lateinit var previewSectionHeader: View
@@ -367,6 +375,12 @@ class MainActivity : AppCompatActivity() {
         deviceNameDisplay = findViewById(R.id.deviceNameDisplay)
         quickSettingsButton = findViewById(R.id.quickSettingsButton)
         
+        // Software update elements
+        checkUpdateButton = findViewById(R.id.checkUpdateButton)
+        installUpdateButton = findViewById(R.id.installUpdateButton)
+        updateStatusText = findViewById(R.id.updateStatusText)
+        updateManager = UpdateManager(this)
+        
         // Collapsible section elements
         previewSectionHeader = findViewById(R.id.previewSectionHeader)
         previewContent = findViewById(R.id.previewContent)
@@ -421,6 +435,7 @@ class MainActivity : AppCompatActivity() {
         setupOsdCheckBoxes()
         setupMjpegFpsSpinner()
         setupDeviceNameControls()
+        setupUpdateControls()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -1465,5 +1480,141 @@ class MainActivity : AppCompatActivity() {
      */
     private fun stopMetricsUpdates() {
         metricsUpdateHandler.removeCallbacks(metricsUpdateRunnable)
+    }
+    
+    /**
+     * Setup software update controls
+     */
+    private fun setupUpdateControls() {
+        checkUpdateButton.setOnClickListener {
+            checkForUpdate()
+        }
+        
+        installUpdateButton.setOnClickListener {
+            downloadAndInstallUpdate()
+        }
+    }
+    
+    /**
+     * Check for available software updates
+     */
+    private fun checkForUpdate() {
+        checkUpdateButton.isEnabled = false
+        checkUpdateButton.text = "Checking..."
+        updateStatusText.text = "Checking for updates..."
+        updateStatusText.visibility = View.VISIBLE
+        updateStatusText.setBackgroundColor(0xFFF5F5F5.toInt())
+        installUpdateButton.visibility = View.GONE
+        
+        lifecycleScope.launch {
+            try {
+                val updateInfo = updateManager.checkForUpdate()
+                
+                if (updateInfo == null) {
+                    updateStatusText.text = "Failed to check for updates. Please check network connectivity."
+                    updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                    return@launch
+                }
+                
+                if (updateInfo.isUpdateAvailable) {
+                    // Update available - show update dialog
+                    showUpdateDialog(updateInfo)
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                } else {
+                    // No update available
+                    updateStatusText.text = "✓ You are running the latest version\n" +
+                            "Current version: Build ${BuildConfig.BUILD_NUMBER}"
+                    updateStatusText.setBackgroundColor(0xFFE3F2FD.toInt())
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                }
+            } catch (e: Exception) {
+                updateStatusText.text = "Error: ${e.message}"
+                updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                checkUpdateButton.isEnabled = true
+                checkUpdateButton.text = "Check for Update"
+            }
+        }
+    }
+    
+    /**
+     * Show dialog with update information
+     */
+    private fun showUpdateDialog(updateInfo: UpdateManager.UpdateInfo) {
+        val sizeMB = (updateInfo.apkSize / 1024.0 / 1024.0)
+        
+        AlertDialog.Builder(this)
+            .setTitle("Update Available")
+            .setMessage(
+                "Current version: Build ${BuildConfig.BUILD_NUMBER}\n" +
+                "Latest version: ${updateInfo.latestVersionName}\n\n" +
+                "Download size: %.2f MB\n\n".format(sizeMB) +
+                "Release notes:\n${updateInfo.releaseNotes}\n\n" +
+                "Download and install update?"
+            )
+            .setPositiveButton("Update") { _, _ ->
+                // Store update info and start download
+                lifecycleScope.launch {
+                    downloadAndInstallUpdateWithInfo(updateInfo)
+                }
+            }
+            .setNegativeButton("Later") { _, _ ->
+                updateStatusText.text = "Update postponed"
+                updateStatusText.setBackgroundColor(0xFFF5F5F5.toInt())
+            }
+            .show()
+    }
+    
+    /**
+     * Download and install update (checks first)
+     */
+    private fun downloadAndInstallUpdate() {
+        lifecycleScope.launch {
+            val updateInfo = updateManager.checkForUpdate()
+            if (updateInfo != null && updateInfo.isUpdateAvailable) {
+                downloadAndInstallUpdateWithInfo(updateInfo)
+            }
+        }
+    }
+    
+    /**
+     * Download and install update with known update info
+     */
+    private suspend fun downloadAndInstallUpdateWithInfo(updateInfo: UpdateManager.UpdateInfo) {
+        updateStatusText.text = "⏳ Downloading update...\nThis may take a minute depending on your connection speed."
+        updateStatusText.visibility = View.VISIBLE
+        updateStatusText.setBackgroundColor(0xFFFFF3E0.toInt())
+        installUpdateButton.isEnabled = false
+        installUpdateButton.visibility = View.GONE
+        checkUpdateButton.isEnabled = false
+        
+        try {
+            val apkFile = updateManager.downloadAPK(updateInfo)
+            
+            if (apkFile != null) {
+                updateStatusText.text = "✓ Download complete. Installing...\nPlease confirm installation on your device."
+                updateStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+                updateManager.installAPK(apkFile)
+                
+                // Re-enable button after a delay in case user cancels installation
+                Handler(Looper.getMainLooper()).postDelayed({
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                }, 5000)
+            } else {
+                updateStatusText.text = "✗ Download failed. Please try again."
+                updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                checkUpdateButton.isEnabled = true
+                checkUpdateButton.text = "Check for Update"
+            }
+        } catch (e: Exception) {
+            updateStatusText.text = "✗ Error: ${e.message}"
+            updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+            checkUpdateButton.isEnabled = true
+            checkUpdateButton.text = "Check for Update"
+        }
     }
 }
