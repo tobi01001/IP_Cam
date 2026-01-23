@@ -747,7 +747,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             // Create and start the Ktor-based HTTP server
-            httpServer = HttpServer(actualPort, this@CameraService)
+            httpServer = HttpServer(actualPort, this@CameraService, this@CameraService)
             httpServer?.start()
             
             val startMsg = if (actualPort != PORT) {

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+            <html>
+            <head>
+                <title>{{displayName}}</title>
+                <meta name="viewport" content="width=device-width, initial-scale=1">
+                <link rel="stylesheet" href="styles.css">
+            </head>
+            <body>
+                <div class="container">
+                    <!-- Header -->
+                    <div class="header">
+                        <h1>{{displayName}}</h1>
+                        <div class="version">
+                            {{versionString}} | {{buildString}}
+                        </div>
+                    </div>
+                    
+                    <!-- Status Dashboard (Always Visible) -->
+                    <div class="card">
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Server Status</div>
+                                <div class="stat-value">
+                                    <span class="status-badge success">Running</span>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Connections</div>
+                                <div class="stat-value" id="connectionCount">{{connectionDisplay}}</div>
+                            </div>
+                            <div class="stat-card" id="batteryStatusCard">
+                                <div class="stat-label">Battery Status</div>
+                                <div class="stat-value">
+                                    <span id="batteryModeText" class="status-badge info">Loading...</span>
+                                </div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">Streaming Status</div>
+                                <div class="stat-value">
+                                    <span id="streamingStatusText" class="status-badge success">Active</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="stats-grid">
+                            <div class="stat-card">
+                                <div class="stat-label">Camera FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentCameraFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">MJPEG FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentMjpegFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">RTSP FPS</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="currentRtspFpsDisplay">0.0</span> fps</div>
+                            </div>
+                            <div class="stat-card">
+                                <div class="stat-label">CPU Usage</div>
+                                <div class="stat-value" style="font-size: 20px;"><span id="cpuUsageDisplay">0.0</span>%</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Navigation Tabs -->
+                    <div class="tabs">
+                        <button class="tab active" onclick="switchTab('stream')">Live Stream</button>
+                        <button class="tab" onclick="switchTab('camera')">Camera Controls</button>
+                        <button class="tab" onclick="switchTab('settings')">Stream Settings</button>
+                        <button class="tab" onclick="switchTab('rtsp')">RTSP</button>
+                        <button class="tab" onclick="switchTab('server')">Server Management</button>
+                        <button class="tab" onclick="switchTab('api')">API Reference</button>
+                    </div>
+                    
+                    <!-- Tab 1: Live Stream -->
+                    <div id="tab-stream" class="tab-content active">
+                        <div class="card">
+                            <h3>Live Video Preview</h3>
+                            <div id="streamContainer">
+                                <img id="stream" alt="Camera Stream">
+                                <div id="streamPlaceholder">Click "Start Stream" to begin</div>
+                            </div>
+                            <div class="form-row">
+                                <button id="toggleStreamBtn" onclick="toggleStream()" class="success">Start Stream</button>
+                                <button onclick="reloadStream()" class="secondary">Refresh</button>
+                                <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 2: Camera Controls -->
+                    <div id="tab-camera" class="tab-content">
+                        <div class="card">
+                            <h3>Camera Selection</h3>
+                            <div class="form-row">
+                                <button onclick="switchCamera()">Switch Camera</button>
+                                <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Resolution & Format</h3>
+                            <div class="form-row">
+                                <label for="formatSelect">Resolution:</label>
+                                <select id="formatSelect"></select>
+                                <button onclick="applyFormat()">Apply Format</button>
+                            </div>
+                            <div class="alert info" id="formatStatus"></div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Camera Orientation</h3>
+                            <div class="form-row">
+                                <label for="orientationSelect">Base Orientation:</label>
+                                <select id="orientationSelect">
+                                    <option value="landscape">Landscape (Default)</option>
+                                    <option value="portrait">Portrait</option>
+                                </select>
+                                <button onclick="applyCameraOrientation()">Apply Orientation</button>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Rotation</h3>
+                            <div class="form-row">
+                                <label for="rotationSelect">Rotate Video:</label>
+                                <select id="rotationSelect">
+                                    <option value="0">0° (Normal)</option>
+                                    <option value="90">90° (Right)</option>
+                                    <option value="180">180° (Upside Down)</option>
+                                    <option value="270">270° (Left)</option>
+                                </select>
+                                <button onclick="applyRotation()">Apply Rotation</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 3: Stream Settings -->
+                    <div id="tab-settings" class="tab-content">
+                        <div class="card">
+                            <h3>OSD Overlays</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">Customize what information appears on the video stream overlay.</p>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="dateTimeOverlayCheckbox" checked onchange="toggleDateTimeOverlay()">
+                                    Show Date/Time (Top Left)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="batteryOverlayCheckbox" checked onchange="toggleBatteryOverlay()">
+                                    Show Battery (Top Right)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="resolutionOverlayCheckbox" checked onchange="toggleResolutionOverlay()">
+                                    Show Resolution (Bottom Right)
+                                </label>
+                            </div>
+                            <div class="form-row">
+                                <label>
+                                    <input type="checkbox" id="fpsOverlayCheckbox" checked onchange="toggleFpsOverlay()">
+                                    Show FPS (Bottom Left)
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Frame Rate Settings</h3>
+                            <div class="form-row">
+                                <label for="mjpegFpsSelect">MJPEG Target FPS:</label>
+                                <select id="mjpegFpsSelect">
+                                    <option value="1">1 fps</option>
+                                    <option value="5">5 fps</option>
+                                    <option value="10" selected>10 fps</option>
+                                    <option value="15">15 fps</option>
+                                    <option value="20">20 fps</option>
+                                    <option value="24">24 fps</option>
+                                    <option value="30">30 fps</option>
+                                    <option value="60">60 fps</option>
+                                </select>
+                                <button onclick="applyMjpegFps()">Apply FPS</button>
+                            </div>
+                            <div class="form-row">
+                                <label for="rtspFpsSelect">RTSP Target FPS:</label>
+                                <select id="rtspFpsSelect">
+                                    <option value="1">1 fps</option>
+                                    <option value="5">5 fps</option>
+                                    <option value="10">10 fps</option>
+                                    <option value="15">15 fps</option>
+                                    <option value="20">20 fps</option>
+                                    <option value="24">24 fps</option>
+                                    <option value="30" selected>30 fps</option>
+                                    <option value="60">60 fps</option>
+                                </select>
+                                <button onclick="applyRtspFps()">Apply FPS</button>
+                            </div>
+                            <div class="alert info">RTSP FPS change requires RTSP server restart (disable/enable) to take effect.</div>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 4: RTSP Configuration -->
+                    <div id="tab-rtsp" class="tab-content">
+                        <div class="card">
+                            <h3>RTSP Streaming (Hardware-Accelerated H.264)</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                                RTSP provides hardware-accelerated H.264 streaming with ~500ms-1s latency. 
+                                Industry standard for IP cameras compatible with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, and MotionEye.
+                            </p>
+                            <div class="form-row">
+                                <button id="enableRTSPBtn" onclick="enableRTSP()">Enable RTSP</button>
+                                <button id="disableRTSPBtn" onclick="disableRTSP()" class="secondary">Disable RTSP</button>
+                                <button onclick="checkRTSPStatus()">Check Status</button>
+                            </div>
+                            <div id="rtspStatus" class="alert info" style="margin-top: 12px;"></div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Encoder Settings</h3>
+                            <div class="form-row">
+                                <label for="bitrateInput">Bitrate (Mbps):</label>
+                                <input type="number" id="bitrateInput" min="0.5" max="20" step="0.5" value="3.0" style="width: 100px;">
+                                <button onclick="setBitrate()">Set Bitrate</button>
+                            </div>
+                            <div class="form-row">
+                                <label for="bitrateModeSelect">Bitrate Mode:</label>
+                                <select id="bitrateModeSelect">
+                                    <option value="VBR">VBR (Variable, best quality)</option>
+                                    <option value="CBR">CBR (Constant, stable bandwidth)</option>
+                                    <option value="CQ">CQ (Constant Quality)</option>
+                                </select>
+                                <button onclick="setBitrateMode()">Set Mode</button>
+                            </div>
+                            <div id="encoderSettings" class="alert info" style="margin-top: 12px;"></div>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 5: Server Management -->
+                    <div id="tab-server" class="tab-content">
+                        <div class="card">
+                            <h3>Active Connections</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                                Shows active streaming and real-time event connections. Short-lived HTTP requests (status, snapshot, etc.) are not displayed.
+                            </p>
+                            <div id="connectionsContainer">
+                                <p>Loading connections...</p>
+                            </div>
+                            <button onclick="refreshConnections()" style="margin-top: 12px;">Refresh Connections</button>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Server Configuration</h3>
+                            <div class="form-row">
+                                <label for="maxConnectionsSelect">Max Connections:</label>
+                                <select id="maxConnectionsSelect">
+                                    <option value="4">4</option>
+                                    <option value="8">8</option>
+                                    <option value="16">16</option>
+                                    <option value="32" selected>32</option>
+                                    <option value="64">64</option>
+                                    <option value="100">100</option>
+                                </select>
+                                <button onclick="applyMaxConnections()">Apply</button>
+                            </div>
+                            <div class="alert info">Server restart required for max connections change to take effect.</div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Server Control</h3>
+                            <div class="form-row">
+                                <button onclick="restartServer()" class="danger">Restart Server</button>
+                            </div>
+                            <div class="alert warning">Server restart will briefly interrupt all connections. Clients will automatically reconnect.</div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Keep the stream alive</h3>
+                            <ul style="padding-left: 20px; line-height: 1.8; color: #555;">
+                                <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
+                                <li>Allow background activity and keep the phone plugged in for long sessions</li>
+                                <li>Lock the app in recents (swipe-down or lock icon on many devices)</li>
+                                <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
+                            </ul>
+                        </div>
+                    </div>
+                    
+                    <!-- Tab 6: API Reference -->
+                    <div id="tab-api" class="tab-content">
+                        <div class="card">
+                            <h3>Streaming Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>MJPEG Stream:</strong> <a href="/stream" target="_blank"><code>GET /stream</code></a><br>
+                                Returns MJPEG video stream (multipart/x-mixed-replace)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Snapshot:</strong> <a href="/snapshot" target="_blank"><code>GET /snapshot</code></a><br>
+                                Returns a single JPEG image
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Camera Control</h3>
+                            <div class="endpoint">
+                                <strong>Switch Camera:</strong> <a href="/switch" target="_blank"><code>GET /switch</code></a><br>
+                                Switches between front and back camera
+                            </div>
+                            <div class="endpoint">
+                                <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
+                                Toggle flashlight on/off for back camera
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
+                                Apply a supported resolution (or omit value to return to auto)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Camera Orientation:</strong> <code>GET /setCameraOrientation?value=landscape|portrait</code><br>
+                                Set the base camera recording mode
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Rotation:</strong> <code>GET /setRotation?value=0|90|180|270</code><br>
+                                Rotate the video feed by the specified degrees
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Status & Information</h3>
+                            <div class="endpoint">
+                                <strong>Status:</strong> <a href="/status" target="_blank"><code>GET /status</code></a><br>
+                                Returns server status as JSON
+                            </div>
+                            <div class="endpoint">
+                                <strong>Events (SSE):</strong> <a href="/events" target="_blank"><code>GET /events</code></a><br>
+                                Server-Sent Events stream for real-time updates
+                            </div>
+                            <div class="endpoint">
+                                <strong>Formats:</strong> <a href="/formats" target="_blank"><code>GET /formats</code></a><br>
+                                Lists supported camera resolutions for the active lens
+                            </div>
+                            <div class="endpoint">
+                                <strong>Connections:</strong> <a href="/connections" target="_blank"><code>GET /connections</code></a><br>
+                                Returns list of active connections as JSON
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>RTSP Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Enable RTSP:</strong> <a href="/enableRTSP" target="_blank"><code>GET /enableRTSP</code></a><br>
+                                Enable hardware-accelerated RTSP streaming on port 8554
+                            </div>
+                            <div class="endpoint">
+                                <strong>Disable RTSP:</strong> <a href="/disableRTSP" target="_blank"><code>GET /disableRTSP</code></a><br>
+                                Disable RTSP streaming to save resources
+                            </div>
+                            <div class="endpoint">
+                                <strong>RTSP Status:</strong> <a href="/rtspStatus" target="_blank"><code>GET /rtspStatus</code></a><br>
+                                Get RTSP server status and metrics (JSON)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Bitrate:</strong> <code>GET /setRTSPBitrate?value=5.0</code><br>
+                                Set encoder bitrate in Mbps (e.g., 3.0, 5.0, 8.0)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Bitrate Mode:</strong> <code>GET /setRTSPBitrateMode?value=VBR|CBR|CQ</code><br>
+                                Set bitrate mode: VBR (variable), CBR (constant), or CQ (constant quality)
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Additional Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
+                                Toggle resolution display in bottom right corner
+                            </div>
+                            <div class="endpoint">
+                                <strong>Close Connection:</strong> <code>GET /closeConnection?id=&lt;id&gt;</code><br>
+                                Close a specific connection by ID
+                            </div>
+                            <div class="endpoint">
+                                <strong>Set Max Connections:</strong> <code>GET /setMaxConnections?value=&lt;number&gt;</code><br>
+                                Set maximum number of simultaneous connections (4-100), requires server restart
+                            </div>
+                            <div class="endpoint">
+                                <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
+                                Restart the HTTP server remotely
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <script src="script.js"></script>
+            </body>
+            </html>
