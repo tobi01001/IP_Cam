@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FileProvider paths configuration for secure file sharing.
+  
+  This file defines which directories can be shared via FileProvider.
+  Used for sharing the downloaded APK file with the Android package installer.
+  
+  The "updates" path maps to the app's external files directory where
+  update.apk is downloaded.
+-->
+<paths>
+    <external-files-path name="updates" path="." />
+</paths>
