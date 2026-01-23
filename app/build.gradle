@@ -4,6 +4,24 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
+// Helper function to load version from properties file
+def getVersionProperties() {
+    def versionPropsFile = file("${rootProject.projectDir}/version.properties")
+    def versionProps = new Properties()
+    
+    if (versionPropsFile.exists()) {
+        versionPropsFile.withInputStream { stream ->
+            versionProps.load(stream)
+        }
+    } else {
+        // Fallback to default values if file doesn't exist
+        versionProps['VERSION_NAME'] = '1.2'
+        versionProps['VERSION_CODE'] = '1'
+    }
+    
+    return versionProps
+}
+
 // Helper functions to get git information
 def getGitCommitHash() {
     try {
@@ -53,8 +71,11 @@ android {
         applicationId "com.ipcam"
         minSdk libs.versions.minSdk.get().toInteger()
         targetSdk libs.versions.targetSdk.get().toInteger()
-        versionCode 1
-        versionName "1.2"
+        
+        // Load version from version.properties file
+        def versionProps = getVersionProperties()
+        versionCode versionProps['VERSION_CODE'].toInteger()
+        versionName versionProps['VERSION_NAME']
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         

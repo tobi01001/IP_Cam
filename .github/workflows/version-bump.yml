@@ -1,0 +1,97 @@
+name: Auto Version Bump
+
+# Trigger on push to main branch (after PR merge)
+# This workflow automatically increments the minor version number
+on:
+  push:
+    branches:
+      - main
+    # Skip if commit message contains [skip ci] to prevent infinite loops
+    # Also skip if this is the version bump commit itself
+    paths-ignore:
+      - '.github/workflows/**'
+      - 'docs/**'
+      - '**.md'
+
+jobs:
+  bump-version:
+    # Only run if not triggered by a version bump commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'Auto version bump')"
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  # Required to push changes back to main
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper git operations
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+      
+      - name: Read current version
+        id: read_version
+        run: |
+          # Read version from version.properties
+          VERSION_NAME=$(grep "VERSION_NAME=" version.properties | cut -d'=' -f2)
+          VERSION_CODE=$(grep "VERSION_CODE=" version.properties | cut -d'=' -f2)
+          
+          echo "Current version: $VERSION_NAME (code: $VERSION_CODE)"
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+      
+      - name: Increment version
+        id: increment
+        run: |
+          # Parse current version (format: MAJOR.MINOR)
+          CURRENT_VERSION="${{ steps.read_version.outputs.version_name }}"
+          CURRENT_CODE="${{ steps.read_version.outputs.version_code }}"
+          
+          # Split version into major and minor
+          MAJOR=$(echo $CURRENT_VERSION | cut -d'.' -f1)
+          MINOR=$(echo $CURRENT_VERSION | cut -d'.' -f2)
+          
+          # Increment minor version
+          NEW_MINOR=$((MINOR + 1))
+          NEW_VERSION="${MAJOR}.${NEW_MINOR}"
+          
+          # Increment version code
+          NEW_CODE=$((CURRENT_CODE + 1))
+          
+          echo "New version: $NEW_VERSION (code: $NEW_CODE)"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
+      
+      - name: Update version.properties
+        run: |
+          # Update version.properties file
+          cat > version.properties << EOF
+          # Version information for IP_Cam
+          # This file is automatically updated by GitHub Actions on merge to main
+          # Format: MAJOR.MINOR
+          VERSION_NAME=${{ steps.increment.outputs.new_version }}
+          VERSION_CODE=${{ steps.increment.outputs.new_code }}
+          EOF
+          
+          cat version.properties
+      
+      - name: Commit and push changes
+        run: |
+          git add version.properties
+          git commit -m "Auto version bump to ${{ steps.increment.outputs.new_version }} [skip ci]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create summary
+        run: |
+          echo "### Version Bump Complete ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous Version:** ${{ steps.read_version.outputs.version_name }} (code: ${{ steps.read_version.outputs.version_code }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **New Version:** ${{ steps.increment.outputs.new_version }} (code: ${{ steps.increment.outputs.new_code }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** $(git rev-parse --short HEAD)" >> $GITHUB_STEP_SUMMARY
