@@ -50,6 +50,16 @@ These are the primary documents providing complete overview of the project:
 - Migrations and refactoring efforts
 - Consolidated summary of 61 historical documents
 
+## Future Implementation Guides
+
+### [AUTO_UPDATE_IMPLEMENTATION.md](AUTO_UPDATE_IMPLEMENTATION.md)
+**Step-by-step guide for implementing OTA updates:**
+- Complete implementation plan for automatic over-the-air updates
+- Uses GitHub Releases for zero-cost hosting
+- Architecture and component design
+- Code examples and testing procedures
+- **Status:** Not yet implemented - future enhancement
+
 ## Quick Reference
 
 | Need | See |
@@ -59,10 +69,12 @@ These are the primary documents providing complete overview of the project:
 | Design decisions & future plans | [ANALYSIS.md](ANALYSIS.md) |
 | How to test | [TESTING.md](TESTING.md) |
 | Why it works this way | [HISTORY.md](HISTORY.md) |
+| Future feature implementation | [AUTO_UPDATE_IMPLEMENTATION.md](AUTO_UPDATE_IMPLEMENTATION.md) |
 
 ---
 
 **Documentation Structure:**
 - **5 main documents** cover all aspects (current, requirements, future, testing, history)
+- **1 implementation guide** for future features (auto-updates)
 - **Consolidated approach** eliminates clutter while preserving context
 - **Clear separation** between current state and historical evolution
