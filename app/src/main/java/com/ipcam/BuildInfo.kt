@@ -40,11 +40,14 @@ object BuildInfo {
     
     /**
      * Get a formatted version string suitable for display
-     * Format: "v{versionName} ({branch}@{commitHash})"
-     * Example: "v1.0 (main@a4c656b)"
+     * Format: "v{versionName} ({branch}@{commitHash})" or "v{versionName}-beta ({branch}@{commitHash})"
+     * Example: "v1.2 (main@a4c656b)" or "v1.2-beta (feature-branch@a4c656b)"
+     * 
+     * Beta label is added when the branch is NOT "main"
      */
     fun getVersionString(): String {
-        return "v$versionName ($branch@$commitHash)"
+        val betaSuffix = if (branch != "main") "-beta" else ""
+        return "v$versionName$betaSuffix ($branch@$commitHash)"
     }
     
     /**
