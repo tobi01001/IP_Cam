@@ -1323,10 +1323,18 @@ class HttpServer(
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveCheckUpdate() {
         try {
-            val updateManager = UpdateManager(context)
+            val updateManager = UpdateManager(this@HttpServer.context)
             val updateInfo = updateManager.checkForUpdate()
             
             if (updateInfo != null) {
+                // Escape release notes for JSON (replace quotes and newlines)
+                val escapedNotes = updateInfo.releaseNotes
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t")
+                
                 val json = """
                 {
                     "status": "ok",
@@ -1335,7 +1343,7 @@ class HttpServer(
                     "latestVersion": ${updateInfo.latestVersionCode},
                     "latestVersionName": "${updateInfo.latestVersionName}",
                     "apkSize": ${updateInfo.apkSize},
-                    "releaseNotes": ${kotlinx.serialization.json.Json.encodeToString(updateInfo.releaseNotes)}
+                    "releaseNotes": "$escapedNotes"
                 }
                 """.trimIndent()
                 
@@ -1378,7 +1386,7 @@ class HttpServer(
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveTriggerUpdate() {
         try {
-            val updateManager = UpdateManager(context)
+            val updateManager = UpdateManager(this@HttpServer.context)
             
             // Launch update in background coroutine
             GlobalScope.launch(Dispatchers.IO) {
