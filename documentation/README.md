@@ -4,10 +4,10 @@ This directory contains comprehensive documentation for the IP_Cam Android appli
 
 ## Main Documents
 
-These are the primary consolidated documents providing complete overview of the project:
+These are the primary documents providing complete overview of the project:
 
 ### [IMPLEMENTATION.md](IMPLEMENTATION.md)
-Complete implementation documentation covering:
+**Current state documentation** covering:
 - System architecture and components
 - Streaming implementation (MJPEG and RTSP)
 - Lifecycle management
@@ -18,7 +18,7 @@ Complete implementation documentation covering:
 - Version management
 
 ### [REQUIREMENTS.md](REQUIREMENTS.md)
-Requirements specification with implementation status:
+**Requirements specification** with implementation status:
 - Functional requirements (camera, streaming, web interface, etc.)
 - Non-functional requirements (reliability, performance, compatibility, usability)
 - Technical requirements (frameworks, encoding, concurrency, lifecycle)
@@ -26,7 +26,7 @@ Requirements specification with implementation status:
 - Implementation status tracking (96% complete)
 
 ### [ANALYSIS.md](ANALYSIS.md)
-Architectural analysis and concepts:
+**Architectural analysis and future concepts:**
 - Streaming protocol comparisons (RTSP vs alternatives)
 - Camera efficiency concepts (VideoCapture API analysis)
 - Architecture patterns (single source of truth, lifecycle-aware callbacks, watchdog)
@@ -34,52 +34,35 @@ Architectural analysis and concepts:
 - Future enhancement proposals (authentication, multi-camera, motion detection, audio, etc.)
 
 ### [TESTING.md](TESTING.md)
-Testing procedures and guides:
+**Testing procedures and guides:**
 - Manual testing procedures
 - Automated testing scripts
 - Performance testing benchmarks
 - Compatibility testing (surveillance systems, media players, browsers)
 - Troubleshooting guide
 
-## Historical Documents
-
-All other markdown files in this directory are historical implementation summaries, fix documentation, and PR summaries that provide detailed context for specific features and changes made during development.
-
-### Key Historical Documents
-
-**Architecture & Design:**
-- `ARCHITECTURE.md` - Original architecture documentation
-- `STREAMING_ARCHITECTURE.md` - MJPEG streaming architecture analysis
-- `SINGLE_SOURCE_OF_TRUTH.md` - Single camera binding design
-- `REQUIREMENTS_SPECIFICATION.md` - Original detailed requirements
-
-**Implementation Summaries:**
-- `IMPLEMENTATION_SUMMARY.md` - Background service persistence
-- `LIFECYCLE_MANAGEMENT.md` - Lifecycle control implementation
-- `PERSISTENCE_IMPLEMENTATION.md` - 24/7 operation features
-- `RTSP_IMPLEMENTATION.md` - RTSP streaming implementation
-
-**Testing & Fixes:**
-- Various `*_FIX.md` files - Bug fixes and issue resolutions
-- Various `*_TESTING_GUIDE.md` files - Testing procedures for specific features
-- Various `*_VISUAL_SUMMARY.md` files - Visual diagrams and summaries
-
-**PR Summaries:**
-- `PR_SUMMARY*.md` files - Pull request summaries for major changes
+### [HISTORY.md](HISTORY.md)
+**Development history and evolution:**
+- Architecture evolution and design decisions
+- Major features and their implementation
+- Performance optimizations and improvements
+- Bug fixes and reliability enhancements
+- Migrations and refactoring efforts
+- Consolidated summary of 61 historical documents
 
 ## Quick Reference
 
 | Need | See |
 |------|-----|
-| Understanding the architecture | [IMPLEMENTATION.md](IMPLEMENTATION.md) |
-| Feature requirements and status | [REQUIREMENTS.md](REQUIREMENTS.md) |
-| Design decisions and alternatives | [ANALYSIS.md](ANALYSIS.md) |
-| How to test the application | [TESTING.md](TESTING.md) |
-| Original detailed requirements | `REQUIREMENTS_SPECIFICATION.md` |
-| RTSP implementation details | `RTSP_IMPLEMENTATION.md` |
-| Specific bug fixes | `*_FIX.md` files |
-| Visual diagrams | `*_VISUAL_*.md` files |
+| How it works now | [IMPLEMENTATION.md](IMPLEMENTATION.md) |
+| What features exist | [REQUIREMENTS.md](REQUIREMENTS.md) |
+| Design decisions & future plans | [ANALYSIS.md](ANALYSIS.md) |
+| How to test | [TESTING.md](TESTING.md) |
+| Why it works this way | [HISTORY.md](HISTORY.md) |
 
 ---
 
-**Note:** The four main documents (IMPLEMENTATION, REQUIREMENTS, ANALYSIS, TESTING) provide consolidated information. Historical documents offer deeper context and evolution of specific features but may contain outdated information. Always refer to the main documents for current state.
+**Documentation Structure:**
+- **5 main documents** cover all aspects (current, requirements, future, testing, history)
+- **Consolidated approach** eliminates clutter while preserving context
+- **Clear separation** between current state and historical evolution
