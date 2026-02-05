@@ -2045,11 +2045,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (now - lastMjpegFpsCalculation > 500) {
                 if (mjpegFpsFrameTimes.size > 1) {
                     val timeSpan = mjpegFpsFrameTimes.last() - mjpegFpsFrameTimes.first()
-                    val newFps = if (timeSpan > 0) {
+                    val totalFps = if (timeSpan > 0) {
                         (mjpegFpsFrameTimes.size - 1) * 1000f / timeSpan
                     } else {
                         0f
                     }
+                    
+                    // Calculate average FPS per client (streaming FPS per client)
+                    // This shows the actual streaming rate each client receives
+                    val clientCount = getMjpegClientCount()
+                    val newFps = if (clientCount > 0) {
+                        totalFps / clientCount
+                    } else {
+                        0f
+                    }
+                    
                     // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
                     if (kotlin.math.abs(newFps - currentMjpegFps) > 0.5f) {
                         currentMjpegFps = newFps
@@ -2119,11 +2129,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (now - lastRtspFpsCalculation > 500) {
                 if (rtspFpsFrameTimes.size > 1) {
                     val timeSpan = rtspFpsFrameTimes.last() - rtspFpsFrameTimes.first()
-                    val newFps = if (timeSpan > 0) {
+                    val totalFps = if (timeSpan > 0) {
                         (rtspFpsFrameTimes.size - 1) * 1000f / timeSpan
                     } else {
                         0f
                     }
+                    
+                    // Note: RTSP encoding happens once and is broadcast to all clients
+                    // So we don't divide by client count here - this represents the encoding FPS
+                    // which is independent of the number of clients receiving the stream
+                    val newFps = totalFps
+                    
                     // Only broadcast if FPS changed significantly (more than 0.5 fps difference)
                     if (kotlin.math.abs(newFps - currentRtspFps) > 0.5f) {
                         currentRtspFps = newFps
