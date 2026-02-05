@@ -497,8 +497,8 @@ class HttpServer(
                             // Track bandwidth
                             cameraService.recordBytesSent(clientId, jpegBytes.size.toLong())
                             
-                            // Track MJPEG streaming FPS
-                            cameraService.recordMjpegFrameServed()
+                            // Note: MJPEG FPS is now tracked in CameraService when frame is generated,
+                            // not here when served to clients, to avoid multiplying FPS by client count
                         } catch (e: Exception) {
                             Log.d(TAG, "Stream client $clientId disconnected")
                             break

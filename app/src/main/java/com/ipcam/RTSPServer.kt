@@ -1632,8 +1632,8 @@ class RTSPServer(
         // Update frame count
         frameCount.incrementAndGet()
         
-        // Track FPS
-        cameraService?.recordRtspFrameEncoded()
+        // Note: RTSP FPS is already tracked when frame is queued for encoding (encodeFrame method)
+        // Don't track again here to avoid double-counting
         
         // Send each NAL unit to all playing sessions with actual presentation time
         nalUnits.forEach { nalUnit ->

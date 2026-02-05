@@ -1474,8 +1474,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 val processingTime = System.currentTimeMillis() - processingStart
                 performanceMetrics.recordFrameProcessingTime(processingTime)
                 
-                // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
-                // Don't track here to avoid double-counting
+                // Track MJPEG FPS here when frame is generated (not when served to clients)
+                // This ensures FPS is counted once per frame, regardless of number of clients
+                recordMjpegFrameServed()
                 
                 // Notify MainActivity if it's listening - use pool for copying
                 val previewCopy = try {
