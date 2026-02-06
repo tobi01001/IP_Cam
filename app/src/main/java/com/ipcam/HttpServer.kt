@@ -305,6 +305,7 @@ class HttpServer(
         val connectionDisplay = "$activeConns/$maxConns"
         val deviceName = cameraService.getDeviceName()
         val displayName = if (deviceName.isNotEmpty()) deviceName else "IP Camera Server"
+        val adbInfo = (cameraService as? CameraService)?.getADBConnectionInfo() ?: ""
         
         // Load HTML template from assets
         val htmlTemplate = loadAsset("index.html")
@@ -314,7 +315,8 @@ class HttpServer(
             "displayName" to displayName,
             "versionString" to BuildInfo.getVersionString(),
             "buildString" to BuildInfo.getBuildString(),
-            "connectionDisplay" to connectionDisplay
+            "connectionDisplay" to connectionDisplay,
+            "adbConnection" to adbInfo
         )
         
         // Substitute variables and serve

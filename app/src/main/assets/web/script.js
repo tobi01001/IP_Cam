@@ -971,3 +971,18 @@
                     }
                     
                     // ==================== End Software Update Functions ====================
+                    
+                    // ==================== ADB Connection Info Display ====================
+                    
+                    // Show ADB connection info if available on page load
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const adbInfoElement = document.getElementById('adbConnectionInfo');
+                        if (adbInfoElement) {
+                            const adbText = adbInfoElement.textContent.trim();
+                            if (adbText && adbText !== '') {
+                                adbInfoElement.style.display = 'inline';
+                            }
+                        }
+                    });
+                    
+                    // ==================== End ADB Connection Info ====================

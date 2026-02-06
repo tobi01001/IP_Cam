@@ -1,6 +1,7 @@
 package com.ipcam
 
 import android.Manifest
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -81,6 +82,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var installUpdateButton: Button
     private lateinit var updateStatusText: TextView
     private lateinit var updateManager: UpdateManager
+    
+    // Device Owner status UI elements
+    private lateinit var checkDeviceOwnerButton: Button
+    private lateinit var deviceOwnerStatusText: TextView
     
     // Collapsible section elements
     private lateinit var previewSectionHeader: View
@@ -384,6 +389,10 @@ class MainActivity : AppCompatActivity() {
         updateStatusText = findViewById(R.id.updateStatusText)
         updateManager = UpdateManager(this)
         
+        // Device Owner status elements
+        checkDeviceOwnerButton = findViewById(R.id.checkDeviceOwnerButton)
+        deviceOwnerStatusText = findViewById(R.id.deviceOwnerStatusText)
+        
         // Collapsible section elements
         previewSectionHeader = findViewById(R.id.previewSectionHeader)
         previewContent = findViewById(R.id.previewContent)
@@ -439,6 +448,7 @@ class MainActivity : AppCompatActivity() {
         setupMjpegFpsSpinner()
         setupDeviceNameControls()
         setupUpdateControls()
+        setupDeviceOwnerCheck()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -1622,5 +1632,74 @@ class MainActivity : AppCompatActivity() {
                 checkUpdateButton.text = "Check for Update"
             }
         }
+    }
+    
+    /**
+     * Setup Device Owner status check
+     */
+    private fun setupDeviceOwnerCheck() {
+        checkDeviceOwnerButton.setOnClickListener {
+            checkDeviceOwnerStatus()
+        }
+    }
+    
+    /**
+     * Check Device Owner status and prerequisites
+     */
+    private fun checkDeviceOwnerStatus() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
+        
+        val isDeviceOwner = dpm.isDeviceOwnerApp(packageName)
+        val isAdminActive = dpm.isAdminActive(adminComponent)
+        
+        // Check provisioning status
+        val userSetupComplete = Settings.Secure.getInt(contentResolver, "user_setup_complete", -1)
+        val deviceProvisioned = Settings.Global.getInt(contentResolver, "device_provisioned", -1)
+        
+        // Build status message
+        val statusBuilder = StringBuilder()
+        
+        if (isDeviceOwner) {
+            statusBuilder.append("✅ Device Owner Status: ACTIVE\n\n")
+            statusBuilder.append("Silent updates are enabled. This device can receive automatic updates without user confirmation.\n\n")
+            statusBuilder.append("Device Owner capabilities:\n")
+            statusBuilder.append("• Silent app installations\n")
+            statusBuilder.append("• System settings management\n")
+            statusBuilder.append("• WiFi debugging control\n")
+            deviceOwnerStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+        } else {
+            statusBuilder.append("❌ Device Owner Status: INACTIVE\n\n")
+            
+            if (isAdminActive) {
+                statusBuilder.append("⚠️ Device Admin is active but not Device Owner\n\n")
+            }
+            
+            statusBuilder.append("Prerequisites check:\n")
+            statusBuilder.append("• User setup complete: ${if (userSetupComplete == 0) "✅ No (good)" else "❌ Yes (blocks setup)"}\n")
+            statusBuilder.append("• Device provisioned: ${if (deviceProvisioned == 0) "✅ No (good)" else "❌ Yes (blocks setup)"}\n")
+            statusBuilder.append("• Admin component: ${if (isAdminActive) "✅ Registered" else "❌ Not registered"}\n\n")
+            
+            if (userSetupComplete == 0 && deviceProvisioned == 0) {
+                statusBuilder.append("✅ Prerequisites met! Device Owner can be set via:\n")
+                statusBuilder.append("adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver\n\n")
+            } else {
+                statusBuilder.append("❌ Prerequisites not met\n\n")
+                statusBuilder.append("Options:\n")
+                statusBuilder.append("1. Factory reset device (recommended)\n")
+                statusBuilder.append("2. Try force unprovision:\n")
+                statusBuilder.append("   adb shell settings put secure user_setup_complete 0\n")
+                statusBuilder.append("   adb shell settings put global device_provisioned 0\n")
+                statusBuilder.append("   adb reboot --no-provisioning-mode\n\n")
+            }
+            
+            statusBuilder.append("See documentation/SILENT_UPDATES.md for detailed setup guide.")
+            deviceOwnerStatusText.setBackgroundColor(0xFFFFF3E0.toInt())
+        }
+        
+        deviceOwnerStatusText.text = statusBuilder.toString()
+        deviceOwnerStatusText.visibility = View.VISIBLE
+        
+        Log.i(TAG, "Device Owner check: isDeviceOwner=$isDeviceOwner, isAdminActive=$isAdminActive")
     }
 }
