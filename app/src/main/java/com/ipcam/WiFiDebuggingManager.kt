@@ -100,14 +100,14 @@ class WiFiDebuggingManager(private val context: Context) {
         return try {
             // Method 1: Try service.adb.tcp.port property
             var port = getPortFromProperty("service.adb.tcp.port")
-            if (port > 0) {
+            if (port > 1024 && port < 65536) {  // Valid port range
                 Log.i(TAG, "Found ADB port from service.adb.tcp.port: $port")
                 return port
             }
             
             // Method 2: Try persist.adb.tcp.port property (persistent setting)
             port = getPortFromProperty("persist.adb.tcp.port")
-            if (port > 0) {
+            if (port > 1024 && port < 65536) {  // Valid port range
                 Log.i(TAG, "Found ADB port from persist.adb.tcp.port: $port")
                 return port
             }
@@ -119,7 +119,7 @@ class WiFiDebuggingManager(private val context: Context) {
                     "adb_port",
                     -1
                 )
-                if (settingsPort > 0) {
+                if (settingsPort > 1024 && settingsPort < 65536) {  // Valid port range
                     Log.i(TAG, "Found ADB port from Settings.Global.adb_port: $settingsPort")
                     return settingsPort
                 }
@@ -136,7 +136,7 @@ class WiFiDebuggingManager(private val context: Context) {
                         "adb_wifi_port",
                         -1
                     )
-                    if (wifiPort > 0) {
+                    if (wifiPort > 1024 && wifiPort < 65536) {  // Valid port range
                         Log.i(TAG, "Found wireless debugging port from adb_wifi_port: $wifiPort")
                         return wifiPort
                     }
@@ -146,26 +146,13 @@ class WiFiDebuggingManager(private val context: Context) {
                 
                 // Try reading from /proc/net/tcp to find actual listening port
                 port = findADBPortFromProcNet()
-                if (port > 0) {
+                if (port > 1024 && port < 65536) {  // Valid port range
                     Log.i(TAG, "Found ADB port from /proc/net/tcp: $port")
                     return port
                 }
             }
             
-            // Method 5: Check sys.usb.config for adb mode
-            val usbConfig = getPortFromProperty("sys.usb.config")
-            if (usbConfig > 0) {
-                Log.i(TAG, "Found ADB port from sys.usb.config: $usbConfig")
-                return usbConfig
-            }
-            
-            // Method 6: Try ro.adb.secure property
-            val adbSecure = getPortFromProperty("ro.adb.secure")
-            if (adbSecure > 0) {
-                Log.i(TAG, "Found ADB port from ro.adb.secure: $adbSecure")
-                return adbSecure
-            }
-            
+            // All detection methods failed, use default
             Log.w(TAG, "Could not detect ADB port, using default: $DEFAULT_ADB_PORT")
             DEFAULT_ADB_PORT
             

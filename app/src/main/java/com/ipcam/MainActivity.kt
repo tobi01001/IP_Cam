@@ -1008,9 +1008,9 @@ class MainActivity : AppCompatActivity() {
             this
         }
         
-        // Load saved autostart preference
+        // Load saved autostart preference (defaults to true for automatic operation)
         val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, true)
         autoStartCheckBox.isChecked = autoStart
         
         // Save preference when changed
@@ -1235,7 +1235,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, true)
         
         // Only auto-start if:
         // 1. Auto-start is enabled
@@ -1482,17 +1482,14 @@ class MainActivity : AppCompatActivity() {
     
     // Helper to get status background colors (theme-aware)
     private fun getStatusBackgroundColor(status: String): Int {
-        val nightModeFlags = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
-        val isDarkMode = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
-        
+        // Use unified colors for both light and dark modes
+        // No differentiation needed - same dark grey tones work well in both
         return when (status) {
-            // Dark mode: Use dark grey with subtle tinting, similar to other sections
-            // Light mode: Keep original light colors
-            "success" -> if (isDarkMode) 0xFF2E3B2E.toInt() else 0xFFE8F5E9.toInt()  // Dark grey with green tint / Light green
-            "warning" -> if (isDarkMode) 0xFF3B362E.toInt() else 0xFFFFF3E0.toInt()  // Dark grey with amber tint / Light amber
-            "error" -> if (isDarkMode) 0xFF3B2E2E.toInt() else 0xFFFFEBEE.toInt()    // Dark grey with red tint / Light red
-            "info" -> if (isDarkMode) 0xFF2E3440.toInt() else 0xFFE3F2FD.toInt()     // Dark grey with blue tint / Light blue
-            else -> if (isDarkMode) 0xFF303030.toInt() else 0xFFF5F5F5.toInt()       // Dark grey / Light grey
+            "success" -> 0xFF2E3B2E.toInt()  // Dark grey with green tint
+            "warning" -> 0xFF3B362E.toInt()  // Dark grey with amber tint
+            "error" -> 0xFF3B2E2E.toInt()    // Dark grey with red tint
+            "info" -> 0xFF2E3440.toInt()     // Dark grey with blue tint
+            else -> 0xFF303030.toInt()       // Dark grey
         }
     }
     
