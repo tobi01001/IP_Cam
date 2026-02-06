@@ -340,8 +340,51 @@ The restriction clearing happens automatically when:
 
 This means fresh Device Owner setups should not experience Settings access issues.
 
+**Persistent Issues on LineageOS Android 16:**
+
+If Settings access remains blocked after trying all solutions above, the device may have persistent Device Owner restrictions from a previous setup. This is particularly common on LineageOS Android 16 (API 36).
+
+**Fresh Install Procedure for Persistent Issues:**
+
+1. **Remove Device Owner completely:**
+   ```bash
+   adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+   ```
+
+2. **Uninstall IP_Cam:**
+   ```bash
+   adb uninstall com.ipcam
+   ```
+
+3. **Clear Device Owner state (requires factory reset or provisioning mode):**
+   
+   **Option A: Factory Reset (Most Reliable)**
+   ```
+   Settings → System → Reset options → Erase all data (factory reset)
+   ```
+   
+   **Option B: Provisioning Mode (Android 13+)**
+   ```bash
+   adb shell settings put secure user_setup_complete 0
+   adb shell settings put global device_provisioned 0
+   adb reboot --no-provisioning-mode
+   ```
+
+4. **Reinstall with fresh Device Owner setup:**
+   - Skip setup wizard completely (no accounts, no WiFi initially)
+   - Enable USB debugging
+   - Install IP_Cam: `adb install IP_Cam.apk`
+   - Set Device Owner: `adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver`
+   - Verify restrictions cleared: `adb shell am start -a android.settings.SETTINGS`
+
+**Testing on Fresh Install:**
+After fresh install, Settings access should work immediately. If not:
+1. Check logcat for restriction clearing logs
+2. Manually trigger restriction clearing from Device Owner status check
+3. Report issue with device model, Android version, and ROM type
+
 **Note:** This issue is more common on:
-- LineageOS (Android 16+)
+- LineageOS (Android 16+, API 36)
 - Other custom ROMs (AOSP-based)
 - Devices with strict security policies
 - Some manufacturers' custom Android builds
