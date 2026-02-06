@@ -1505,13 +1505,40 @@ class MainActivity : AppCompatActivity() {
         // This helps with Device Owner restrictions on custom ROMs
         val settingsIntents = listOf(
             // Try main settings first
-            Intent(android.provider.Settings.ACTION_SETTINGS),
+            Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            },
             // Try wireless settings (often accessible even in Device Owner mode)
-            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS),
+            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
             // Try application settings
-            Intent(android.provider.Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS),
+            Intent(android.provider.Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
             // Try device info settings
-            Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS)
+            Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try security settings
+            Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try display settings
+            Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try direct package launch
+            Intent().apply {
+                setClassName("com.android.settings", "com.android.settings.Settings")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try LineageOS settings
+            Intent().apply {
+                setClassName("com.android.settings", "com.android.settings.MainSettings")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
         )
         
         var opened = false
@@ -1521,24 +1548,33 @@ class MainActivity : AppCompatActivity() {
                 if (intent.resolveActivity(packageManager) != null) {
                     startActivity(intent)
                     opened = true
-                    Log.i(TAG, "Successfully opened settings with intent: ${intent.action}")
+                    Log.i(TAG, "Successfully opened settings with intent: ${intent.action ?: intent.component}")
                     break
                 }
             } catch (e: Exception) {
-                Log.d(TAG, "Could not open settings with intent ${intent.action}: ${e.message}")
+                Log.d(TAG, "Could not open settings with intent ${intent.action ?: intent.component}: ${e.message}")
             }
         }
         
         if (!opened) {
             // Show helpful message with ADB workaround
             val message = """
-                Cannot access Settings. This may be due to Device Owner restrictions.
+                Cannot access Settings. This may be due to Device Owner restrictions on LineageOS/Android 16.
                 
-                Workaround via ADB:
-                adb shell am start -a android.settings.SETTINGS
+                Solutions:
                 
-                Or remove Device Owner:
-                adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+                1. Via ADB (recommended):
+                   adb shell am start -a android.settings.SETTINGS
+                
+                2. Clear restrictions manually:
+                   • Tap "Check Device Owner Status"
+                   • Select "Clear Restrictions"
+                
+                3. Temporarily remove Device Owner:
+                   adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+                   
+                4. Factory reset (permanent fix):
+                   Device will work normally after re-setup
             """.trimIndent()
             
             AlertDialog.Builder(this)

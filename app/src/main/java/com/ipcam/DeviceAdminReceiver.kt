@@ -89,7 +89,15 @@ class DeviceAdminReceiver : DeviceAdminReceiver() {
                 UserManager.DISALLOW_CONFIG_DATE_TIME,     // Allow date/time config
                 UserManager.DISALLOW_CONFIG_LOCATION,      // Allow location config
                 UserManager.DISALLOW_SAFE_BOOT,            // Allow safe boot
-                UserManager.DISALLOW_APPS_CONTROL          // Allow app management
+                UserManager.DISALLOW_APPS_CONTROL,         // Allow app management
+                UserManager.DISALLOW_CONFIG_CELL_BROADCASTS, // Allow cell broadcast config
+                UserManager.DISALLOW_CONFIG_VPN,           // Allow VPN config
+                UserManager.DISALLOW_DEBUGGING_FEATURES,   // Allow debugging features
+                UserManager.DISALLOW_INSTALL_APPS,         // Allow app installation (for updates)
+                UserManager.DISALLOW_UNINSTALL_APPS,       // Allow app uninstallation
+                UserManager.DISALLOW_MOUNT_PHYSICAL_MEDIA, // Allow mounting media
+                UserManager.DISALLOW_NETWORK_RESET,        // Allow network reset
+                UserManager.DISALLOW_FACTORY_RESET         // Allow factory reset
             )
             
             var clearedCount = 0
