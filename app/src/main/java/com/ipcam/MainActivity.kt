@@ -14,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.UserManager
 import android.provider.Settings
 import android.util.Log
 import android.util.Size
@@ -1452,12 +1453,59 @@ class MainActivity : AppCompatActivity() {
     
     // Helper method to open device settings
     private fun openDeviceSettings() {
-        try {
-            val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
-            startActivity(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not open device settings", Toast.LENGTH_SHORT).show()
-            Log.e(TAG, "Error opening device settings", e)
+        // Try multiple Settings intents in order of preference
+        // This helps with Device Owner restrictions on custom ROMs
+        val settingsIntents = listOf(
+            // Try main settings first
+            Intent(android.provider.Settings.ACTION_SETTINGS),
+            // Try wireless settings (often accessible even in Device Owner mode)
+            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS),
+            // Try application settings
+            Intent(android.provider.Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS),
+            // Try device info settings
+            Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS)
+        )
+        
+        var opened = false
+        for (intent in settingsIntents) {
+            try {
+                // Check if activity can handle this intent
+                if (intent.resolveActivity(packageManager) != null) {
+                    startActivity(intent)
+                    opened = true
+                    Log.i(TAG, "Successfully opened settings with intent: ${intent.action}")
+                    break
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Could not open settings with intent ${intent.action}: ${e.message}")
+            }
+        }
+        
+        if (!opened) {
+            // Show helpful message with ADB workaround
+            val message = """
+                Cannot access Settings. This may be due to Device Owner restrictions.
+                
+                Workaround via ADB:
+                adb shell am start -a android.settings.SETTINGS
+                
+                Or remove Device Owner:
+                adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+            """.trimIndent()
+            
+            AlertDialog.Builder(this)
+                .setTitle("Settings Access Blocked")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .setNeutralButton("Copy ADB Command") { _, _ ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("ADB Command", "adb shell am start -a android.settings.SETTINGS")
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(this, "ADB command copied to clipboard", Toast.LENGTH_SHORT).show()
+                }
+                .show()
+            
+            Log.e(TAG, "Could not open device settings - all intent methods failed")
         }
     }
     
@@ -1666,8 +1714,13 @@ class MainActivity : AppCompatActivity() {
             statusBuilder.append("Device Owner capabilities:\n")
             statusBuilder.append("• Silent app installations\n")
             statusBuilder.append("• System settings management\n")
-            statusBuilder.append("• WiFi debugging control\n")
+            statusBuilder.append("• WiFi debugging control\n\n")
+            statusBuilder.append("⚠️ Settings Access Issue?\n")
+            statusBuilder.append("If you cannot access device Settings, tap the button below to clear user restrictions.\n")
             deviceOwnerStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+            
+            // Show a button to clear restrictions if needed
+            showClearRestrictionsButton(dpm, adminComponent)
         } else {
             statusBuilder.append("❌ Device Owner Status: INACTIVE\n\n")
             
@@ -1701,5 +1754,58 @@ class MainActivity : AppCompatActivity() {
         deviceOwnerStatusText.visibility = View.VISIBLE
         
         Log.i(TAG, "Device Owner check: isDeviceOwner=$isDeviceOwner, isAdminActive=$isAdminActive")
+    }
+    
+    /**
+     * Show a button to manually clear user restrictions (for Settings access issues)
+     */
+    private fun showClearRestrictionsButton(dpm: DevicePolicyManager, adminComponent: ComponentName) {
+        // Create and show a button dynamically
+        AlertDialog.Builder(this)
+            .setTitle("Clear User Restrictions")
+            .setMessage("This will clear user restrictions that may block access to device Settings. Use this if you're experiencing Settings access issues on LineageOS or custom ROMs.")
+            .setPositiveButton("Clear Restrictions") { _, _ ->
+                clearUserRestrictionsNow(dpm, adminComponent)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+    
+    /**
+     * Manually clear user restrictions that might block Settings access
+     */
+    private fun clearUserRestrictionsNow(dpm: DevicePolicyManager, adminComponent: ComponentName) {
+        try {
+            val restrictionsToClear = listOf(
+                UserManager.DISALLOW_MODIFY_ACCOUNTS,
+                UserManager.DISALLOW_CONFIG_WIFI,
+                UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                UserManager.DISALLOW_CONFIG_BLUETOOTH,
+                UserManager.DISALLOW_CONFIG_SCREEN_TIMEOUT,
+                UserManager.DISALLOW_SYSTEM_ERROR_DIALOGS,
+                UserManager.DISALLOW_CONFIG_DATE_TIME,
+                UserManager.DISALLOW_CONFIG_LOCATION,
+                UserManager.DISALLOW_SAFE_BOOT,
+                UserManager.DISALLOW_APPS_CONTROL
+            )
+            
+            var clearedCount = 0
+            restrictionsToClear.forEach { restriction ->
+                try {
+                    dpm.clearUserRestriction(adminComponent, restriction)
+                    clearedCount++
+                } catch (e: Exception) {
+                    Log.d(TAG, "Could not clear restriction: ${e.message}")
+                }
+            }
+            
+            Toast.makeText(this, "Cleared $clearedCount user restrictions. Try accessing Settings now.", Toast.LENGTH_LONG).show()
+            Log.i(TAG, "Manually cleared $clearedCount user restrictions")
+            
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error clearing restrictions: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Error clearing restrictions", e)
+        }
     }
 }

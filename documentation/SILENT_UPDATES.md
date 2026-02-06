@@ -262,6 +262,94 @@ This provides the best of both worlds:
 
 ---
 
+## Known Issues and Solutions
+
+### Settings Access Blocked on LineageOS / Custom ROMs
+
+**Problem:** After setting IP_Cam as Device Owner, device Settings may become inaccessible on LineageOS (Android 16) or other custom ROMs, even though it works fine on stock Android (e.g., Samsung devices with API 34).
+
+**Root Cause:** Some Android versions and custom ROMs apply default user restrictions when Device Owner is set. These restrictions can include:
+- `DISALLOW_MODIFY_ACCOUNTS`
+- `DISALLOW_CONFIG_WIFI`
+- `DISALLOW_CONFIG_MOBILE_NETWORKS`
+- `DISALLOW_APPS_CONTROL`
+- And others that may interfere with Settings access
+
+**Automatic Fix:** IP_Cam now automatically clears these restrictive policies when Device Owner is enabled. The `DeviceAdminReceiver` class clears 11 common restrictions that might block Settings access.
+
+**Manual Solutions if Settings Still Blocked:**
+
+**Solution 1: Use In-App "Check Device Owner Status"**
+1. Open IP_Cam app
+2. Scroll to "Device Management Status" section
+3. Tap "Check Device Owner Status"
+4. If Device Owner is active, a dialog will offer to clear user restrictions
+5. Tap "Clear Restrictions"
+6. Try accessing Settings again
+
+**Solution 2: Enhanced Settings Button**
+The "Quick Settings" button in IP_Cam now tries multiple Settings intents:
+1. Main Settings
+2. Wireless Settings
+3. Application Settings
+4. Device Info Settings
+
+One of these may work even when Device Owner blocks the main Settings app.
+
+**Solution 3: ADB Workaround**
+```bash
+# Open Settings via ADB
+adb shell am start -a android.settings.SETTINGS
+
+# Or open specific Settings pages
+adb shell am start -a android.settings.WIRELESS_SETTINGS
+adb shell am start -a android.settings.WIFI_SETTINGS
+```
+
+**Solution 4: Temporarily Remove Device Owner**
+```bash
+# Remove Device Owner (loses silent update capability)
+adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+
+# Configure device as needed
+# Then re-enable Device Owner
+adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver
+```
+
+**Solution 5: Check Active Restrictions**
+```bash
+# List all active user restrictions
+adb shell dpm list-owners
+
+# Check specific restriction
+adb shell pm get-app-restriction com.ipcam
+```
+
+**Verification:** After clearing restrictions, verify Settings access:
+```bash
+# Test if Settings can be launched
+adb shell am start -a android.settings.SETTINGS
+
+# Should open Settings app successfully
+```
+
+**Prevention for New Setups:**
+The restriction clearing happens automatically when:
+1. Device Admin is first enabled (`onEnabled` callback)
+2. Device Owner provisioning completes (`onProfileProvisioningComplete` callback)
+
+This means fresh Device Owner setups should not experience Settings access issues.
+
+**Note:** This issue is more common on:
+- LineageOS (Android 16+)
+- Other custom ROMs (AOSP-based)
+- Devices with strict security policies
+- Some manufacturers' custom Android builds
+
+Stock Android from major manufacturers (Samsung, Google Pixel) typically does not have this issue.
+
+---
+
 ## Troubleshooting Device Owner Setup
 
 ### Error: "Unknown admin: ComponentInfo{com.ipcam/com.ipcam.DeviceAdminReceiver}"

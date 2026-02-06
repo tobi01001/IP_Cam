@@ -1,8 +1,12 @@
 package com.ipcam
 
 import android.app.admin.DeviceAdminReceiver
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.os.Build
+import android.os.UserManager
 import android.util.Log
 import android.widget.Toast
 
@@ -42,7 +46,69 @@ class DeviceAdminReceiver : DeviceAdminReceiver() {
     override fun onEnabled(context: Context, intent: Intent) {
         super.onEnabled(context, intent)
         Log.i(TAG, "Device Admin enabled for IP_Cam")
+        
+        // Clear restrictive user restrictions to ensure Settings access
+        clearRestrictiveUserRestrictions(context)
+        
         Toast.makeText(context, "IP_Cam Device Admin enabled", Toast.LENGTH_SHORT).show()
+    }
+    
+    /**
+     * Clear user restrictions that might block access to Settings or system features.
+     * 
+     * This is critical for LineageOS and other custom ROMs that may apply default
+     * restrictions when Device Owner is set. We clear only restrictions that would
+     * interfere with basic device configuration while maintaining security.
+     */
+    private fun clearRestrictiveUserRestrictions(context: Context) {
+        try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            if (dpm == null) {
+                Log.w(TAG, "DevicePolicyManager not available")
+                return
+            }
+            
+            val adminComponent = ComponentName(context, DeviceAdminReceiver::class.java)
+            
+            // Only proceed if we're actually Device Owner
+            if (!dpm.isDeviceOwnerApp(context.packageName)) {
+                Log.d(TAG, "Not Device Owner, skipping restriction clearing")
+                return
+            }
+            
+            // List of restrictions to clear for better Settings access
+            // These restrictions can block access to Settings or configuration
+            val restrictionsToClear = listOf(
+                UserManager.DISALLOW_MODIFY_ACCOUNTS,      // Allow account management
+                UserManager.DISALLOW_CONFIG_WIFI,          // Allow WiFi configuration
+                UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS, // Allow mobile network config
+                UserManager.DISALLOW_ADJUST_VOLUME,        // Allow volume adjustment
+                UserManager.DISALLOW_CONFIG_BLUETOOTH,     // Allow Bluetooth config
+                UserManager.DISALLOW_CONFIG_SCREEN_TIMEOUT, // Allow screen timeout config
+                UserManager.DISALLOW_SYSTEM_ERROR_DIALOGS, // Allow error dialogs
+                UserManager.DISALLOW_CONFIG_DATE_TIME,     // Allow date/time config
+                UserManager.DISALLOW_CONFIG_LOCATION,      // Allow location config
+                UserManager.DISALLOW_SAFE_BOOT,            // Allow safe boot
+                UserManager.DISALLOW_APPS_CONTROL          // Allow app management
+            )
+            
+            var clearedCount = 0
+            restrictionsToClear.forEach { restriction ->
+                try {
+                    // Clear the restriction if it exists
+                    dpm.clearUserRestriction(adminComponent, restriction)
+                    clearedCount++
+                    Log.d(TAG, "Cleared restriction: $restriction")
+                } catch (e: Exception) {
+                    Log.d(TAG, "Could not clear restriction $restriction: ${e.message}")
+                }
+            }
+            
+            Log.i(TAG, "Cleared $clearedCount user restrictions to ensure Settings access")
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error clearing user restrictions", e)
+        }
     }
 
     /**
@@ -60,6 +126,10 @@ class DeviceAdminReceiver : DeviceAdminReceiver() {
     override fun onProfileProvisioningComplete(context: Context, intent: Intent) {
         super.onProfileProvisioningComplete(context, intent)
         Log.i(TAG, "Device Owner provisioning complete")
+        
+        // Clear restrictive user restrictions to ensure Settings access
+        clearRestrictiveUserRestrictions(context)
+        
         Toast.makeText(context, "IP_Cam is now Device Owner - silent updates enabled", Toast.LENGTH_LONG).show()
     }
 
