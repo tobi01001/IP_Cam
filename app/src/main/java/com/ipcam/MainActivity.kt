@@ -1486,11 +1486,13 @@ class MainActivity : AppCompatActivity() {
         val isDarkMode = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
         
         return when (status) {
-            "success" -> if (isDarkMode) 0xFF1B5E20.toInt() else 0xFFE8F5E9.toInt()  // Green
-            "warning" -> if (isDarkMode) 0xFFE65100.toInt() else 0xFFFFF3E0.toInt()  // Amber
-            "error" -> if (isDarkMode) 0xFFB71C1C.toInt() else 0xFFFFEBEE.toInt()    // Red
-            "info" -> if (isDarkMode) 0xFF0D47A1.toInt() else 0xFFE3F2FD.toInt()     // Blue
-            else -> if (isDarkMode) 0xFF424242.toInt() else 0xFFF5F5F5.toInt()       // Grey
+            // Dark mode: Use dark grey with subtle tinting, similar to other sections
+            // Light mode: Keep original light colors
+            "success" -> if (isDarkMode) 0xFF2E3B2E.toInt() else 0xFFE8F5E9.toInt()  // Dark grey with green tint / Light green
+            "warning" -> if (isDarkMode) 0xFF3B362E.toInt() else 0xFFFFF3E0.toInt()  // Dark grey with amber tint / Light amber
+            "error" -> if (isDarkMode) 0xFF3B2E2E.toInt() else 0xFFFFEBEE.toInt()    // Dark grey with red tint / Light red
+            "info" -> if (isDarkMode) 0xFF2E3440.toInt() else 0xFFE3F2FD.toInt()     // Dark grey with blue tint / Light blue
+            else -> if (isDarkMode) 0xFF303030.toInt() else 0xFFF5F5F5.toInt()       // Dark grey / Light grey
         }
     }
     

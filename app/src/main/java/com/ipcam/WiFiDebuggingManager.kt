@@ -98,34 +98,38 @@ class WiFiDebuggingManager(private val context: Context) {
      */
     private fun getActualADBPort(): Int {
         return try {
-            // Try to read from adb service properties
-            val process = Runtime.getRuntime().exec("getprop service.adb.tcp.port")
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val portStr = reader.readLine()
-            reader.close()
-            process.waitFor()
-            
-            if (portStr != null && portStr.isNotEmpty() && portStr != "-1") {
-                val port = portStr.toIntOrNull() ?: DEFAULT_ADB_PORT
-                Log.d(TAG, "Found ADB WiFi port from service property: $port")
+            // Method 1: Try service.adb.tcp.port property
+            var port = getPortFromProperty("service.adb.tcp.port")
+            if (port > 0) {
+                Log.i(TAG, "Found ADB port from service.adb.tcp.port: $port")
                 return port
             }
             
-            // Try Settings.Global
-            val settingsPort = Settings.Global.getInt(
-                context.contentResolver,
-                "adb_port",
-                -1
-            )
-            
-            if (settingsPort > 0) {
-                Log.d(TAG, "Found ADB WiFi port from Settings: $settingsPort")
-                return settingsPort
+            // Method 2: Try persist.adb.tcp.port property (persistent setting)
+            port = getPortFromProperty("persist.adb.tcp.port")
+            if (port > 0) {
+                Log.i(TAG, "Found ADB port from persist.adb.tcp.port: $port")
+                return port
             }
             
-            // On Android 11+, check if wireless debugging is using dynamic port
+            // Method 3: Try Settings.Global adb_port
+            try {
+                val settingsPort = Settings.Global.getInt(
+                    context.contentResolver,
+                    "adb_port",
+                    -1
+                )
+                if (settingsPort > 0) {
+                    Log.i(TAG, "Found ADB port from Settings.Global.adb_port: $settingsPort")
+                    return settingsPort
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Could not read adb_port: ${e.message}")
+            }
+            
+            // Method 4: On Android 11+, check wireless debugging port
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Try to get from wireless debugging
+                // Try adb_wifi_port
                 try {
                     val wifiPort = Settings.Global.getInt(
                         context.contentResolver,
@@ -133,20 +137,108 @@ class WiFiDebuggingManager(private val context: Context) {
                         -1
                     )
                     if (wifiPort > 0) {
-                        Log.d(TAG, "Found wireless debugging port: $wifiPort")
+                        Log.i(TAG, "Found wireless debugging port from adb_wifi_port: $wifiPort")
                         return wifiPort
                     }
                 } catch (e: Exception) {
                     Log.d(TAG, "Could not read adb_wifi_port: ${e.message}")
                 }
+                
+                // Try reading from /proc/net/tcp to find actual listening port
+                port = findADBPortFromProcNet()
+                if (port > 0) {
+                    Log.i(TAG, "Found ADB port from /proc/net/tcp: $port")
+                    return port
+                }
             }
             
-            Log.d(TAG, "Using default ADB port: $DEFAULT_ADB_PORT")
+            // Method 5: Check sys.usb.config for adb mode
+            val usbConfig = getPortFromProperty("sys.usb.config")
+            if (usbConfig > 0) {
+                Log.i(TAG, "Found ADB port from sys.usb.config: $usbConfig")
+                return usbConfig
+            }
+            
+            // Method 6: Try ro.adb.secure property
+            val adbSecure = getPortFromProperty("ro.adb.secure")
+            if (adbSecure > 0) {
+                Log.i(TAG, "Found ADB port from ro.adb.secure: $adbSecure")
+                return adbSecure
+            }
+            
+            Log.w(TAG, "Could not detect ADB port, using default: $DEFAULT_ADB_PORT")
             DEFAULT_ADB_PORT
             
         } catch (e: Exception) {
-            Log.d(TAG, "Error detecting ADB port, using default: ${e.message}")
+            Log.e(TAG, "Error detecting ADB port: ${e.message}", e)
             DEFAULT_ADB_PORT
+        }
+    }
+    
+    /**
+     * Get port from system property using getprop
+     */
+    private fun getPortFromProperty(propertyName: String): Int {
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("getprop", propertyName))
+            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            val value = reader.readLine()
+            reader.close()
+            process.waitFor()
+            
+            if (value != null && value.isNotEmpty() && value != "-1" && value != "0") {
+                // Try to parse as integer
+                value.toIntOrNull() ?: -1
+            } else {
+                -1
+            }
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not read property $propertyName: ${e.message}")
+            -1
+        }
+    }
+    
+    /**
+     * Find ADB port by reading /proc/net/tcp and looking for listening sockets
+     * ADB typically listens on a high port (> 1024)
+     */
+    private fun findADBPortFromProcNet(): Int {
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("cat", "/proc/net/tcp"))
+            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            
+            var port = -1
+            reader.forEachLine { line ->
+                // Format: sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode
+                // We're looking for LISTEN state (0A) with high port
+                if (line.contains("0A") && port < 0) {
+                    val parts = line.trim().split("\\s+".toRegex())
+                    if (parts.size > 1) {
+                        // local_address is in format IP:PORT (hex)
+                        val localAddr = parts[1]
+                        if (localAddr.contains(":")) {
+                            val portHex = localAddr.split(":")[1]
+                            try {
+                                val detectedPort = Integer.parseInt(portHex, 16)
+                                // ADB typically uses ports > 5000 and < 65536
+                                if (detectedPort in 5000..65535) {
+                                    Log.d(TAG, "Found potential ADB port in /proc/net/tcp: $detectedPort")
+                                    port = detectedPort
+                                }
+                            } catch (e: NumberFormatException) {
+                                // Skip invalid port
+                            }
+                        }
+                    }
+                }
+            }
+            
+            reader.close()
+            process.waitFor()
+            port
+        } catch (e: Exception) {
+            Log.d(TAG, "Could not read /proc/net/tcp: ${e.message}")
+            -1
         }
     }
     
