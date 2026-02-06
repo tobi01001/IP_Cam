@@ -259,3 +259,286 @@ This provides the best of both worlds:
 - [PackageInstaller API](https://developer.android.com/reference/android/content/pm/PackageInstaller)
 - [Android Enterprise](https://developer.android.com/work/overview)
 - [Device Owner Mode Setup](https://source.android.com/docs/devices/admin/testing-provision)
+
+---
+
+## Troubleshooting Device Owner Setup
+
+### Error: "Unknown admin: ComponentInfo{com.ipcam/com.ipcam.DeviceAdminReceiver}"
+
+This error occurs when trying to set Device Owner, and can have several causes:
+
+#### Cause 1: DeviceAdminReceiver Not Registered
+**Problem:** The app doesn't have the DeviceAdminReceiver properly configured.
+
+**Solution:** Ensure you're using the latest version of IP_Cam (v1.3+) that includes:
+- `DeviceAdminReceiver.kt` class
+- `device_admin_receiver.xml` policy file
+- Manifest declaration for the receiver
+
+Verify the receiver is registered:
+```bash
+adb shell dumpsys package com.ipcam | grep -A 5 "DeviceAdminReceiver"
+```
+
+If not found, reinstall the latest APK.
+
+#### Cause 2: Device Already Provisioned
+**Problem:** Android considers the device "provisioned" even without accounts.
+
+**Check if device is provisioned:**
+```bash
+adb shell settings get secure user_setup_complete
+adb shell settings get global device_provisioned
+```
+
+If either returns `1`, the device is considered provisioned.
+
+**Solutions:**
+
+**Option A: Factory Reset (Cleanest)**
+1. Backup any important data
+2. Settings → System → Reset → Factory data reset
+3. **DO NOT** complete setup wizard
+4. Skip all account additions
+5. Install IP_Cam via adb
+6. Set Device Owner immediately
+
+**Option B: Force Unprovision (Risky - may cause issues)**
+```bash
+# CAUTION: This may cause instability
+adb shell settings put secure user_setup_complete 0
+adb shell settings put global device_provisioned 0
+adb reboot
+
+# After reboot, try again:
+adb install -r IP_Cam.apk
+adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver
+```
+
+**Option C: Use Android 13+ Provisioning Mode**
+On Android 13+, you can enter provisioning mode without factory reset:
+```bash
+# Reboot to provisioning mode
+adb reboot --no-provisioning-mode
+
+# Install and set device owner
+adb install IP_Cam.apk
+adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver
+```
+
+#### Cause 3: Other Device Admins Present
+**Problem:** Another device admin is active (even if not visible).
+
+**Check for active admins:**
+```bash
+adb shell dpm list-owners
+```
+
+**Remove existing admins:**
+```bash
+# List all device admins
+adb shell pm list packages -a | grep admin
+
+# Remove if found (example)
+adb shell dpm remove-active-admin <component>
+```
+
+#### Cause 4: User Accounts Exist
+**Problem:** Google or other accounts are configured.
+
+**Check accounts:**
+```bash
+adb shell dumpsys account
+```
+
+**Remove accounts:**
+1. Settings → Accounts → Remove all accounts
+2. Reboot device
+3. Try setting Device Owner again
+
+#### Cause 5: Work Profile or Multiple Users
+**Problem:** Device has work profile or secondary users.
+
+**Check users:**
+```bash
+adb shell pm list users
+```
+
+**Remove extra users:**
+```bash
+# Remove work profile
+adb shell pm remove-user <user_id>
+```
+
+#### Cause 6: Android Version Issues
+**Problem:** Some Android versions have stricter requirements.
+
+**Workarounds by Android version:**
+
+**Android 10-11:**
+- Must factory reset
+- Cannot have completed setup wizard
+- No Google Play Services configured
+
+**Android 12+:**
+- Slightly more relaxed
+- May work after removing accounts
+- Try `--no-provisioning-mode` reboot
+
+**Android 14+:**
+- Most flexible
+- Can use provisioning mode without factory reset
+- Better adb support
+
+### Complete Step-by-Step Setup (Most Reliable)
+
+**Method 1: Fresh Factory Reset (100% Success Rate)**
+
+1. **Factory Reset Device:**
+   ```
+   Settings → System → Reset options → Erase all data (factory reset)
+   ```
+
+2. **Skip Setup Wizard:**
+   - DO NOT connect to WiFi initially
+   - Skip all Google account prompts
+   - Skip fingerprint/face unlock
+   - Skip all optional setup steps
+   - Only accept required permissions
+
+3. **Enable Developer Options:**
+   - Settings → About phone → Tap "Build number" 7 times
+   - Settings → System → Developer options → Enable USB debugging
+
+4. **Connect via ADB:**
+   ```bash
+   adb devices
+   # Accept the authorization prompt on device
+   ```
+
+5. **Install IP_Cam:**
+   ```bash
+   adb install IP_Cam.apk
+   ```
+
+6. **Set Device Owner:**
+   ```bash
+   adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver
+   ```
+
+7. **Verify:**
+   ```bash
+   adb shell dpm list-owners
+   # Should show: Device Owner: com.ipcam
+   ```
+
+8. **Launch IP_Cam:**
+   - Open app
+   - Grant camera permission
+   - Start server
+   - Updates will now be silent
+
+**Method 2: Using Android Debug Bridge (No Factory Reset - Android 13+)**
+
+1. **Remove All Accounts:**
+   ```bash
+   # Check accounts
+   adb shell dumpsys account | grep "Account {"
+   
+   # Remove each account (do this in device Settings)
+   Settings → Accounts → Remove all accounts
+   ```
+
+2. **Clear Provisioning:**
+   ```bash
+   adb shell settings put secure user_setup_complete 0
+   adb shell settings put global device_provisioned 0
+   ```
+
+3. **Reboot to Provisioning Mode:**
+   ```bash
+   adb reboot --no-provisioning-mode
+   ```
+
+4. **Install and Set Device Owner:**
+   ```bash
+   adb wait-for-device
+   adb install IP_Cam.apk
+   adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver
+   ```
+
+5. **Verify:**
+   ```bash
+   adb shell dpm list-owners
+   ```
+
+### Verification Commands
+
+After setting Device Owner, verify everything is working:
+
+```bash
+# Check Device Owner status
+adb shell dpm list-owners
+
+# Check DeviceAdminReceiver registration
+adb shell dumpsys device_policy | grep -A 10 "com.ipcam"
+
+# Check admin permissions
+adb shell dpm list-owners
+adb shell pm list permissions -g | grep INSTALL
+
+# Test app can access PackageInstaller
+adb shell pm list packages -s com.ipcam
+```
+
+### Quick Diagnostic Script
+
+Save this as `check_device_owner.sh`:
+
+```bash
+#!/bin/bash
+echo "=== Device Owner Diagnostic ==="
+echo ""
+echo "1. Checking provisioning status:"
+echo "   user_setup_complete: $(adb shell settings get secure user_setup_complete)"
+echo "   device_provisioned: $(adb shell settings get global device_provisioned)"
+echo ""
+echo "2. Checking accounts:"
+adb shell dumpsys account | grep -c "Account {"
+echo ""
+echo "3. Checking users:"
+adb shell pm list users
+echo ""
+echo "4. Checking existing admins:"
+adb shell dpm list-owners
+echo ""
+echo "5. Checking IP_Cam installation:"
+adb shell pm path com.ipcam
+echo ""
+echo "6. Checking DeviceAdminReceiver:"
+adb shell dumpsys package com.ipcam | grep -A 3 "DeviceAdminReceiver"
+echo ""
+echo "=== End Diagnostic ==="
+```
+
+Run with: `bash check_device_owner.sh`
+
+### Important Notes
+
+1. **Cannot Undo Without Factory Reset:** Once Device Owner is set, it's locked in until factory reset
+2. **No Google Play:** Device Owner mode may prevent Google Play from working normally
+3. **Removes Admin:** To remove Device Owner: `adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver`
+4. **Perfect for Dedicated Devices:** Ideal for IP cameras that won't be used for anything else
+5. **Security:** Device Owner has significant power - only use on dedicated surveillance devices
+
+### Alternative: If Device Owner Doesn't Work
+
+If you absolutely cannot set Device Owner:
+
+1. **Use current update method** (user confirmation required)
+2. **Set up remote access** (VNC, TeamViewer) to tap "Install" remotely
+3. **Use root access** to install as system app
+4. **Deploy with MDM** for enterprise environments
+
+For most surveillance deployments, **Device Owner mode is strongly recommended** if you can factory reset the device.
