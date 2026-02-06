@@ -104,12 +104,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apiSectionHeader: View
     private lateinit var apiContent: View
     private lateinit var apiExpandIcon: ImageView
+    private lateinit var deviceOwnerSectionHeader: View
+    private lateinit var deviceOwnerContent: View
+    private lateinit var deviceOwnerExpandIcon: ImageView
+    private lateinit var softwareUpdateSectionHeader: View
+    private lateinit var softwareUpdateContent: View
+    private lateinit var softwareUpdateExpandIcon: ImageView
     
     // Section expanded states (save to preferences)
     private var isPreviewExpanded = false
     private var isVideoExpanded = false
     private var isServerExpanded = false
     private var isApiExpanded = false
+    private var isDeviceOwnerExpanded = false
+    private var isSoftwareUpdateExpanded = false
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
@@ -148,6 +156,8 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_VIDEO_EXPANDED = "videoExpanded"
         private const val PREF_SERVER_EXPANDED = "serverExpanded"
         private const val PREF_API_EXPANDED = "apiExpanded"
+        private const val PREF_DEVICE_OWNER_EXPANDED = "deviceOwnerExpanded"
+        private const val PREF_SOFTWARE_UPDATE_EXPANDED = "softwareUpdateExpanded"
         private const val TAG = "MainActivity"
     }
     
@@ -411,18 +421,30 @@ class MainActivity : AppCompatActivity() {
         apiContent = findViewById(R.id.apiContent)
         apiExpandIcon = findViewById(R.id.apiExpandIcon)
         
+        deviceOwnerSectionHeader = findViewById(R.id.deviceOwnerSectionHeader)
+        deviceOwnerContent = findViewById(R.id.deviceOwnerContent)
+        deviceOwnerExpandIcon = findViewById(R.id.deviceOwnerExpandIcon)
+        
+        softwareUpdateSectionHeader = findViewById(R.id.softwareUpdateSectionHeader)
+        softwareUpdateContent = findViewById(R.id.softwareUpdateContent)
+        softwareUpdateExpandIcon = findViewById(R.id.softwareUpdateExpandIcon)
+        
         // Load section expanded states
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         isPreviewExpanded = prefs.getBoolean(PREF_PREVIEW_EXPANDED, false)
         isVideoExpanded = prefs.getBoolean(PREF_VIDEO_EXPANDED, false)
         isServerExpanded = prefs.getBoolean(PREF_SERVER_EXPANDED, false)
         isApiExpanded = prefs.getBoolean(PREF_API_EXPANDED, false)
+        isDeviceOwnerExpanded = prefs.getBoolean(PREF_DEVICE_OWNER_EXPANDED, false)
+        isSoftwareUpdateExpanded = prefs.getBoolean(PREF_SOFTWARE_UPDATE_EXPANDED, false)
         
         // Set initial section visibility
         updateSectionVisibility(previewContent, previewExpandIcon, isPreviewExpanded)
         updateSectionVisibility(videoContent, videoExpandIcon, isVideoExpanded)
         updateSectionVisibility(serverContent, serverExpandIcon, isServerExpanded)
         updateSectionVisibility(apiContent, apiExpandIcon, isApiExpanded)
+        updateSectionVisibility(deviceOwnerContent, deviceOwnerExpandIcon, isDeviceOwnerExpanded)
+        updateSectionVisibility(softwareUpdateContent, softwareUpdateExpandIcon, isSoftwareUpdateExpanded)
         
         // Setup collapsible sections
         // Preview section has special handling for consumer registration
@@ -430,6 +452,8 @@ class MainActivity : AppCompatActivity() {
         setupCollapsibleSection(videoSectionHeader, videoContent, videoExpandIcon, PREF_VIDEO_EXPANDED) { isVideoExpanded = it }
         setupCollapsibleSection(serverSectionHeader, serverContent, serverExpandIcon, PREF_SERVER_EXPANDED) { isServerExpanded = it }
         setupCollapsibleSection(apiSectionHeader, apiContent, apiExpandIcon, PREF_API_EXPANDED) { isApiExpanded = it }
+        setupCollapsibleSection(deviceOwnerSectionHeader, deviceOwnerContent, deviceOwnerExpandIcon, PREF_DEVICE_OWNER_EXPANDED) { isDeviceOwnerExpanded = it }
+        setupCollapsibleSection(softwareUpdateSectionHeader, softwareUpdateContent, softwareUpdateExpandIcon, PREF_SOFTWARE_UPDATE_EXPANDED) { isSoftwareUpdateExpanded = it }
         
         // Setup quick settings button to open device settings
         quickSettingsButton.setOnClickListener {
@@ -1446,6 +1470,30 @@ class MainActivity : AppCompatActivity() {
     }
     
     // Helper method to update section visibility with animation
+    
+    // Helper to get theme-aware background color
+    private fun getThemeAwareBackgroundColor(lightColor: Int, darkColor: Int): Int {
+        val nightModeFlags = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        return when (nightModeFlags) {
+            android.content.res.Configuration.UI_MODE_NIGHT_YES -> darkColor
+            else -> lightColor
+        }
+    }
+    
+    // Helper to get status background colors (theme-aware)
+    private fun getStatusBackgroundColor(status: String): Int {
+        val nightModeFlags = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        val isDarkMode = nightModeFlags == android.content.res.Configuration.UI_MODE_NIGHT_YES
+        
+        return when (status) {
+            "success" -> if (isDarkMode) 0xFF1B5E20.toInt() else 0xFFE8F5E9.toInt()  // Green
+            "warning" -> if (isDarkMode) 0xFFE65100.toInt() else 0xFFFFF3E0.toInt()  // Amber
+            "error" -> if (isDarkMode) 0xFFB71C1C.toInt() else 0xFFFFEBEE.toInt()    // Red
+            "info" -> if (isDarkMode) 0xFF0D47A1.toInt() else 0xFFE3F2FD.toInt()     // Blue
+            else -> if (isDarkMode) 0xFF424242.toInt() else 0xFFF5F5F5.toInt()       // Grey
+        }
+    }
+    
     private fun updateSectionVisibility(content: View, icon: ImageView, isExpanded: Boolean) {
         content.visibility = if (isExpanded) View.VISIBLE else View.GONE
         icon.rotation = if (isExpanded) 180f else 0f
@@ -1564,7 +1612,7 @@ class MainActivity : AppCompatActivity() {
         checkUpdateButton.text = "Checking..."
         updateStatusText.text = "Checking for updates..."
         updateStatusText.visibility = View.VISIBLE
-        updateStatusText.setBackgroundColor(0xFFF5F5F5.toInt())
+        updateStatusText.setBackgroundColor(getStatusBackgroundColor("default"))
         installUpdateButton.visibility = View.GONE
         
         lifecycleScope.launch {
@@ -1573,7 +1621,7 @@ class MainActivity : AppCompatActivity() {
                 
                 if (updateInfo == null) {
                     updateStatusText.text = "Failed to check for updates. Please check network connectivity."
-                    updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
                     checkUpdateButton.isEnabled = true
                     checkUpdateButton.text = "Check for Update"
                     return@launch
@@ -1588,13 +1636,13 @@ class MainActivity : AppCompatActivity() {
                     // No update available
                     updateStatusText.text = "✓ You are running the latest version\n" +
                             "Current version: Build ${BuildConfig.BUILD_NUMBER}"
-                    updateStatusText.setBackgroundColor(0xFFE3F2FD.toInt())
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("info"))
                     checkUpdateButton.isEnabled = true
                     checkUpdateButton.text = "Check for Update"
                 }
             } catch (e: Exception) {
                 updateStatusText.text = "Error: ${e.message}"
-                updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
                 checkUpdateButton.isEnabled = true
                 checkUpdateButton.text = "Check for Update"
             }
@@ -1624,7 +1672,7 @@ class MainActivity : AppCompatActivity() {
             }
             .setNegativeButton("Later") { _, _ ->
                 updateStatusText.text = "Update postponed"
-                updateStatusText.setBackgroundColor(0xFFF5F5F5.toInt())
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("default"))
             }
             .show()
     }
@@ -1647,7 +1695,7 @@ class MainActivity : AppCompatActivity() {
     private suspend fun downloadAndInstallUpdateWithInfo(updateInfo: UpdateManager.UpdateInfo) {
         updateStatusText.text = "⏳ Downloading update...\nThis may take a minute depending on your connection speed."
         updateStatusText.visibility = View.VISIBLE
-        updateStatusText.setBackgroundColor(0xFFFFF3E0.toInt())
+        updateStatusText.setBackgroundColor(getStatusBackgroundColor("warning"))
         installUpdateButton.isEnabled = false
         installUpdateButton.visibility = View.GONE
         checkUpdateButton.isEnabled = false
@@ -1658,7 +1706,7 @@ class MainActivity : AppCompatActivity() {
             withContext(Dispatchers.Main) {
                 if (apkFile != null) {
                     updateStatusText.text = "✓ Download complete. Installing...\nPlease confirm installation on your device."
-                    updateStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("success"))
                     updateManager.installAPK(apkFile)
                     
                     // Re-enable button after a delay in case user cancels installation
@@ -1667,7 +1715,7 @@ class MainActivity : AppCompatActivity() {
                     checkUpdateButton.text = "Check for Update"
                 } else {
                     updateStatusText.text = "✗ Download failed. Please try again."
-                    updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
                     checkUpdateButton.isEnabled = true
                     checkUpdateButton.text = "Check for Update"
                 }
@@ -1675,7 +1723,7 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             withContext(Dispatchers.Main) {
                 updateStatusText.text = "✗ Error: ${e.message}"
-                updateStatusText.setBackgroundColor(0xFFFFEBEE.toInt())
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
                 checkUpdateButton.isEnabled = true
                 checkUpdateButton.text = "Check for Update"
             }
@@ -1717,7 +1765,7 @@ class MainActivity : AppCompatActivity() {
             statusBuilder.append("• WiFi debugging control\n\n")
             statusBuilder.append("⚠️ Settings Access Issue?\n")
             statusBuilder.append("If you cannot access device Settings, tap the button below to clear user restrictions.\n")
-            deviceOwnerStatusText.setBackgroundColor(0xFFE8F5E9.toInt())
+            deviceOwnerStatusText.setBackgroundColor(getStatusBackgroundColor("success"))
             
             // Show a button to clear restrictions if needed
             showClearRestrictionsButton(dpm, adminComponent)
@@ -1747,7 +1795,7 @@ class MainActivity : AppCompatActivity() {
             }
             
             statusBuilder.append("See documentation/SILENT_UPDATES.md for detailed setup guide.")
-            deviceOwnerStatusText.setBackgroundColor(0xFFFFF3E0.toInt())
+            deviceOwnerStatusText.setBackgroundColor(getStatusBackgroundColor("warning"))
         }
         
         deviceOwnerStatusText.text = statusBuilder.toString()

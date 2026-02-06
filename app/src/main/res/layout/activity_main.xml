@@ -687,42 +687,70 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="16dp">
+                    android:orientation="vertical">
 
-                    <TextView
+                    <!-- Section Header -->
+                    <LinearLayout
+                        android:id="@+id/deviceOwnerSectionHeader"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Device Management Status"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:layout_marginBottom="8dp"/>
+                        android:orientation="horizontal"
+                        android:padding="12dp"
+                        android:background="?attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true">
 
-                    <TextView
+                        <TextView
+                            android:layout_width="0dp"
+                            android:layout_height="wrap_content"
+                            android:layout_weight="1"
+                            android:text="Device Management Status"
+                            android:textSize="16sp"
+                            android:textStyle="bold"/>
+
+                        <ImageView
+                            android:id="@+id/deviceOwnerExpandIcon"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:src="@android:drawable/arrow_down_float"
+                            android:contentDescription="Expand/Collapse"/>
+                    </LinearLayout>
+
+                    <!-- Device Owner Content -->
+                    <LinearLayout
+                        android:id="@+id/deviceOwnerContent"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
-                        android:text="Check Device Owner status and prerequisites for silent updates."
-                        android:textSize="12sp"
-                        android:textColor="#757575"
-                        android:layout_marginBottom="12dp"/>
+                        android:orientation="vertical"
+                        android:padding="12dp"
+                        android:visibility="gone">
 
-                    <TextView
-                        android:id="@+id/deviceOwnerStatusText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text=""
-                        android:textSize="12sp"
-                        android:visibility="gone"
-                        android:layout_marginBottom="12dp"
-                        android:padding="8dp"
-                        android:background="#F5F5F5"/>
+                        <TextView
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Check Device Owner status and prerequisites for silent updates."
+                            android:textSize="12sp"
+                            android:textColor="?android:attr/textColorSecondary"
+                            android:layout_marginBottom="12dp"/>
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/checkDeviceOwnerButton"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Check Device Owner Status"
-                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                        <TextView
+                            android:id="@+id/deviceOwnerStatusText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textSize="12sp"
+                            android:textColor="?android:attr/textColorPrimary"
+                            android:visibility="gone"
+                            android:layout_marginBottom="12dp"
+                            android:padding="8dp"/>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/checkDeviceOwnerButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Check Device Owner Status"
+                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                    </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
 
@@ -738,60 +766,88 @@
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:padding="16dp">
+                    android:orientation="vertical">
 
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Software Update"
-                        android:textSize="16sp"
-                        android:textStyle="bold"
-                        android:layout_marginBottom="8dp"/>
-
-                    <TextView
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="Check for and install app updates from GitHub Releases."
-                        android:textSize="12sp"
-                        android:textColor="#757575"
-                        android:layout_marginBottom="12dp"/>
-
-                    <TextView
-                        android:id="@+id/updateStatusText"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text=""
-                        android:textSize="12sp"
-                        android:visibility="gone"
-                        android:layout_marginBottom="12dp"
-                        android:padding="8dp"
-                        android:background="#F5F5F5"/>
-
+                    <!-- Section Header -->
                     <LinearLayout
+                        android:id="@+id/softwareUpdateSectionHeader"
                         android:layout_width="match_parent"
                         android:layout_height="wrap_content"
                         android:orientation="horizontal"
-                        android:gravity="center_vertical">
+                        android:padding="12dp"
+                        android:background="?attr/selectableItemBackground"
+                        android:clickable="true"
+                        android:focusable="true">
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/checkUpdateButton"
+                        <TextView
                             android:layout_width="0dp"
                             android:layout_height="wrap_content"
                             android:layout_weight="1"
-                            android:text="Check for Update"
-                            android:layout_marginEnd="4dp"
-                            style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+                            android:text="Software Update"
+                            android:textSize="16sp"
+                            android:textStyle="bold"/>
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/installUpdateButton"
-                            android:layout_width="0dp"
+                        <ImageView
+                            android:id="@+id/softwareUpdateExpandIcon"
+                            android:layout_width="24dp"
+                            android:layout_height="24dp"
+                            android:src="@android:drawable/arrow_down_float"
+                            android:contentDescription="Expand/Collapse"/>
+                    </LinearLayout>
+
+                    <!-- Software Update Content -->
+                    <LinearLayout
+                        android:id="@+id/softwareUpdateContent"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="12dp"
+                        android:visibility="gone">
+
+                        <TextView
+                            android:layout_width="match_parent"
                             android:layout_height="wrap_content"
-                            android:layout_weight="1"
-                            android:text="Install Update"
-                            android:layout_marginStart="4dp"
+                            android:text="Check for and install app updates from GitHub Releases."
+                            android:textSize="12sp"
+                            android:textColor="?android:attr/textColorSecondary"
+                            android:layout_marginBottom="12dp"/>
+
+                        <TextView
+                            android:id="@+id/updateStatusText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text=""
+                            android:textSize="12sp"
+                            android:textColor="?android:attr/textColorPrimary"
                             android:visibility="gone"
-                            style="@style/Widget.MaterialComponents.Button"/>
+                            android:layout_marginBottom="12dp"
+                            android:padding="8dp"/>
+
+                        <LinearLayout
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:orientation="horizontal"
+                            android:gravity="center_vertical">
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/checkUpdateButton"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Check for Update"
+                                android:layout_marginEnd="4dp"
+                                style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                            <com.google.android.material.button.MaterialButton
+                                android:id="@+id/installUpdateButton"
+                                android:layout_width="0dp"
+                                android:layout_height="wrap_content"
+                                android:layout_weight="1"
+                                android:text="Install Update"
+                                android:layout_marginStart="4dp"
+                                android:visibility="gone"
+                                style="@style/Widget.MaterialComponents.Button"/>
+                        </LinearLayout>
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>
