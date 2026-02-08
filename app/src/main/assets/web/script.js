@@ -419,6 +419,37 @@
                                 showAlert('Error restarting server: ' + error, 'danger');
                             });
                     }
+                    
+                    function resetCamera() {
+                        if (!confirm('Reset camera? This will perform a complete camera service reset to recover from frozen/broken states.')) {
+                            return;
+                        }
+                        
+                        showAlert('Resetting camera...', 'info');
+                        const wasStreamActive = streamActive;
+                        
+                        fetch('/resetCamera')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    showAlert('Camera reset successful: ' + data.message, 'success');
+                                    if (streamActive) {
+                                        stopStream();
+                                    }
+                                    setTimeout(() => {
+                                        showAlert('Camera reinitialized. Reconnecting...', 'info');
+                                        if (wasStreamActive) {
+                                            startStream();
+                                        }
+                                    }, 2000);
+                                } else {
+                                    showAlert('Camera reset failed: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('Error resetting camera: ' + error, 'danger');
+                            });
+                    }
 
                     function toggleFullscreen() {
                         const container = document.getElementById('streamContainer');

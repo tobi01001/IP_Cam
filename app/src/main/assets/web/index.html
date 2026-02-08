@@ -274,6 +274,14 @@
                         </div>
                         
                         <div class="card">
+                            <h3>Camera Recovery</h3>
+                            <div class="form-row">
+                                <button onclick="resetCamera()" class="danger">Reset Camera</button>
+                            </div>
+                            <div class="alert warning">Use this if camera stream is frozen or broken. Performs a complete camera service reset and restart.</div>
+                        </div>
+                        
+                        <div class="card">
                             <h3>Keep the stream alive</h3>
                             <ul style="padding-left: 20px; line-height: 1.8; color: #555;">
                                 <li>Disable battery optimizations for IP_Cam in Android Settings &gt; Battery</li>
@@ -368,6 +376,10 @@
                         
                         <div class="card">
                             <h3>Additional Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Reset Camera:</strong> <a href="/resetCamera" target="_blank"><code>GET /resetCamera</code></a><br>
+                                Performs a complete camera service reset to recover from frozen/broken camera states
+                            </div>
                             <div class="endpoint">
                                 <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
                                 Toggle resolution display in bottom right corner
