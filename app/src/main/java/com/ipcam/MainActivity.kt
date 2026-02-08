@@ -1,6 +1,7 @@
 package com.ipcam
 
 import android.Manifest
+import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -13,6 +14,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.UserManager
 import android.provider.Settings
 import android.util.Log
 import android.util.Size
@@ -29,6 +31,11 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.CameraSelector
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : AppCompatActivity() {
     private lateinit var previewImageView: ImageView
@@ -71,6 +78,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var deviceNameDisplay: TextView
     private lateinit var quickSettingsButton: Button
     
+    // Software update UI elements
+    private lateinit var checkUpdateButton: Button
+    private lateinit var installUpdateButton: Button
+    private lateinit var updateStatusText: TextView
+    private lateinit var updateManager: UpdateManager
+    
+    // Device Owner status UI elements
+    private lateinit var checkDeviceOwnerButton: Button
+    private lateinit var deviceOwnerStatusText: TextView
+    
     // Collapsible section elements
     private lateinit var previewSectionHeader: View
     private lateinit var previewContent: View
@@ -87,12 +104,20 @@ class MainActivity : AppCompatActivity() {
     private lateinit var apiSectionHeader: View
     private lateinit var apiContent: View
     private lateinit var apiExpandIcon: ImageView
+    private lateinit var deviceOwnerSectionHeader: View
+    private lateinit var deviceOwnerContent: View
+    private lateinit var deviceOwnerExpandIcon: ImageView
+    private lateinit var softwareUpdateSectionHeader: View
+    private lateinit var softwareUpdateContent: View
+    private lateinit var softwareUpdateExpandIcon: ImageView
     
     // Section expanded states (save to preferences)
     private var isPreviewExpanded = false
     private var isVideoExpanded = false
     private var isServerExpanded = false
     private var isApiExpanded = false
+    private var isDeviceOwnerExpanded = false
+    private var isSoftwareUpdateExpanded = false
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
@@ -131,6 +156,8 @@ class MainActivity : AppCompatActivity() {
         private const val PREF_VIDEO_EXPANDED = "videoExpanded"
         private const val PREF_SERVER_EXPANDED = "serverExpanded"
         private const val PREF_API_EXPANDED = "apiExpanded"
+        private const val PREF_DEVICE_OWNER_EXPANDED = "deviceOwnerExpanded"
+        private const val PREF_SOFTWARE_UPDATE_EXPANDED = "softwareUpdateExpanded"
         private const val TAG = "MainActivity"
     }
     
@@ -367,6 +394,16 @@ class MainActivity : AppCompatActivity() {
         deviceNameDisplay = findViewById(R.id.deviceNameDisplay)
         quickSettingsButton = findViewById(R.id.quickSettingsButton)
         
+        // Software update elements
+        checkUpdateButton = findViewById(R.id.checkUpdateButton)
+        installUpdateButton = findViewById(R.id.installUpdateButton)
+        updateStatusText = findViewById(R.id.updateStatusText)
+        updateManager = UpdateManager(this)
+        
+        // Device Owner status elements
+        checkDeviceOwnerButton = findViewById(R.id.checkDeviceOwnerButton)
+        deviceOwnerStatusText = findViewById(R.id.deviceOwnerStatusText)
+        
         // Collapsible section elements
         previewSectionHeader = findViewById(R.id.previewSectionHeader)
         previewContent = findViewById(R.id.previewContent)
@@ -384,18 +421,30 @@ class MainActivity : AppCompatActivity() {
         apiContent = findViewById(R.id.apiContent)
         apiExpandIcon = findViewById(R.id.apiExpandIcon)
         
+        deviceOwnerSectionHeader = findViewById(R.id.deviceOwnerSectionHeader)
+        deviceOwnerContent = findViewById(R.id.deviceOwnerContent)
+        deviceOwnerExpandIcon = findViewById(R.id.deviceOwnerExpandIcon)
+        
+        softwareUpdateSectionHeader = findViewById(R.id.softwareUpdateSectionHeader)
+        softwareUpdateContent = findViewById(R.id.softwareUpdateContent)
+        softwareUpdateExpandIcon = findViewById(R.id.softwareUpdateExpandIcon)
+        
         // Load section expanded states
         val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         isPreviewExpanded = prefs.getBoolean(PREF_PREVIEW_EXPANDED, false)
         isVideoExpanded = prefs.getBoolean(PREF_VIDEO_EXPANDED, false)
         isServerExpanded = prefs.getBoolean(PREF_SERVER_EXPANDED, false)
         isApiExpanded = prefs.getBoolean(PREF_API_EXPANDED, false)
+        isDeviceOwnerExpanded = prefs.getBoolean(PREF_DEVICE_OWNER_EXPANDED, false)
+        isSoftwareUpdateExpanded = prefs.getBoolean(PREF_SOFTWARE_UPDATE_EXPANDED, false)
         
         // Set initial section visibility
         updateSectionVisibility(previewContent, previewExpandIcon, isPreviewExpanded)
         updateSectionVisibility(videoContent, videoExpandIcon, isVideoExpanded)
         updateSectionVisibility(serverContent, serverExpandIcon, isServerExpanded)
         updateSectionVisibility(apiContent, apiExpandIcon, isApiExpanded)
+        updateSectionVisibility(deviceOwnerContent, deviceOwnerExpandIcon, isDeviceOwnerExpanded)
+        updateSectionVisibility(softwareUpdateContent, softwareUpdateExpandIcon, isSoftwareUpdateExpanded)
         
         // Setup collapsible sections
         // Preview section has special handling for consumer registration
@@ -403,6 +452,8 @@ class MainActivity : AppCompatActivity() {
         setupCollapsibleSection(videoSectionHeader, videoContent, videoExpandIcon, PREF_VIDEO_EXPANDED) { isVideoExpanded = it }
         setupCollapsibleSection(serverSectionHeader, serverContent, serverExpandIcon, PREF_SERVER_EXPANDED) { isServerExpanded = it }
         setupCollapsibleSection(apiSectionHeader, apiContent, apiExpandIcon, PREF_API_EXPANDED) { isApiExpanded = it }
+        setupCollapsibleSection(deviceOwnerSectionHeader, deviceOwnerContent, deviceOwnerExpandIcon, PREF_DEVICE_OWNER_EXPANDED) { isDeviceOwnerExpanded = it }
+        setupCollapsibleSection(softwareUpdateSectionHeader, softwareUpdateContent, softwareUpdateExpandIcon, PREF_SOFTWARE_UPDATE_EXPANDED) { isSoftwareUpdateExpanded = it }
         
         // Setup quick settings button to open device settings
         quickSettingsButton.setOnClickListener {
@@ -421,6 +472,8 @@ class MainActivity : AppCompatActivity() {
         setupOsdCheckBoxes()
         setupMjpegFpsSpinner()
         setupDeviceNameControls()
+        setupUpdateControls()
+        setupDeviceOwnerCheck()
         
         switchCameraButton.setOnClickListener {
             switchCamera()
@@ -955,9 +1008,9 @@ class MainActivity : AppCompatActivity() {
             this
         }
         
-        // Load saved autostart preference
+        // Load saved autostart preference (defaults to true for automatic operation)
         val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, true)
         autoStartCheckBox.isChecked = autoStart
         
         // Save preference when changed
@@ -1182,7 +1235,7 @@ class MainActivity : AppCompatActivity() {
         }
         
         val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+        val autoStart = prefs.getBoolean(PREF_AUTO_START, true)
         
         // Only auto-start if:
         // 1. Auto-start is enabled
@@ -1417,6 +1470,29 @@ class MainActivity : AppCompatActivity() {
     }
     
     // Helper method to update section visibility with animation
+    
+    // Helper to get theme-aware background color
+    private fun getThemeAwareBackgroundColor(lightColor: Int, darkColor: Int): Int {
+        val nightModeFlags = resources.configuration.uiMode and android.content.res.Configuration.UI_MODE_NIGHT_MASK
+        return when (nightModeFlags) {
+            android.content.res.Configuration.UI_MODE_NIGHT_YES -> darkColor
+            else -> lightColor
+        }
+    }
+    
+    // Helper to get status background colors (theme-aware)
+    private fun getStatusBackgroundColor(status: String): Int {
+        // Use unified colors for both light and dark modes
+        // No differentiation needed - same dark grey tones work well in both
+        return when (status) {
+            "success" -> 0xFF2E3B2E.toInt()  // Dark grey with green tint
+            "warning" -> 0xFF3B362E.toInt()  // Dark grey with amber tint
+            "error" -> 0xFF3B2E2E.toInt()    // Dark grey with red tint
+            "info" -> 0xFF2E3440.toInt()     // Dark grey with blue tint
+            else -> 0xFF303030.toInt()       // Dark grey
+        }
+    }
+    
     private fun updateSectionVisibility(content: View, icon: ImageView, isExpanded: Boolean) {
         content.visibility = if (isExpanded) View.VISIBLE else View.GONE
         icon.rotation = if (isExpanded) 180f else 0f
@@ -1424,12 +1500,95 @@ class MainActivity : AppCompatActivity() {
     
     // Helper method to open device settings
     private fun openDeviceSettings() {
-        try {
-            val intent = Intent(android.provider.Settings.ACTION_SETTINGS)
-            startActivity(intent)
-        } catch (e: Exception) {
-            Toast.makeText(this, "Could not open device settings", Toast.LENGTH_SHORT).show()
-            Log.e(TAG, "Error opening device settings", e)
+        // Try multiple Settings intents in order of preference
+        // This helps with Device Owner restrictions on custom ROMs
+        val settingsIntents = listOf(
+            // Try main settings first
+            Intent(android.provider.Settings.ACTION_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            },
+            // Try wireless settings (often accessible even in Device Owner mode)
+            Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try application settings
+            Intent(android.provider.Settings.ACTION_MANAGE_APPLICATIONS_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try device info settings
+            Intent(android.provider.Settings.ACTION_DEVICE_INFO_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try security settings
+            Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try display settings
+            Intent(android.provider.Settings.ACTION_DISPLAY_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try direct package launch
+            Intent().apply {
+                setClassName("com.android.settings", "com.android.settings.Settings")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            },
+            // Try LineageOS settings
+            Intent().apply {
+                setClassName("com.android.settings", "com.android.settings.MainSettings")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        
+        var opened = false
+        for (intent in settingsIntents) {
+            try {
+                // Check if activity can handle this intent
+                if (intent.resolveActivity(packageManager) != null) {
+                    startActivity(intent)
+                    opened = true
+                    Log.i(TAG, "Successfully opened settings with intent: ${intent.action ?: intent.component}")
+                    break
+                }
+            } catch (e: Exception) {
+                Log.d(TAG, "Could not open settings with intent ${intent.action ?: intent.component}: ${e.message}")
+            }
+        }
+        
+        if (!opened) {
+            // Show helpful message with ADB workaround
+            val message = """
+                Cannot access Settings. This may be due to Device Owner restrictions on LineageOS/Android 16.
+                
+                Solutions:
+                
+                1. Via ADB (recommended):
+                   adb shell am start -a android.settings.SETTINGS
+                
+                2. Clear restrictions manually:
+                   • Tap "Check Device Owner Status"
+                   • Select "Clear Restrictions"
+                
+                3. Temporarily remove Device Owner:
+                   adb shell dpm remove-active-admin com.ipcam/.DeviceAdminReceiver
+                   
+                4. Factory reset (permanent fix):
+                   Device will work normally after re-setup
+            """.trimIndent()
+            
+            AlertDialog.Builder(this)
+                .setTitle("Settings Access Blocked")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .setNeutralButton("Copy ADB Command") { _, _ ->
+                    val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    val clip = android.content.ClipData.newPlainText("ADB Command", "adb shell am start -a android.settings.SETTINGS")
+                    clipboard.setPrimaryClip(clip)
+                    Toast.makeText(this, "ADB command copied to clipboard", Toast.LENGTH_SHORT).show()
+                }
+                .show()
+            
+            Log.e(TAG, "Could not open device settings - all intent methods failed")
         }
     }
     
@@ -1465,5 +1624,271 @@ class MainActivity : AppCompatActivity() {
      */
     private fun stopMetricsUpdates() {
         metricsUpdateHandler.removeCallbacks(metricsUpdateRunnable)
+    }
+    
+    /**
+     * Setup software update controls
+     */
+    private fun setupUpdateControls() {
+        checkUpdateButton.setOnClickListener {
+            checkForUpdate()
+        }
+        
+        installUpdateButton.setOnClickListener {
+            downloadAndInstallUpdate()
+        }
+    }
+    
+    /**
+     * Check for available software updates
+     */
+    private fun checkForUpdate() {
+        checkUpdateButton.isEnabled = false
+        checkUpdateButton.text = "Checking..."
+        updateStatusText.text = "Checking for updates..."
+        updateStatusText.visibility = View.VISIBLE
+        updateStatusText.setBackgroundColor(getStatusBackgroundColor("default"))
+        installUpdateButton.visibility = View.GONE
+        
+        lifecycleScope.launch {
+            try {
+                val updateInfo = updateManager.checkForUpdate()
+                
+                if (updateInfo == null) {
+                    updateStatusText.text = "Failed to check for updates. Please check network connectivity."
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                    return@launch
+                }
+                
+                if (updateInfo.isUpdateAvailable) {
+                    // Update available - show update dialog
+                    showUpdateDialog(updateInfo)
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                } else {
+                    // No update available
+                    updateStatusText.text = "✓ You are running the latest version\n" +
+                            "Current version: Build ${BuildConfig.BUILD_NUMBER}"
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("info"))
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                }
+            } catch (e: Exception) {
+                updateStatusText.text = "Error: ${e.message}"
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
+                checkUpdateButton.isEnabled = true
+                checkUpdateButton.text = "Check for Update"
+            }
+        }
+    }
+    
+    /**
+     * Show dialog with update information
+     */
+    private fun showUpdateDialog(updateInfo: UpdateManager.UpdateInfo) {
+        val sizeMB = (updateInfo.apkSize / 1024.0 / 1024.0)
+        
+        AlertDialog.Builder(this)
+            .setTitle("Update Available")
+            .setMessage(
+                "Current version: Build ${BuildConfig.BUILD_NUMBER}\n" +
+                "Latest version: ${updateInfo.latestVersionName}\n\n" +
+                "Download size: %.2f MB\n\n".format(sizeMB) +
+                "Release notes:\n${updateInfo.releaseNotes}\n\n" +
+                "Download and install update?"
+            )
+            .setPositiveButton("Update") { _, _ ->
+                // Store update info and start download
+                lifecycleScope.launch {
+                    downloadAndInstallUpdateWithInfo(updateInfo)
+                }
+            }
+            .setNegativeButton("Later") { _, _ ->
+                updateStatusText.text = "Update postponed"
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("default"))
+            }
+            .show()
+    }
+    
+    /**
+     * Download and install update (checks first)
+     */
+    private fun downloadAndInstallUpdate() {
+        lifecycleScope.launch {
+            val updateInfo = updateManager.checkForUpdate()
+            if (updateInfo != null && updateInfo.isUpdateAvailable) {
+                downloadAndInstallUpdateWithInfo(updateInfo)
+            }
+        }
+    }
+    
+    /**
+     * Download and install update with known update info
+     */
+    private suspend fun downloadAndInstallUpdateWithInfo(updateInfo: UpdateManager.UpdateInfo) {
+        updateStatusText.text = "⏳ Downloading update...\nThis may take a minute depending on your connection speed."
+        updateStatusText.visibility = View.VISIBLE
+        updateStatusText.setBackgroundColor(getStatusBackgroundColor("warning"))
+        installUpdateButton.isEnabled = false
+        installUpdateButton.visibility = View.GONE
+        checkUpdateButton.isEnabled = false
+        
+        try {
+            val apkFile = updateManager.downloadAPK(updateInfo)
+            
+            withContext(Dispatchers.Main) {
+                if (apkFile != null) {
+                    updateStatusText.text = "✓ Download complete. Installing...\nPlease confirm installation on your device."
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("success"))
+                    updateManager.installAPK(apkFile)
+                    
+                    // Re-enable button after a delay in case user cancels installation
+                    delay(5000)
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                } else {
+                    updateStatusText.text = "✗ Download failed. Please try again."
+                    updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
+                    checkUpdateButton.isEnabled = true
+                    checkUpdateButton.text = "Check for Update"
+                }
+            }
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                updateStatusText.text = "✗ Error: ${e.message}"
+                updateStatusText.setBackgroundColor(getStatusBackgroundColor("error"))
+                checkUpdateButton.isEnabled = true
+                checkUpdateButton.text = "Check for Update"
+            }
+        }
+    }
+    
+    /**
+     * Setup Device Owner status check
+     */
+    private fun setupDeviceOwnerCheck() {
+        checkDeviceOwnerButton.setOnClickListener {
+            checkDeviceOwnerStatus()
+        }
+    }
+    
+    /**
+     * Check Device Owner status and prerequisites
+     */
+    private fun checkDeviceOwnerStatus() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
+        
+        val isDeviceOwner = dpm.isDeviceOwnerApp(packageName)
+        val isAdminActive = dpm.isAdminActive(adminComponent)
+        
+        // Check provisioning status
+        val userSetupComplete = Settings.Secure.getInt(contentResolver, "user_setup_complete", -1)
+        val deviceProvisioned = Settings.Global.getInt(contentResolver, "device_provisioned", -1)
+        
+        // Build status message
+        val statusBuilder = StringBuilder()
+        
+        if (isDeviceOwner) {
+            statusBuilder.append("✅ Device Owner Status: ACTIVE\n\n")
+            statusBuilder.append("Silent updates are enabled. This device can receive automatic updates without user confirmation.\n\n")
+            statusBuilder.append("Device Owner capabilities:\n")
+            statusBuilder.append("• Silent app installations\n")
+            statusBuilder.append("• System settings management\n")
+            statusBuilder.append("• WiFi debugging control\n\n")
+            statusBuilder.append("⚠️ Settings Access Issue?\n")
+            statusBuilder.append("If you cannot access device Settings, tap the button below to clear user restrictions.\n")
+            deviceOwnerStatusText.setBackgroundColor(getStatusBackgroundColor("success"))
+            
+            // Show a button to clear restrictions if needed
+            showClearRestrictionsButton(dpm, adminComponent)
+        } else {
+            statusBuilder.append("❌ Device Owner Status: INACTIVE\n\n")
+            
+            if (isAdminActive) {
+                statusBuilder.append("⚠️ Device Admin is active but not Device Owner\n\n")
+            }
+            
+            statusBuilder.append("Prerequisites check:\n")
+            statusBuilder.append("• User setup complete: ${if (userSetupComplete == 0) "✅ No (good)" else "❌ Yes (blocks setup)"}\n")
+            statusBuilder.append("• Device provisioned: ${if (deviceProvisioned == 0) "✅ No (good)" else "❌ Yes (blocks setup)"}\n")
+            statusBuilder.append("• Admin component: ${if (isAdminActive) "✅ Registered" else "❌ Not registered"}\n\n")
+            
+            if (userSetupComplete == 0 && deviceProvisioned == 0) {
+                statusBuilder.append("✅ Prerequisites met! Device Owner can be set via:\n")
+                statusBuilder.append("adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver\n\n")
+            } else {
+                statusBuilder.append("❌ Prerequisites not met\n\n")
+                statusBuilder.append("Options:\n")
+                statusBuilder.append("1. Factory reset device (recommended)\n")
+                statusBuilder.append("2. Try force unprovision:\n")
+                statusBuilder.append("   adb shell settings put secure user_setup_complete 0\n")
+                statusBuilder.append("   adb shell settings put global device_provisioned 0\n")
+                statusBuilder.append("   adb reboot --no-provisioning-mode\n\n")
+            }
+            
+            statusBuilder.append("See documentation/SILENT_UPDATES.md for detailed setup guide.")
+            deviceOwnerStatusText.setBackgroundColor(getStatusBackgroundColor("warning"))
+        }
+        
+        deviceOwnerStatusText.text = statusBuilder.toString()
+        deviceOwnerStatusText.visibility = View.VISIBLE
+        
+        Log.i(TAG, "Device Owner check: isDeviceOwner=$isDeviceOwner, isAdminActive=$isAdminActive")
+    }
+    
+    /**
+     * Show a button to manually clear user restrictions (for Settings access issues)
+     */
+    private fun showClearRestrictionsButton(dpm: DevicePolicyManager, adminComponent: ComponentName) {
+        // Create and show a button dynamically
+        AlertDialog.Builder(this)
+            .setTitle("Clear User Restrictions")
+            .setMessage("This will clear user restrictions that may block access to device Settings. Use this if you're experiencing Settings access issues on LineageOS or custom ROMs.")
+            .setPositiveButton("Clear Restrictions") { _, _ ->
+                clearUserRestrictionsNow(dpm, adminComponent)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+    
+    /**
+     * Manually clear user restrictions that might block Settings access
+     */
+    private fun clearUserRestrictionsNow(dpm: DevicePolicyManager, adminComponent: ComponentName) {
+        try {
+            val restrictionsToClear = listOf(
+                UserManager.DISALLOW_MODIFY_ACCOUNTS,
+                UserManager.DISALLOW_CONFIG_WIFI,
+                UserManager.DISALLOW_CONFIG_MOBILE_NETWORKS,
+                UserManager.DISALLOW_ADJUST_VOLUME,
+                UserManager.DISALLOW_CONFIG_BLUETOOTH,
+                UserManager.DISALLOW_CONFIG_SCREEN_TIMEOUT,
+                UserManager.DISALLOW_SYSTEM_ERROR_DIALOGS,
+                UserManager.DISALLOW_CONFIG_DATE_TIME,
+                UserManager.DISALLOW_CONFIG_LOCATION,
+                UserManager.DISALLOW_SAFE_BOOT,
+                UserManager.DISALLOW_APPS_CONTROL
+            )
+            
+            var clearedCount = 0
+            restrictionsToClear.forEach { restriction ->
+                try {
+                    dpm.clearUserRestriction(adminComponent, restriction)
+                    clearedCount++
+                } catch (e: Exception) {
+                    Log.d(TAG, "Could not clear restriction: ${e.message}")
+                }
+            }
+            
+            Toast.makeText(this, "Cleared $clearedCount user restrictions. Try accessing Settings now.", Toast.LENGTH_LONG).show()
+            Log.i(TAG, "Manually cleared $clearedCount user restrictions")
+            
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error clearing restrictions: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Error clearing restrictions", e)
+        }
     }
 }

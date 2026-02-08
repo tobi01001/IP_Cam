@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Device Admin Policy for IP_Cam
+  
+  This policy defines the device administration capabilities for IP_Cam when
+  set as Device Owner. These policies enable silent app updates and device
+  management for dedicated surveillance devices.
+  
+  Key Capabilities:
+  - force-lock: Lock the device remotely (for security)
+  - wipe-data: Factory reset device remotely (for decommissioning)
+  
+  These are minimal policies required for Device Owner mode. Additional
+  policies can be added as needed for enhanced device management.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <!-- Ability to lock the device remotely for security -->
+        <force-lock />
+        
+        <!-- Ability to factory reset the device remotely -->
+        <wipe-data />
+    </uses-policies>
+</device-admin>

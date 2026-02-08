@@ -48,6 +48,7 @@ class HttpServer(
     private val sseClients = mutableListOf<SSEClient>()
     private val sseClientsLock = Any()
     private val clientIdCounter = AtomicLong(0)
+    private val serverScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     companion object {
         private const val TAG = "HttpServer"
@@ -152,6 +153,13 @@ class HttpServer(
                 get("/cameraState") { serveCameraState() }
                 get("/activateCamera") { serveActivateCamera() }
                 get("/deactivateCamera") { serveDeactivateCamera() }
+                
+                // Auto update endpoints
+                get("/checkUpdate") { serveCheckUpdate() }
+                get("/triggerUpdate") { serveTriggerUpdate() }
+                
+                // Device Owner endpoints
+                get("/reboot") { serveReboot() }
             }
         }
         
@@ -171,6 +179,9 @@ class HttpServer(
             sseClients.forEach { it.active = false }
             sseClients.clear()
         }
+        
+        // Cancel any running update operations
+        serverScope.cancel()
         
         Log.d(TAG, "Ktor server stopped")
     }
@@ -297,6 +308,7 @@ class HttpServer(
         val connectionDisplay = "$activeConns/$maxConns"
         val deviceName = cameraService.getDeviceName()
         val displayName = if (deviceName.isNotEmpty()) deviceName else "IP Camera Server"
+        val adbInfo = (cameraService as? CameraService)?.getADBConnectionInfo() ?: ""
         
         // Load HTML template from assets
         val htmlTemplate = loadAsset("index.html")
@@ -306,7 +318,8 @@ class HttpServer(
             "displayName" to displayName,
             "versionString" to BuildInfo.getVersionString(),
             "buildString" to BuildInfo.getBuildString(),
-            "connectionDisplay" to connectionDisplay
+            "connectionDisplay" to connectionDisplay,
+            "adbConnection" to adbInfo
         )
         
         // Substitute variables and serve
@@ -551,7 +564,7 @@ class HttpServer(
         val deviceName = cameraService.getDeviceName()
         val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
         
         val json = """
             {
@@ -1287,4 +1300,166 @@ class HttpServer(
     }
     
     // ==================== End Camera State Management Endpoints ====================
+    
+    // ==================== Auto Update Endpoints ====================
+    
+    /**
+     * Check if a software update is available from GitHub Releases.
+     * 
+     * This endpoint queries the GitHub API for the latest release and compares
+     * the version with the current BUILD_NUMBER. Returns update information
+     * including version details, download size, and release notes.
+     * 
+     * Response includes:
+     * - status: "ok" or "error"
+     * - updateAvailable: boolean indicating if update is available
+     * - currentVersion: current BUILD_NUMBER
+     * - latestVersion: latest BUILD_NUMBER from GitHub
+     * - latestVersionName: human-readable version name
+     * - apkSize: size of APK in bytes
+     * - releaseNotes: release notes from GitHub Release
+     * 
+     * Example successful response:
+     * {
+     *   "status": "ok",
+     *   "updateAvailable": true,
+     *   "currentVersion": 20260117120000,
+     *   "latestVersion": 20260117140000,
+     *   "latestVersionName": "Build 20260117140000",
+     *   "apkSize": 5242880,
+     *   "releaseNotes": "Automated build from commit abc123..."
+     * }
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCheckUpdate() {
+        try {
+            val updateManager = UpdateManager(this@HttpServer.context)
+            val updateInfo = updateManager.checkForUpdate()
+            
+            if (updateInfo != null) {
+                // Escape release notes for JSON (replace quotes and newlines)
+                val escapedNotes = updateInfo.releaseNotes
+                    .replace("\\", "\\\\")
+                    .replace("\"", "\\\"")
+                    .replace("\n", "\\n")
+                    .replace("\r", "\\r")
+                    .replace("\t", "\\t")
+                
+                val json = """
+                {
+                    "status": "ok",
+                    "updateAvailable": ${updateInfo.isUpdateAvailable},
+                    "currentVersion": ${BuildInfo.buildNumber},
+                    "latestVersion": ${updateInfo.latestVersionCode},
+                    "latestVersionName": "${updateInfo.latestVersionName}",
+                    "apkSize": ${updateInfo.apkSize},
+                    "releaseNotes": "$escapedNotes"
+                }
+                """.trimIndent()
+                
+                call.respondText(json, ContentType.Application.Json)
+            } else {
+                call.respondText(
+                    """{"status":"error","message":"Failed to check for updates. Please check network connectivity."}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.InternalServerError
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking for update", e)
+            call.respondText(
+                """{"status":"error","message":"Error checking for update: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Trigger the update process: check, download, and install.
+     * 
+     * This endpoint initiates the complete update flow in the background:
+     * 1. Checks GitHub API for latest release
+     * 2. Downloads APK if update is available
+     * 3. Triggers Android package installer (requires user confirmation)
+     * 
+     * The update process runs asynchronously, so this endpoint returns immediately.
+     * The actual download and installation happen in the background.
+     * 
+     * User will see Android's installation prompt when the download completes.
+     * 
+     * Response:
+     * {
+     *   "status": "ok",
+     *   "message": "Update check initiated. If update is available, installation will be prompted."
+     * }
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveTriggerUpdate() {
+        try {
+            val updateManager = UpdateManager(this@HttpServer.context)
+            
+            // Launch update in scoped coroutine
+            serverScope.launch {
+                val success = updateManager.performUpdate()
+                if (success) {
+                    Log.i(TAG, "Update triggered successfully")
+                } else {
+                    Log.i(TAG, "No update available or update failed")
+                }
+            }
+            
+            call.respondText(
+                """{"status":"ok","message":"Update check initiated. If update is available, installation will be prompted."}""",
+                ContentType.Application.Json
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Error triggering update", e)
+            call.respondText(
+                """{"status":"error","message":"Error triggering update: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveReboot() {
+        try {
+            // Check if app is Device Owner
+            val dpm = this@HttpServer.context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+            val isDeviceOwner = dpm?.isDeviceOwnerApp(this@HttpServer.context.packageName) ?: false
+            
+            if (!isDeviceOwner) {
+                Log.w(TAG, "Reboot requested but app is not Device Owner")
+                call.respondText(
+                    """{"status":"error","message":"Reboot requires Device Owner mode. Current app is not Device Owner.","deviceOwner":false}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.Forbidden
+                )
+                return
+            }
+            
+            Log.i(TAG, "Remote reboot requested via HTTP API")
+            
+            // Respond first before rebooting
+            call.respondText(
+                """{"status":"ok","message":"Device rebooting...","deviceOwner":true}""",
+                ContentType.Application.Json
+            )
+            
+            // Launch reboot in background with slight delay to ensure response is sent
+            serverScope.launch {
+                delay(500) // Give time for HTTP response to be sent
+                DeviceAdminReceiver.rebootDevice(this@HttpServer.context)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing reboot request", e)
+            call.respondText(
+                """{"status":"error","message":"Error processing reboot request: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    // ==================== End Auto Update Endpoints ====================
 }
