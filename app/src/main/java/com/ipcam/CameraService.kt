@@ -1201,6 +1201,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
             
             // Give system time to release resources
+            // Note: Thread.sleep() is used here instead of delay() because this function
+            // is part of an interface and may be called from non-coroutine contexts
             Thread.sleep(500)
             
             // Restart camera if consumers are waiting
@@ -3027,7 +3029,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                                     if (frozenFrameDetectionCount >= FROZEN_FRAME_DETECTION_COUNT) {
                                         Log.e(TAG, "Watchdog: Camera frozen detected (same frame $FROZEN_FRAME_DETECTION_COUNT times), performing FULL RESET...")
                                         serviceScope.launch {
-                                            fullCameraReset()
+                                            val resetSuccess = fullCameraReset()
+                                            if (!resetSuccess) {
+                                                Log.e(TAG, "Watchdog: Full camera reset failed")
+                                            }
                                         }
                                         needsRecovery = true
                                         frozenFrameDetectionCount = 0

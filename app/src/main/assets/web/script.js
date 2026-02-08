@@ -433,7 +433,7 @@
                             .then(data => {
                                 if (data.status === 'ok') {
                                     showAlert('Camera reset successful: ' + data.message, 'success');
-                                    if (streamActive) {
+                                    if (wasStreamActive) {
                                         stopStream();
                                     }
                                     setTimeout(() => {
