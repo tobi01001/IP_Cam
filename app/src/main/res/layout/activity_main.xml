@@ -749,7 +749,25 @@
                             android:layout_width="match_parent"
                             android:layout_height="wrap_content"
                             android:text="Check Device Owner Status"
+                            android:layout_marginBottom="8dp"
                             style="@style/Widget.MaterialComponents.Button.OutlinedButton"/>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/resetCameraButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Reset Camera"
+                            android:layout_marginBottom="8dp"
+                            android:backgroundTint="#F44336"
+                            style="@style/Widget.MaterialComponents.Button"/>
+
+                        <com.google.android.material.button.MaterialButton
+                            android:id="@+id/rebootDeviceButton"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:text="Reboot Device (Device Owner)"
+                            android:backgroundTint="#D32F2F"
+                            style="@style/Widget.MaterialComponents.Button"/>
                     </LinearLayout>
                 </LinearLayout>
             </com.google.android.material.card.MaterialCardView>

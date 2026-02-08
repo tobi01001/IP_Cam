@@ -450,6 +450,28 @@
                                 showAlert('Error resetting camera: ' + error, 'danger');
                             });
                     }
+                    
+                    function rebootDevice() {
+                        if (!confirm('Reboot device? This will completely restart the Android device. Requires Device Owner mode.')) {
+                            return;
+                        }
+                        
+                        showAlert('Rebooting device...', 'info');
+                        
+                        fetch('/reboot')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    showAlert('Device rebooting: ' + data.message, 'success');
+                                } else {
+                                    showAlert('Reboot failed: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                // Device might reboot before response completes - this is expected
+                                showAlert('Reboot command sent. Device should be restarting...', 'info');
+                            });
+                    }
 
                     function toggleFullscreen() {
                         const container = document.getElementById('streamContainer');
