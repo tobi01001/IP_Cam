@@ -348,6 +348,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var rtspBitrate: Int = -1 // Saved bitrate setting (-1 = auto/default)
     @Volatile private var rtspBitrateMode: String = "VBR" // Saved bitrate mode setting
     
+    // WiFi debugging manager for remote access (Device Owner only)
+    private var wifiDebuggingManager: WiFiDebuggingManager? = null
+    
     // Device identification
     @Volatile private var deviceName: String = "" // User-defined device name (default: IP_CAM_{deviceModel})
     
@@ -753,6 +756,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Create and start the Ktor-based HTTP server
             httpServer = HttpServer(actualPort, this@CameraService, this@CameraService)
             httpServer?.start()
+            
+            // Start WiFi debugging manager if Device Owner
+            if (wifiDebuggingManager == null) {
+                wifiDebuggingManager = WiFiDebuggingManager(this)
+            }
+            wifiDebuggingManager?.startMonitoring()
             
             val startMsg = if (actualPort != PORT) {
                 "Server started on port $actualPort with max $maxConnections connections (default port $PORT was unavailable)"
@@ -2636,6 +2645,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         return "http://$ipAddress:$actualPort"
     }
     
+    /**
+     * Get ADB WiFi connection information
+     */
+    fun getADBConnectionInfo(): String {
+        val adbInfo = wifiDebuggingManager?.getADBConnectionInfo()
+        return if (adbInfo != null && adbInfo.enabled && adbInfo.isDeviceOwner) {
+            val ipAddress = getIpAddress()
+            "ADB: $ipAddress:${adbInfo.port}"
+        } else {
+            ""
+        }
+    }
+    
     @Suppress("DEPRECATION")
     private fun getIpAddress(): String {
         val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
@@ -2666,6 +2688,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         unregisterNetworkReceiver()
         orientationEventListener?.disable()
         httpServer?.stop()
+        wifiDebuggingManager?.stopMonitoring()
         cameraProvider?.unbindAll()
         
         // Shutdown executors in proper order

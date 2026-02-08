@@ -72,7 +72,7 @@ class BootReceiver : BroadcastReceiver() {
             }
             
             val prefs = storageContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            val autoStart = prefs.getBoolean(PREF_AUTO_START, false)
+            val autoStart = prefs.getBoolean(PREF_AUTO_START, true)
             
             Log.i(TAG, "Storage context: ${if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) "Device-protected" else "Default"}")
             Log.i(TAG, "Preferences location: ${prefs.all}")
