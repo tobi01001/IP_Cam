@@ -11,7 +11,7 @@
                     <div class="header">
                         <h1>{{displayName}}</h1>
                         <div class="version">
-                            {{versionString}} | {{buildString}}
+                            {{versionString}} | {{buildString}}<span id="adbConnectionInfo" style="display: none;"><br><span style="font-size: 0.9em; color: #4CAF50;">{{adbConnection}}</span></span>
                         </div>
                     </div>
                     
@@ -282,6 +282,29 @@
                                 <li>Set Wi-Fi to stay on during sleep and place device where signal is strong</li>
                             </ul>
                         </div>
+                        
+                        <div class="card">
+                            <h3>Software Update</h3>
+                            <p style="color: #666; font-size: 14px; margin-bottom: 12px;">
+                                Check for and install app updates from GitHub Releases.
+                            </p>
+                            <div class="form-row" style="flex-direction: column; align-items: flex-start; gap: 12px;">
+                                <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+                                    <label style="font-weight: 500;">Current Version:</label>
+                                    <span id="currentVersion" style="color: #555;">{{versionString}}</span>
+                                </div>
+                                <div id="updateStatusContainer" style="width: 100%; padding: 12px; background: #f5f5f5; border-radius: 4px; min-height: 50px;">
+                                    <p id="updateStatus" style="margin: 0; color: #666;">Click "Check for Update" to see if a new version is available.</p>
+                                </div>
+                                <div style="display: flex; gap: 8px; width: 100%; flex-wrap: wrap;">
+                                    <button onclick="checkForUpdate()" id="checkUpdateBtn" class="secondary">Check for Update</button>
+                                    <button onclick="triggerUpdate()" id="installUpdateBtn" class="success" style="display: none;">Install Update</button>
+                                </div>
+                            </div>
+                            <div class="alert info">
+                                Updates are downloaded from GitHub Releases. You will need to confirm installation on the device when prompted.
+                            </div>
+                        </div>
                     </div>
                     
                     <!-- Tab 6: API Reference -->
@@ -383,6 +406,18 @@
                             <div class="endpoint">
                                 <strong>Restart Server:</strong> <a href="/restart" target="_blank"><code>GET /restart</code></a><br>
                                 Restart the HTTP server remotely
+                            </div>
+                        </div>
+                        
+                        <div class="card">
+                            <h3>Software Update Endpoints</h3>
+                            <div class="endpoint">
+                                <strong>Check Update:</strong> <a href="/checkUpdate" target="_blank"><code>GET /checkUpdate</code></a><br>
+                                Check for available updates from GitHub Releases (returns JSON)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Trigger Update:</strong> <a href="/triggerUpdate" target="_blank"><code>GET /triggerUpdate</code></a><br>
+                                Download and install update if available (requires user confirmation)
                             </div>
                         </div>
                     </div>

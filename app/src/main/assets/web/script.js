@@ -845,4 +845,144 @@
                                 settingsEl.className = 'alert danger';
                                 settingsEl.innerHTML = '<strong>Error:</strong> ' + error;
                             });
+                    }                    
+                    // ==================== Software Update Functions ====================
+                    
+                    /**
+                     * Check for available software updates from GitHub Releases
+                     */
+                    async function checkForUpdate() {
+                        const checkBtn = document.getElementById('checkUpdateBtn');
+                        const installBtn = document.getElementById('installUpdateBtn');
+                        const statusEl = document.getElementById('updateStatus');
+                        const statusContainer = document.getElementById('updateStatusContainer');
+                        
+                        // Disable button and show loading state
+                        checkBtn.disabled = true;
+                        checkBtn.textContent = 'Checking...';
+                        statusEl.textContent = 'Checking for updates...';
+                        statusContainer.style.background = '#f5f5f5';
+                        installBtn.style.display = 'none';
+                        
+                        try {
+                            const response = await fetch('/checkUpdate');
+                            const result = await response.json();
+                            
+                            if (result.status === 'ok') {
+                                if (result.updateAvailable) {
+                                    // Update available
+                                    const sizeMB = (result.apkSize / 1024 / 1024).toFixed(2);
+                                    statusContainer.style.background = '#e8f5e9';
+                                    statusEl.innerHTML = 
+                                        '<strong style="color: #2e7d32;">✓ Update Available!</strong><br>' +
+                                        '<div style="margin-top: 8px; line-height: 1.6;">' +
+                                        '<strong>Latest Version:</strong> ' + result.latestVersionName + '<br>' +
+                                        '<strong>Current Version:</strong> Build ' + result.currentVersion + '<br>' +
+                                        '<strong>Download Size:</strong> ' + sizeMB + ' MB<br>' +
+                                        '<strong>Release Notes:</strong><br>' +
+                                        '<div style="padding: 8px; background: white; border-radius: 4px; margin-top: 4px; max-height: 150px; overflow-y: auto; white-space: pre-wrap; font-size: 13px;">' +
+                                        escapeHtml(result.releaseNotes) +
+                                        '</div>' +
+                                        '</div>';
+                                    installBtn.style.display = 'inline-block';
+                                } else {
+                                    // No update available
+                                    statusContainer.style.background = '#e3f2fd';
+                                    statusEl.innerHTML = 
+                                        '<strong style="color: #1976d2;">✓ You are running the latest version</strong><br>' +
+                                        '<div style="margin-top: 4px; color: #666;">Current version: Build ' + result.currentVersion + '</div>';
+                                }
+                            } else {
+                                // Error from server
+                                statusContainer.style.background = '#ffebee';
+                                statusEl.innerHTML = 
+                                    '<strong style="color: #c62828;">✗ Error</strong><br>' +
+                                    '<div style="margin-top: 4px;">' + escapeHtml(result.message) + '</div>';
+                            }
+                        } catch (error) {
+                            // Network or other error
+                            statusContainer.style.background = '#ffebee';
+                            statusEl.innerHTML = 
+                                '<strong style="color: #c62828;">✗ Error</strong><br>' +
+                                '<div style="margin-top: 4px;">' + escapeHtml(String(error)) + '</div>';
+                        } finally {
+                            // Re-enable button
+                            checkBtn.disabled = false;
+                            checkBtn.textContent = 'Check for Update';
+                        }
                     }
+                    
+                    /**
+                     * Trigger update download and installation
+                     */
+                    async function triggerUpdate() {
+                        const installBtn = document.getElementById('installUpdateBtn');
+                        const statusEl = document.getElementById('updateStatus');
+                        const statusContainer = document.getElementById('updateStatusContainer');
+                        
+                        // Confirm with user
+                        if (!confirm('This will download and install the update. The app will restart after installation. Continue?')) {
+                            return;
+                        }
+                        
+                        // Disable button and show downloading state
+                        installBtn.disabled = true;
+                        installBtn.textContent = 'Downloading...';
+                        statusContainer.style.background = '#fff3e0';
+                        statusEl.innerHTML = 
+                            '<strong style="color: #f57c00;">⏳ Downloading update...</strong><br>' +
+                            '<div style="margin-top: 4px;">This may take a minute depending on your connection speed.</div>';
+                        
+                        try {
+                            const response = await fetch('/triggerUpdate');
+                            const result = await response.json();
+                            
+                            if (result.status === 'ok') {
+                                statusContainer.style.background = '#e8f5e9';
+                                statusEl.innerHTML = 
+                                    '<strong style="color: #2e7d32;">✓ Download Complete</strong><br>' +
+                                    '<div style="margin-top: 4px;">Please confirm installation on your device. The update will be installed and the app will restart.</div>';
+                                installBtn.style.display = 'none';
+                            } else {
+                                statusContainer.style.background = '#ffebee';
+                                statusEl.innerHTML = 
+                                    '<strong style="color: #c62828;">✗ Error</strong><br>' +
+                                    '<div style="margin-top: 4px;">' + escapeHtml(result.message) + '</div>';
+                                installBtn.disabled = false;
+                                installBtn.textContent = 'Install Update';
+                            }
+                        } catch (error) {
+                            statusContainer.style.background = '#ffebee';
+                            statusEl.innerHTML = 
+                                '<strong style="color: #c62828;">✗ Error</strong><br>' +
+                                '<div style="margin-top: 4px;">' + escapeHtml(String(error)) + '</div>';
+                            installBtn.disabled = false;
+                            installBtn.textContent = 'Install Update';
+                        }
+                    }
+                    
+                    /**
+                     * Helper function to escape HTML to prevent XSS
+                     */
+                    function escapeHtml(text) {
+                        const div = document.createElement('div');
+                        div.textContent = text;
+                        return div.innerHTML;
+                    }
+                    
+                    // ==================== End Software Update Functions ====================
+                    
+                    // ==================== ADB Connection Info Display ====================
+                    
+                    // Show ADB connection info if available on page load
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const adbInfoElement = document.getElementById('adbConnectionInfo');
+                        if (adbInfoElement) {
+                            const adbText = adbInfoElement.textContent.trim();
+                            if (adbText && adbText !== '') {
+                                adbInfoElement.style.display = 'inline';
+                            }
+                        }
+                    });
+                    
+                    // ==================== End ADB Connection Info ====================
