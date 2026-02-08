@@ -98,4 +98,7 @@ interface CameraServiceInterface {
     fun getCameraStateString(): String
     fun manualActivateCamera()
     fun manualDeactivateCamera()
+    
+    // Camera reset for recovery
+    fun fullCameraReset(): Boolean
 }

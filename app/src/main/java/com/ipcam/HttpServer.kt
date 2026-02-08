@@ -152,6 +152,9 @@ class HttpServer(
                 get("/cameraState") { serveCameraState() }
                 get("/activateCamera") { serveActivateCamera() }
                 get("/deactivateCamera") { serveDeactivateCamera() }
+                
+                // Camera recovery endpoints
+                get("/resetCamera") { serveResetCamera() }
             }
         }
         
@@ -1280,6 +1283,38 @@ class HttpServer(
             Log.e(TAG, "Error deactivating camera", e)
             call.respondText(
                 """{"status":"error","message":"Failed to deactivate camera: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Manual camera reset endpoint
+     * Triggers a full camera service reset to recover from frozen/broken camera states
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveResetCamera() {
+        try {
+            Log.i(TAG, "Manual camera reset requested via API")
+            val success = cameraService.fullCameraReset()
+            val cameraState = cameraService.getCameraStateString()
+            
+            if (success) {
+                call.respondText(
+                    """{"status":"ok","cameraState":"$cameraState","message":"Camera reset successfully initiated"}""",
+                    ContentType.Application.Json
+                )
+            } else {
+                call.respondText(
+                    """{"status":"error","cameraState":"$cameraState","message":"Camera reset failed"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.InternalServerError
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error resetting camera", e)
+            call.respondText(
+                """{"status":"error","message":"Failed to reset camera: ${e.message}"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.InternalServerError
             )
