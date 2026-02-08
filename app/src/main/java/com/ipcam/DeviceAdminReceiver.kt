@@ -38,6 +38,47 @@ class DeviceAdminReceiver : DeviceAdminReceiver() {
 
     companion object {
         private const val TAG = "DeviceAdminReceiver"
+        
+        /**
+         * Reboot the device (requires Device Owner mode).
+         * 
+         * @param context Application context
+         * @return true if reboot was initiated, false if not Device Owner
+         */
+        fun rebootDevice(context: Context): Boolean {
+            try {
+                val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+                if (dpm == null) {
+                    Log.e(TAG, "DevicePolicyManager not available")
+                    return false
+                }
+                
+                val adminComponent = ComponentName(context, DeviceAdminReceiver::class.java)
+                
+                // Check if we're Device Owner
+                if (!dpm.isDeviceOwnerApp(context.packageName)) {
+                    Log.w(TAG, "Reboot requested but app is not Device Owner")
+                    return false
+                }
+                
+                Log.i(TAG, "Device Owner reboot initiated via API")
+                
+                // Use PowerManager to reboot the device
+                val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+                if (powerManager != null) {
+                    // Reboot the device (requires REBOOT permission)
+                    powerManager.reboot("IP_Cam remote reboot")
+                    return true
+                } else {
+                    Log.e(TAG, "PowerManager not available")
+                    return false
+                }
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Error rebooting device", e)
+                return false
+            }
+        }
     }
 
     /**

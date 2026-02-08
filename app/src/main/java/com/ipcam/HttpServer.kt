@@ -157,6 +157,9 @@ class HttpServer(
                 // Auto update endpoints
                 get("/checkUpdate") { serveCheckUpdate() }
                 get("/triggerUpdate") { serveTriggerUpdate() }
+                
+                // Device Owner endpoints
+                get("/reboot") { serveReboot() }
             }
         }
         
@@ -561,7 +564,7 @@ class HttpServer(
         val deviceName = cameraService.getDeviceName()
         val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
         
         val json = """
             {
@@ -1412,6 +1415,46 @@ class HttpServer(
             Log.e(TAG, "Error triggering update", e)
             call.respondText(
                 """{"status":"error","message":"Error triggering update: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveReboot() {
+        try {
+            // Check if app is Device Owner
+            val dpm = this@HttpServer.context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+            val isDeviceOwner = dpm?.isDeviceOwnerApp(this@HttpServer.context.packageName) ?: false
+            
+            if (!isDeviceOwner) {
+                Log.w(TAG, "Reboot requested but app is not Device Owner")
+                call.respondText(
+                    """{"status":"error","message":"Reboot requires Device Owner mode. Current app is not Device Owner.","deviceOwner":false}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.Forbidden
+                )
+                return
+            }
+            
+            Log.i(TAG, "Remote reboot requested via HTTP API")
+            
+            // Respond first before rebooting
+            call.respondText(
+                """{"status":"ok","message":"Device rebooting...","deviceOwner":true}""",
+                ContentType.Application.Json
+            )
+            
+            // Launch reboot in background with slight delay to ensure response is sent
+            serverScope.launch {
+                delay(500) // Give time for HTTP response to be sent
+                DeviceAdminReceiver.rebootDevice(this@HttpServer.context)
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error processing reboot request", e)
+            call.respondText(
+                """{"status":"error","message":"Error processing reboot request: ${e.message}"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.InternalServerError
             )
