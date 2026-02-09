@@ -86,6 +86,8 @@ class MainActivity : AppCompatActivity() {
     
     // Device Owner status UI elements
     private lateinit var checkDeviceOwnerButton: Button
+    private lateinit var resetCameraButton: Button
+    private lateinit var rebootDeviceButton: Button
     private lateinit var deviceOwnerStatusText: TextView
     
     // Collapsible section elements
@@ -402,6 +404,8 @@ class MainActivity : AppCompatActivity() {
         
         // Device Owner status elements
         checkDeviceOwnerButton = findViewById(R.id.checkDeviceOwnerButton)
+        resetCameraButton = findViewById(R.id.resetCameraButton)
+        rebootDeviceButton = findViewById(R.id.rebootDeviceButton)
         deviceOwnerStatusText = findViewById(R.id.deviceOwnerStatusText)
         
         // Collapsible section elements
@@ -1772,6 +1776,14 @@ class MainActivity : AppCompatActivity() {
         checkDeviceOwnerButton.setOnClickListener {
             checkDeviceOwnerStatus()
         }
+        
+        resetCameraButton.setOnClickListener {
+            resetCamera()
+        }
+        
+        rebootDeviceButton.setOnClickListener {
+            rebootDevice()
+        }
     }
     
     /**
@@ -1890,5 +1902,62 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "Error clearing restrictions: ${e.message}", Toast.LENGTH_LONG).show()
             Log.e(TAG, "Error clearing restrictions", e)
         }
+    }
+    
+    /**
+     * Reset camera service to recover from frozen/broken states
+     */
+    private fun resetCamera() {
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Reset Camera")
+            .setMessage("This will perform a complete camera service reset to recover from frozen/broken states. Continue?")
+            .setPositiveButton("Reset") { _, _ ->
+                try {
+                    cameraService?.fullCameraReset()
+                    Toast.makeText(this, "Camera reset initiated", Toast.LENGTH_SHORT).show()
+                    Log.i(TAG, "Camera reset triggered from MainActivity")
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Error resetting camera: ${e.message}", Toast.LENGTH_LONG).show()
+                    Log.e(TAG, "Error resetting camera", e)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+    
+    /**
+     * Reboot the device (requires Device Owner mode)
+     */
+    private fun rebootDevice() {
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val isDeviceOwner = dpm.isDeviceOwnerApp(packageName)
+        
+        if (!isDeviceOwner) {
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Device Owner Required")
+                .setMessage("Device reboot requires Device Owner mode. This app is not currently set as Device Owner.")
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Reboot Device")
+            .setMessage("This will completely restart the Android device. All apps will be closed. Continue?")
+            .setPositiveButton("Reboot") { _, _ ->
+                try {
+                    Toast.makeText(this, "Rebooting device...", Toast.LENGTH_SHORT).show()
+                    Log.i(TAG, "Device reboot triggered from MainActivity")
+                    
+                    // Reboot using Device Policy Manager
+                    val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
+                    dpm.reboot(adminComponent)
+                } catch (e: Exception) {
+                    Toast.makeText(this, "Error rebooting device: ${e.message}", Toast.LENGTH_LONG).show()
+                    Log.e(TAG, "Error rebooting device", e)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 }

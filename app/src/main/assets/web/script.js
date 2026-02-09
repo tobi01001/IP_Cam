@@ -419,6 +419,59 @@
                                 showAlert('Error restarting server: ' + error, 'danger');
                             });
                     }
+                    
+                    function resetCamera() {
+                        if (!confirm('Reset camera? This will perform a complete camera service reset to recover from frozen/broken states.')) {
+                            return;
+                        }
+                        
+                        showAlert('Resetting camera...', 'info');
+                        const wasStreamActive = streamActive;
+                        
+                        fetch('/resetCamera')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    showAlert('Camera reset successful: ' + data.message, 'success');
+                                    if (wasStreamActive) {
+                                        stopStream();
+                                    }
+                                    setTimeout(() => {
+                                        showAlert('Camera reinitialized. Reconnecting...', 'info');
+                                        if (wasStreamActive) {
+                                            startStream();
+                                        }
+                                    }, 2000);
+                                } else {
+                                    showAlert('Camera reset failed: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('Error resetting camera: ' + error, 'danger');
+                            });
+                    }
+                    
+                    function rebootDevice() {
+                        if (!confirm('Reboot device? This will completely restart the Android device. Requires Device Owner mode.')) {
+                            return;
+                        }
+                        
+                        showAlert('Rebooting device...', 'info');
+                        
+                        fetch('/reboot')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    showAlert('Device rebooting: ' + data.message, 'success');
+                                } else {
+                                    showAlert('Reboot failed: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                // Device might reboot before response completes - this is expected
+                                showAlert('Reboot command sent. Device should be restarting...', 'info');
+                            });
+                    }
 
                     function toggleFullscreen() {
                         const container = document.getElementById('streamContainer');

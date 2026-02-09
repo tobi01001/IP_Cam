@@ -39,6 +39,7 @@ IP_Cam transforms your Android phone or tablet into a fully-featured IP camera a
 | `GET /snapshot` | Single JPEG image |
 | `GET /status` | JSON status information |
 | `GET /switch` | Switch camera (front/back) |
+| `GET /resetCamera` | Reset camera service (recovery from frozen states) |
 | `GET /checkUpdate` | Check for app updates |
 | `GET /triggerUpdate` | Download and install update |
 | `rtsp://<ip>:8554/camera` | RTSP/H.264 stream |

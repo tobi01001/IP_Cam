@@ -308,6 +308,7 @@ cameraProvider.bindToLifecycle(
 - `GET /toggleFlashlight` - Toggle flashlight
 - `GET /setRotation?value=<0|90|180|270|auto>` - Set rotation
 - `GET /setFormat?value=<WIDTHxHEIGHT>` - Set resolution
+- `GET /resetCamera` - Reset camera service (recovery from frozen states)
 - `GET /restart` - Restart server
 - `GET /version` - API version info
 

@@ -311,6 +311,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var lastCpuCheckTime: Long = 0
     
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
+    // Enhanced watchdog - track last frame timestamp to detect frozen frames
+    @Volatile private var lastWatchdogFrameTimestamp: Long = 0L
+    @Volatile private var frozenFrameDetectionCount: Int = 0
     private var networkReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
     // Server-Sent Events (SSE) clients for real-time updates
@@ -400,6 +403,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val MAX_PORT = 65535
          private const val MAX_PORT_ATTEMPTS = 10 // Try up to 10 ports
          private const val FRAME_STALE_THRESHOLD_MS = 5_000L
+         private const val FROZEN_FRAME_DETECTION_COUNT = 3 // Number of consecutive same-frame detections before reset
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
@@ -1169,6 +1173,63 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             synchronized (cameraStateLock) {
                 cameraState = CameraState.ERROR
             }
+        }
+    }
+    
+    /**
+     * Full camera service reset - stronger than requestBindCamera.
+     * This performs a complete teardown and restart of the camera pipeline:
+     * 1. Stops camera completely
+     * 2. Clears camera provider
+     * 3. Resets all state variables
+     * 4. Reinitializes camera from scratch
+     * 
+     * Use this for recovery from frozen/broken camera states that don't respond
+     * to normal rebinding.
+     * 
+     * @return true if reset was initiated successfully
+     */
+    override fun fullCameraReset(): Boolean {
+        Log.w(TAG, "fullCameraReset() - Performing complete camera service reset...")
+        
+        return try {
+            // Stop camera first
+            stopCamera()
+            
+            // Clear camera provider to force complete reinitialization
+            cameraProvider = null
+            
+            // Reset watchdog state
+            lastWatchdogFrameTimestamp = 0L
+            frozenFrameDetectionCount = 0
+            watchdogRetryDelay = WATCHDOG_RETRY_DELAY_MS
+            
+            // Reset state to IDLE
+            synchronized(cameraStateLock) {
+                cameraState = CameraState.IDLE
+            }
+            
+            // Give system time to release resources
+            // Note: Thread.sleep() is used here instead of delay() because this function
+            // is part of an interface and may be called from non-coroutine contexts
+            Thread.sleep(500)
+            
+            // Restart camera if consumers are waiting
+            if (hasConsumers()) {
+                Log.i(TAG, "fullCameraReset() - Restarting camera for ${getConsumerCount()} consumers")
+                startCamera()
+            } else {
+                Log.i(TAG, "fullCameraReset() - Camera reset complete, no consumers waiting")
+            }
+            
+            Log.i(TAG, "fullCameraReset() - Reset successful")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "fullCameraReset() - Reset failed", e)
+            synchronized(cameraStateLock) {
+                cameraState = CameraState.ERROR
+            }
+            false
         }
     }
     
@@ -2969,10 +3030,45 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         val currentFrame = lastProcessedFrame.get()
                         val lastTimestamp = currentFrame?.timestamp ?: 0L
                         val frameAge = System.currentTimeMillis() - lastTimestamp
+                        
+                        // Check 1: Frame stale (no new frames)
                         if (frameAge > FRAME_STALE_THRESHOLD_MS) {
                             Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
                             requestBindCamera()
                             needsRecovery = true
+                            // Reset frozen frame detection since we're doing basic recovery
+                            frozenFrameDetectionCount = 0
+                            lastWatchdogFrameTimestamp = 0L
+                        } else {
+                            // Check 2: Frozen frame detection (same frame being served repeatedly)
+                            // This catches cases where timestamp updates but content is frozen
+                            if (lastTimestamp > 0L) {
+                                if (lastTimestamp == lastWatchdogFrameTimestamp) {
+                                    // Same frame as last check - increment frozen counter
+                                    frozenFrameDetectionCount++
+                                    Log.w(TAG, "Watchdog: Same frame detected (timestamp=$lastTimestamp) - frozen count: $frozenFrameDetectionCount/$FROZEN_FRAME_DETECTION_COUNT")
+                                    
+                                    // If frozen for too many consecutive checks, trigger full reset
+                                    if (frozenFrameDetectionCount >= FROZEN_FRAME_DETECTION_COUNT) {
+                                        Log.e(TAG, "Watchdog: Camera frozen detected (same frame $FROZEN_FRAME_DETECTION_COUNT times), performing FULL RESET...")
+                                        serviceScope.launch {
+                                            val resetSuccess = fullCameraReset()
+                                            if (!resetSuccess) {
+                                                Log.e(TAG, "Watchdog: Full camera reset failed")
+                                            }
+                                        }
+                                        needsRecovery = true
+                                        frozenFrameDetectionCount = 0
+                                    }
+                                } else {
+                                    // Different frame - camera is working, reset counter
+                                    if (frozenFrameDetectionCount > 0) {
+                                        Log.d(TAG, "Watchdog: Frame updated (new timestamp=$lastTimestamp), reset frozen counter")
+                                    }
+                                    frozenFrameDetectionCount = 0
+                                }
+                                lastWatchdogFrameTimestamp = lastTimestamp
+                            }
                         }
                         
                         // Check camera state - detect CLOSED state which indicates camera was released
