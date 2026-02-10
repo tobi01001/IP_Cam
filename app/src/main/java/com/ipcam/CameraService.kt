@@ -1857,7 +1857,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
-     * Enable or disable the camera torch/flashlight
+     * Enable or disable the camera torch/flashlight using CameraManager
+     * This method does NOT require the camera to be bound via CameraX
      */
     private fun enableTorch(enable: Boolean) {
         try {
@@ -1866,8 +1867,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return
             }
             
-            camera?.cameraControl?.enableTorch(enable)
-            Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"}")
+            // Use CameraManager to control torch without binding camera
+            // This is more efficient than binding the full camera just for flashlight
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            
+            // Find the camera ID for the current camera (back or front)
+            val targetFacing = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            
+            // Get camera ID from cache
+            val cameraId = cameraCharacteristicsCache.values
+                .firstOrNull { it.lensFacing == targetFacing }
+                ?.cameraId
+            
+            if (cameraId != null) {
+                // Use CameraManager.setTorchMode() - works without binding camera
+                cameraManager.setTorchMode(cameraId, enable)
+                Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"} for camera $cameraId via CameraManager")
+            } else {
+                Log.w(TAG, "Could not find camera ID for flashlight control")
+                
+                // Fallback: If we have a bound camera, use CameraX control
+                camera?.cameraControl?.enableTorch(enable)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error controlling torch", e)
         }
@@ -1876,6 +1901,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Toggle flashlight on/off
      * Only works for back camera with flash unit
+     * Does NOT require camera to be active - uses CameraManager directly
      */
     override fun toggleFlashlight(): Boolean {
         if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -1887,9 +1913,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.w(TAG, "No flash unit available")
             return false
         }
-        
-        // Ensure camera is active before controlling flashlight
-        ensureCameraActiveForFlashlight()
         
         isFlashlightOn = !isFlashlightOn
         enableTorch(isFlashlightOn)
@@ -1908,6 +1931,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Set flashlight to specific state (on or off)
      * Only works for back camera with flash unit
      * Returns true if state was set successfully, false otherwise
+     * Does NOT require camera to be active - uses CameraManager directly
      */
     fun setFlashlight(enabled: Boolean): Boolean {
         if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -1919,9 +1943,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.w(TAG, "No flash unit available")
             return false
         }
-        
-        // Ensure camera is active before controlling flashlight
-        ensureCameraActiveForFlashlight()
         
         // Only update if state is different
         if (isFlashlightOn != enabled) {
@@ -1938,20 +1959,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         return true
-    }
-    
-    /**
-     * Ensure camera is active for flashlight control
-     * Activates camera as a flashlight consumer if not already active
-     */
-    private fun ensureCameraActiveForFlashlight() {
-        synchronized(cameraStateLock) {
-            if (cameraState == CameraState.IDLE || camera == null) {
-                Log.d(TAG, "Camera not active, activating for flashlight control")
-                // Register flashlight as a consumer to keep camera active
-                registerConsumer(ConsumerType.MANUAL)
-            }
-        }
     }
     
     /**
