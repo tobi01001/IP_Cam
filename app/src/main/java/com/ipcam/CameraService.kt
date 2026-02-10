@@ -1888,6 +1888,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             return false
         }
         
+        // Ensure camera is active before controlling flashlight
+        ensureCameraActiveForFlashlight()
+        
         isFlashlightOn = !isFlashlightOn
         enableTorch(isFlashlightOn)
         saveSettings()
@@ -1917,6 +1920,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             return false
         }
         
+        // Ensure camera is active before controlling flashlight
+        ensureCameraActiveForFlashlight()
+        
         // Only update if state is different
         if (isFlashlightOn != enabled) {
             isFlashlightOn = enabled
@@ -1932,6 +1938,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         return true
+    }
+    
+    /**
+     * Ensure camera is active for flashlight control
+     * Activates camera as a flashlight consumer if not already active
+     */
+    private fun ensureCameraActiveForFlashlight() {
+        synchronized(cameraStateLock) {
+            if (cameraState == CameraState.IDLE || camera == null) {
+                Log.d(TAG, "Camera not active, activating for flashlight control")
+                // Register flashlight as a consumer to keep camera active
+                registerConsumer(ConsumerType.MANUAL)
+            }
+        }
     }
     
     /**
