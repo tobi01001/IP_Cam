@@ -107,6 +107,8 @@ class HttpServer(
                 // Camera control
                 get("/switch") { serveSwitch() }
                 get("/toggleFlashlight") { serveToggleFlashlight() }
+                get("/flashOn") { serveFlashlightOn() }
+                get("/flashOff") { serveFlashlightOff() }
                 
                 // Status and monitoring
                 get("/status") { serveStatus() }
@@ -566,7 +568,7 @@ class HttpServer(
         val deviceName = cameraService.getDeviceName()
         val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/flashOn\", \"/flashOff\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
         
         val json = """
             {
@@ -1054,6 +1056,56 @@ class HttpServer(
             """{"status":"ok","message":"Flashlight ${if (newState) "enabled" else "disabled"}","flashlight":$newState}""",
             ContentType.Application.Json
         )
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveFlashlightOn() {
+        if (!cameraService.isFlashlightAvailable()) {
+            call.respondText(
+                """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val success = (cameraService as? CameraService)?.setFlashlight(true) ?: false
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"Flashlight turned on","flashlight":true}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to turn on flashlight"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveFlashlightOff() {
+        if (!cameraService.isFlashlightAvailable()) {
+            call.respondText(
+                """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}""",
+                ContentType.Application.Json,
+                HttpStatusCode.BadRequest
+            )
+            return
+        }
+        
+        val success = (cameraService as? CameraService)?.setFlashlight(false) ?: false
+        if (success) {
+            call.respondText(
+                """{"status":"ok","message":"Flashlight turned off","flashlight":false}""",
+                ContentType.Application.Json
+            )
+        } else {
+            call.respondText(
+                """{"status":"error","message":"Failed to turn off flashlight"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveRestartServer() {

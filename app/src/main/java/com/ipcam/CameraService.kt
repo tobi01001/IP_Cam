@@ -1857,7 +1857,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
-     * Enable or disable the camera torch/flashlight
+     * Enable or disable the camera torch/flashlight using CameraManager
+     * This method does NOT require the camera to be bound via CameraX
      */
     private fun enableTorch(enable: Boolean) {
         try {
@@ -1866,8 +1867,32 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return
             }
             
-            camera?.cameraControl?.enableTorch(enable)
-            Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"}")
+            // Use CameraManager to control torch without binding camera
+            // This is more efficient than binding the full camera just for flashlight
+            val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            
+            // Find the camera ID for the current camera (back or front)
+            val targetFacing = if (currentCamera == CameraSelector.DEFAULT_FRONT_CAMERA) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            
+            // Get camera ID from cache
+            val cameraId = cameraCharacteristicsCache.values
+                .firstOrNull { it.lensFacing == targetFacing }
+                ?.cameraId
+            
+            if (cameraId != null) {
+                // Use CameraManager.setTorchMode() - works without binding camera
+                cameraManager.setTorchMode(cameraId, enable)
+                Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"} for camera $cameraId via CameraManager")
+            } else {
+                Log.w(TAG, "Could not find camera ID for flashlight control")
+                
+                // Fallback: If we have a bound camera, use CameraX control
+                camera?.cameraControl?.enableTorch(enable)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error controlling torch", e)
         }
@@ -1876,6 +1901,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     /**
      * Toggle flashlight on/off
      * Only works for back camera with flash unit
+     * Does NOT require camera to be active - uses CameraManager directly
      */
     override fun toggleFlashlight(): Boolean {
         if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -1899,6 +1925,40 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
         safeInvokeCameraStateCallback(currentCamera)
         return isFlashlightOn
+    }
+    
+    /**
+     * Set flashlight to specific state (on or off)
+     * Only works for back camera with flash unit
+     * Returns true if state was set successfully, false otherwise
+     * Does NOT require camera to be active - uses CameraManager directly
+     */
+    fun setFlashlight(enabled: Boolean): Boolean {
+        if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
+            Log.w(TAG, "Flashlight only available for back camera")
+            return false
+        }
+        
+        if (!hasFlashUnit) {
+            Log.w(TAG, "No flash unit available")
+            return false
+        }
+        
+        // Only update if state is different
+        if (isFlashlightOn != enabled) {
+            isFlashlightOn = enabled
+            enableTorch(isFlashlightOn)
+            saveSettings()
+            
+            // Broadcast state change to web clients
+            broadcastCameraState()
+            
+            // Notify MainActivity of flashlight state change
+            // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+            safeInvokeCameraStateCallback(currentCamera)
+        }
+        
+        return true
     }
     
     /**
@@ -3389,14 +3449,25 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        // Update CPU usage before sending state
-        updateCpuUsage()
-        
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
+        // Get battery information
+        val batteryInfo = getCachedBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // Get bandwidth information (device bandwidth, not client bandwidth)
+        val bandwidthBps = getBandwidthBps()
+        
+        // Get RTSP enabled status
+        val rtspEnabled = isRTSPEnabled()
+        
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
+        
         // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()}}"""
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$cpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()},"batteryLevel":$batteryLevel,"isCharging":$isCharging,"bandwidthBps":$bandwidthBps,"rtspEnabled":$rtspEnabled}"""
     }
     
     /**
@@ -3408,11 +3479,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        // Update CPU usage before comparing state
-        updateCpuUsage()
-        
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
+        // Get battery information
+        val batteryInfo = getCachedBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // Get bandwidth information (device bandwidth, not client bandwidth)
+        val bandwidthBps = getBandwidthBps()
+        
+        // Get RTSP enabled status
+        val rtspEnabled = isRTSPEnabled()
+        
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
         
         // Build map of current values
         val currentState = mapOf<String, Any>(
@@ -3427,14 +3509,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "currentCameraFps" to currentCameraFps,
             "currentMjpegFps" to currentMjpegFps,
             "currentRtspFps" to rtspEncodedFps,
-            "cpuUsage" to currentCpuUsage,
+            "cpuUsage" to cpuUsage,
             "targetMjpegFps" to targetMjpegFps,
             "targetRtspFps" to targetRtspFps,
             "adaptiveQualityEnabled" to adaptiveQualityEnabled,
             "flashlightAvailable" to isFlashlightAvailable(),
             "flashlightOn" to isFlashlightEnabled(),
             "batteryMode" to batteryMode.name,
-            "streamingAllowed" to isStreamingAllowed()
+            "streamingAllowed" to isStreamingAllowed(),
+            "batteryLevel" to batteryLevel,
+            "isCharging" to isCharging,
+            "bandwidthBps" to bandwidthBps,
+            "rtspEnabled" to rtspEnabled
         )
         
         // Find changed fields
@@ -3484,6 +3570,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
+        
         synchronized(broadcastLock) {
             lastBroadcastState.clear()
             lastBroadcastState["camera"] = cameraName
@@ -3497,7 +3586,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastBroadcastState["currentCameraFps"] = currentCameraFps
             lastBroadcastState["currentMjpegFps"] = currentMjpegFps
             lastBroadcastState["currentRtspFps"] = rtspEncodedFps
-            lastBroadcastState["cpuUsage"] = currentCpuUsage
+            lastBroadcastState["cpuUsage"] = cpuUsage
             lastBroadcastState["targetMjpegFps"] = targetMjpegFps
             lastBroadcastState["targetRtspFps"] = targetRtspFps
             lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled

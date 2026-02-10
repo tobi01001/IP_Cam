@@ -51,12 +51,15 @@
                                 <div class="stat-value" style="font-size: 20px;"><span id="currentMjpegFpsDisplay">0.0</span> fps</div>
                             </div>
                             <div class="stat-card">
-                                <div class="stat-label">RTSP FPS</div>
-                                <div class="stat-value" style="font-size: 20px;"><span id="currentRtspFpsDisplay">0.0</span> fps</div>
+                                <div class="stat-label">RTSP Status</div>
+                                <div class="stat-value" style="font-size: 16px;"><span id="rtspStatusDisplay">Disabled</span></div>
                             </div>
                             <div class="stat-card">
-                                <div class="stat-label">CPU Usage</div>
-                                <div class="stat-value" style="font-size: 20px;"><span id="cpuUsageDisplay">0.0</span>%</div>
+                                <div class="stat-label">CPU & Bandwidth</div>
+                                <div class="stat-value" style="font-size: 16px;">
+                                    <span id="cpuUsageDisplay">0.0</span>% CPU<br>
+                                    <span id="bandwidthDisplay">0.0</span> Mbps
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -82,6 +85,7 @@
                             <div class="form-row">
                                 <button id="toggleStreamBtn" onclick="toggleStream()" class="success">Start Stream</button>
                                 <button onclick="reloadStream()" class="secondary">Refresh</button>
+                                <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
                                 <button id="fullscreenBtn" onclick="toggleFullscreen()">Fullscreen</button>
                             </div>
                         </div>
@@ -93,7 +97,6 @@
                             <h3>Camera Selection</h3>
                             <div class="form-row">
                                 <button onclick="switchCamera()">Switch Camera</button>
-                                <button id="flashlightButton" onclick="toggleFlashlight()">Toggle Flashlight</button>
                             </div>
                         </div>
                         
@@ -346,6 +349,14 @@
                             <div class="endpoint">
                                 <strong>Toggle Flashlight:</strong> <a href="/toggleFlashlight" target="_blank"><code>GET /toggleFlashlight</code></a><br>
                                 Toggle flashlight on/off for back camera
+                            </div>
+                            <div class="endpoint">
+                                <strong>Turn Flashlight On:</strong> <a href="/flashOn" target="_blank"><code>GET /flashOn</code></a><br>
+                                Turn flashlight on for back camera (idempotent)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Turn Flashlight Off:</strong> <a href="/flashOff" target="_blank"><code>GET /flashOff</code></a><br>
+                                Turn flashlight off for back camera (idempotent)
                             </div>
                             <div class="endpoint">
                                 <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>

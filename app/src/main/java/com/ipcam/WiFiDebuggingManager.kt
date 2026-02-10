@@ -94,42 +94,14 @@ class WiFiDebuggingManager(private val context: Context) {
     
     /**
      * Get the actual ADB WiFi port from system
-     * On Android 11+, ADB over WiFi may use dynamic ports
+     * On Android 11+, ADB over WiFi uses dynamic ports that are only available after WiFi debugging is enabled
+     * Returns -1 if port cannot be detected (indicating WiFi debugging is not active)
      */
     private fun getActualADBPort(): Int {
         return try {
-            // Method 1: Try service.adb.tcp.port property
-            var port = getPortFromProperty("service.adb.tcp.port")
-            if (port > 1024 && port < 65536) {  // Valid port range
-                Log.i(TAG, "Found ADB port from service.adb.tcp.port: $port")
-                return port
-            }
-            
-            // Method 2: Try persist.adb.tcp.port property (persistent setting)
-            port = getPortFromProperty("persist.adb.tcp.port")
-            if (port > 1024 && port < 65536) {  // Valid port range
-                Log.i(TAG, "Found ADB port from persist.adb.tcp.port: $port")
-                return port
-            }
-            
-            // Method 3: Try Settings.Global adb_port
-            try {
-                val settingsPort = Settings.Global.getInt(
-                    context.contentResolver,
-                    "adb_port",
-                    -1
-                )
-                if (settingsPort > 1024 && settingsPort < 65536) {  // Valid port range
-                    Log.i(TAG, "Found ADB port from Settings.Global.adb_port: $settingsPort")
-                    return settingsPort
-                }
-            } catch (e: Exception) {
-                Log.d(TAG, "Could not read adb_port: ${e.message}")
-            }
-            
-            // Method 4: On Android 11+, check wireless debugging port
+            // On Android 11+ (API 30+), wireless debugging uses dynamic ports
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Try adb_wifi_port
+                // Method 1: Try adb_wifi_port (the actual dynamic port used by wireless debugging)
                 try {
                     val wifiPort = Settings.Global.getInt(
                         context.contentResolver,
@@ -144,21 +116,51 @@ class WiFiDebuggingManager(private val context: Context) {
                     Log.d(TAG, "Could not read adb_wifi_port: ${e.message}")
                 }
                 
-                // Try reading from /proc/net/tcp to find actual listening port
-                port = findADBPortFromProcNet()
+                // Method 2: Try reading from /proc/net/tcp to find actual listening port
+                val port = findADBPortFromProcNet()
                 if (port > 1024 && port < 65536) {  // Valid port range
                     Log.i(TAG, "Found ADB port from /proc/net/tcp: $port")
                     return port
                 }
+            } else {
+                // For older Android versions (pre-API 30), try legacy TCP/IP port detection
+                // Method 1: Try service.adb.tcp.port property
+                var port = getPortFromProperty("service.adb.tcp.port")
+                if (port > 1024 && port < 65536) {  // Valid port range
+                    Log.i(TAG, "Found ADB port from service.adb.tcp.port: $port")
+                    return port
+                }
+                
+                // Method 2: Try persist.adb.tcp.port property (persistent setting)
+                port = getPortFromProperty("persist.adb.tcp.port")
+                if (port > 1024 && port < 65536) {  // Valid port range
+                    Log.i(TAG, "Found ADB port from persist.adb.tcp.port: $port")
+                    return port
+                }
+                
+                // Method 3: Try Settings.Global adb_port
+                try {
+                    val settingsPort = Settings.Global.getInt(
+                        context.contentResolver,
+                        "adb_port",
+                        -1
+                    )
+                    if (settingsPort > 1024 && settingsPort < 65536) {  // Valid port range
+                        Log.i(TAG, "Found ADB port from Settings.Global.adb_port: $settingsPort")
+                        return settingsPort
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Could not read adb_port: ${e.message}")
+                }
             }
             
-            // All detection methods failed, use default
-            Log.w(TAG, "Could not detect ADB port, using default: $DEFAULT_ADB_PORT")
-            DEFAULT_ADB_PORT
+            // Port not detected - WiFi debugging is likely not active yet
+            Log.d(TAG, "Could not detect ADB WiFi port - wireless debugging may not be active")
+            -1
             
         } catch (e: Exception) {
             Log.e(TAG, "Error detecting ADB port: ${e.message}", e)
-            DEFAULT_ADB_PORT
+            -1
         }
     }
     
@@ -300,6 +302,7 @@ class WiFiDebuggingManager(private val context: Context) {
     
     /**
      * Get ADB connection information
+     * Only returns connection info if WiFi debugging is enabled AND a valid port is detected
      */
     fun getADBConnectionInfo(): ADBConnectionInfo {
         val adbEnabled = try {
@@ -312,11 +315,15 @@ class WiFiDebuggingManager(private val context: Context) {
             false
         }
         
-        // Get actual port (may be dynamic)
+        // Get actual port (may be dynamic, returns -1 if not detected)
         val port = getActualADBPort()
         
+        // Only consider WiFi debugging as "enabled" if we can detect the actual port
+        // This ensures we don't show incorrect default ports
+        val wifiDebuggingActive = adbEnabled && port > 0
+        
         return ADBConnectionInfo(
-            enabled = adbEnabled,
+            enabled = wifiDebuggingActive,
             port = port,
             isDeviceOwner = isDeviceOwner()
         )
