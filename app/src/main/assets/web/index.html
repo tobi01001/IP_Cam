@@ -351,6 +351,14 @@
                                 Toggle flashlight on/off for back camera
                             </div>
                             <div class="endpoint">
+                                <strong>Turn Flashlight On:</strong> <a href="/flashOn" target="_blank"><code>GET /flashOn</code></a><br>
+                                Turn flashlight on for back camera (idempotent)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Turn Flashlight Off:</strong> <a href="/flashOff" target="_blank"><code>GET /flashOff</code></a><br>
+                                Turn flashlight off for back camera (idempotent)
+                            </div>
+                            <div class="endpoint">
                                 <strong>Set Format:</strong> <code>GET /setFormat?value=WIDTHxHEIGHT</code><br>
                                 Apply a supported resolution (or omit value to return to auto)
                             </div>

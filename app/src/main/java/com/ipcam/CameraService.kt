@@ -1902,6 +1902,39 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
+     * Set flashlight to specific state (on or off)
+     * Only works for back camera with flash unit
+     * Returns true if state was set successfully, false otherwise
+     */
+    fun setFlashlight(enabled: Boolean): Boolean {
+        if (currentCamera != CameraSelector.DEFAULT_BACK_CAMERA) {
+            Log.w(TAG, "Flashlight only available for back camera")
+            return false
+        }
+        
+        if (!hasFlashUnit) {
+            Log.w(TAG, "No flash unit available")
+            return false
+        }
+        
+        // Only update if state is different
+        if (isFlashlightOn != enabled) {
+            isFlashlightOn = enabled
+            enableTorch(isFlashlightOn)
+            saveSettings()
+            
+            // Broadcast state change to web clients
+            broadcastCameraState()
+            
+            // Notify MainActivity of flashlight state change
+            // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
+            safeInvokeCameraStateCallback(currentCamera)
+        }
+        
+        return true
+    }
+    
+    /**
      * Get current flashlight state
      */
     override fun isFlashlightEnabled(): Boolean = isFlashlightOn
