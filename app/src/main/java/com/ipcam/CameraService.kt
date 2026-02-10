@@ -1120,11 +1120,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             Log.d(TAG, "Stopping camera...")
             
-            // Disable torch if it's on before stopping camera
-            if (isFlashlightOn) {
-                Log.d(TAG, "Disabling torch before stopping camera")
-                enableTorch(false)
-            }
+            // NOTE: Do NOT disable torch here - torch should be independent of camera lifecycle
+            // The torch will remain on (via CameraManager.setTorchMode) even when camera is unbound
+            // It will be restored when camera is rebound via the existing restoration logic
             
             // Stop H.264 encoder first
             h264Encoder?.stop()
@@ -2818,7 +2816,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // This breaks the reference cycle between Service and Activity
         clearCallbacks()
         
-        // Disable torch if it's on before destroying service
+        // Disable torch if it's on before destroying service to release the resource
         if (isFlashlightOn) {
             Log.d(TAG, "Disabling torch before destroying service")
             enableTorch(false)
