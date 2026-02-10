@@ -3395,8 +3395,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
+        // Get battery information
+        val batteryInfo = getCachedBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // Get bandwidth information (device bandwidth, not client bandwidth)
+        val bandwidthBps = getBandwidthBps()
+        
+        // Get RTSP enabled status
+        val rtspEnabled = isRTSPEnabled()
+        
         // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()}}"""
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()},"batteryLevel":$batteryLevel,"isCharging":$isCharging,"bandwidthBps":$bandwidthBps,"rtspEnabled":$rtspEnabled}"""
     }
     
     /**
@@ -3413,6 +3424,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
+        
+        // Get battery information
+        val batteryInfo = getCachedBatteryInfo()
+        val batteryLevel = batteryInfo.level
+        val isCharging = batteryInfo.isCharging
+        
+        // Get bandwidth information (device bandwidth, not client bandwidth)
+        val bandwidthBps = getBandwidthBps()
+        
+        // Get RTSP enabled status
+        val rtspEnabled = isRTSPEnabled()
         
         // Build map of current values
         val currentState = mapOf<String, Any>(
@@ -3434,7 +3456,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "flashlightAvailable" to isFlashlightAvailable(),
             "flashlightOn" to isFlashlightEnabled(),
             "batteryMode" to batteryMode.name,
-            "streamingAllowed" to isStreamingAllowed()
+            "streamingAllowed" to isStreamingAllowed(),
+            "batteryLevel" to batteryLevel,
+            "isCharging" to isCharging,
+            "bandwidthBps" to bandwidthBps,
+            "rtspEnabled" to rtspEnabled
         )
         
         // Find changed fields

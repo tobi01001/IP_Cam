@@ -135,7 +135,7 @@
                             });
                     }
                     
-                    function updateBatteryStatusDisplay(batteryMode, streamingAllowed) {
+                    function updateBatteryStatusDisplay(batteryMode, streamingAllowed, batteryLevel, isCharging) {
                         const modeText = document.getElementById('batteryModeText');
                         const streamingText = document.getElementById('streamingStatusText');
                         
@@ -151,6 +151,15 @@
                         } else if (batteryMode === 'CRITICAL_BATTERY') {
                             modeLabel = 'CRITICAL';
                             modeClass = 'danger';
+                        }
+                        
+                        // Add battery percentage and charging indicator
+                        if (batteryLevel !== undefined && batteryLevel !== null) {
+                            modeLabel += ' (' + batteryLevel + '%';
+                            if (isCharging) {
+                                modeLabel += ' ⚡';
+                            }
+                            modeLabel += ')';
                         }
                         
                         modeText.textContent = modeLabel;
@@ -533,7 +542,7 @@
                             }
                             
                             if (data.batteryMode && data.streamingAllowed !== undefined) {
-                                updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed);
+                                updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed, data.batteryLevel, data.isCharging);
                             }
                         });
                     
@@ -660,10 +669,14 @@
                                 }
                             }
                             
-                            if (deltaState.currentRtspFps !== undefined) {
-                                const rtspFpsDisplay = document.getElementById('currentRtspFpsDisplay');
-                                if (rtspFpsDisplay) {
-                                    rtspFpsDisplay.textContent = state.currentRtspFps.toFixed(1);
+                            if (deltaState.currentRtspFps !== undefined || deltaState.rtspEnabled !== undefined) {
+                                const rtspStatusDisplay = document.getElementById('rtspStatusDisplay');
+                                if (rtspStatusDisplay) {
+                                    if (state.rtspEnabled) {
+                                        rtspStatusDisplay.innerHTML = '<span style="color: #4CAF50;">Enabled</span><br><span style="font-size: 20px;">' + state.currentRtspFps.toFixed(1) + ' fps</span>';
+                                    } else {
+                                        rtspStatusDisplay.innerHTML = '<span style="color: #999;">Disabled</span>';
+                                    }
                                 }
                             }
                             
@@ -671,6 +684,15 @@
                                 const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
                                 if (cpuUsageDisplay) {
                                     cpuUsageDisplay.textContent = state.cpuUsage.toFixed(1);
+                                }
+                            }
+                            
+                            if (deltaState.bandwidthBps !== undefined) {
+                                const bandwidthDisplay = document.getElementById('bandwidthDisplay');
+                                if (bandwidthDisplay) {
+                                    // Convert bps to Mbps
+                                    const mbps = (state.bandwidthBps / (1024 * 1024)).toFixed(2);
+                                    bandwidthDisplay.textContent = mbps;
                                 }
                             }
                             
@@ -707,8 +729,8 @@
                             }
                             
                             // Update battery status display
-                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined) {
-                                updateBatteryStatusDisplay(state.batteryMode, state.streamingAllowed);
+                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined || deltaState.batteryLevel !== undefined || deltaState.isCharging !== undefined) {
+                                updateBatteryStatusDisplay(state.batteryMode, state.streamingAllowed, state.batteryLevel, state.isCharging);
                             }
                             
                             // Update flashlight button state
