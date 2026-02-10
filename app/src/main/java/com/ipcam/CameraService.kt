@@ -1023,15 +1023,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Check if flash is available for back camera
             checkFlashAvailability()
             
-            // Restore flashlight state if enabled for back camera
-            // Use post-delayed to ensure camera is fully initialized
-            if (isFlashlightOn && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA && hasFlashUnit) {
-                // Delay torch enable to ensure camera control is ready
-                // Using Handler instead of Thread.sleep to avoid blocking
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    enableTorch(true)
-                }, 200)
-            }
+            // NOTE: Torch restoration is NOT needed - CameraManager.setTorchMode() keeps torch on
+            // independently of camera binding state. Torch stays on across unbind/rebind cycles.
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
             
@@ -1120,9 +1113,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             Log.d(TAG, "Stopping camera...")
             
-            // NOTE: Do NOT disable torch here - torch should be independent of camera lifecycle
-            // The torch will remain on (via CameraManager.setTorchMode) even when camera is unbound
-            // It will be restored when camera is rebound via the existing restoration logic
+            // NOTE: Torch is independent - CameraManager.setTorchMode() keeps torch on
+            // even when camera is unbound. No need to disable/restore torch here.
             
             // Stop H.264 encoder first
             h264Encoder?.stop()
@@ -1928,8 +1920,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
-     * Enable or disable the camera torch/flashlight using CameraManager
-     * This method does NOT require the camera to be bound via CameraX
+     * Enable or disable the camera torch using CameraManager
+     * This is INDEPENDENT of camera binding - torch stays on even when camera unbinds
+     * 
+     * Uses CameraManager.setTorchMode() which controls torch at the hardware level
+     * without requiring camera to be bound via CameraX
      */
     private fun enableTorch(enable: Boolean) {
         try {
@@ -1938,8 +1933,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return
             }
             
-            // Use CameraManager to control torch without binding camera
-            // This is more efficient than binding the full camera just for flashlight
+            // Use CameraManager to control torch independently of camera binding
             val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
             
             // Find the camera ID for the current camera (back or front)
@@ -1955,14 +1949,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 ?.cameraId
             
             if (cameraId != null) {
-                // Use CameraManager.setTorchMode() - works without binding camera
+                // Use CameraManager.setTorchMode() - works independently of camera binding
+                // This will keep torch on even when camera is unbound/rebound
                 cameraManager.setTorchMode(cameraId, enable)
-                Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"} for camera $cameraId via CameraManager")
+                Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"} for camera $cameraId via CameraManager (independent)")
             } else {
-                Log.w(TAG, "Could not find camera ID for flashlight control")
-                
-                // Fallback: If we have a bound camera, use CameraX control
-                camera?.cameraControl?.enableTorch(enable)
+                Log.w(TAG, "Could not find camera ID for torch control")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error controlling torch", e)
