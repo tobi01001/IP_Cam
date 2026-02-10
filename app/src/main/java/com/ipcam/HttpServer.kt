@@ -1471,35 +1471,60 @@ class HttpServer(
      * This endpoint initiates the complete update flow in the background:
      * 1. Checks GitHub API for latest release
      * 2. Downloads APK if update is available
-     * 3. Triggers Android package installer (requires user confirmation)
+     * 3. Installs update automatically based on Device Owner status:
+     *    - If Device Owner: Silent installation (no user interaction)
+     *    - If not: Standard Android installer (requires user confirmation)
      * 
      * The update process runs asynchronously, so this endpoint returns immediately.
      * The actual download and installation happen in the background.
      * 
-     * User will see Android's installation prompt when the download completes.
+     * For Device Owner mode:
+     * - Installation happens silently in the background
+     * - App will restart automatically after successful installation
+     * - No device interaction required
+     * 
+     * For non-Device Owner mode:
+     * - User will see Android's installation prompt when download completes
+     * - User must tap "Install" to proceed
      * 
      * Response:
      * {
      *   "status": "ok",
-     *   "message": "Update check initiated. If update is available, installation will be prompted."
+     *   "message": "Update check initiated...",
+     *   "deviceOwner": true/false,
+     *   "silentInstall": true/false
      * }
      */
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveTriggerUpdate() {
         try {
             val updateManager = UpdateManager(this@HttpServer.context)
             
+            // Check if Device Owner for response info
+            val dpm = this@HttpServer.context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
+            val isDeviceOwner = dpm?.isDeviceOwnerApp(this@HttpServer.context.packageName) ?: false
+            
             // Launch update in scoped coroutine
             serverScope.launch {
                 val success = updateManager.performUpdate()
                 if (success) {
-                    Log.i(TAG, "Update triggered successfully")
+                    if (isDeviceOwner) {
+                        Log.i(TAG, "Silent update triggered successfully (Device Owner mode)")
+                    } else {
+                        Log.i(TAG, "Update triggered - user confirmation required")
+                    }
                 } else {
                     Log.i(TAG, "No update available or update failed")
                 }
             }
             
+            val message = if (isDeviceOwner) {
+                "Update check initiated. If update is available, it will be installed silently in the background (Device Owner mode)."
+            } else {
+                "Update check initiated. If update is available, installation prompt will be shown (user confirmation required)."
+            }
+            
             call.respondText(
-                """{"status":"ok","message":"Update check initiated. If update is available, installation will be prompted."}""",
+                """{"status":"ok","message":"$message","deviceOwner":$isDeviceOwner,"silentInstall":$isDeviceOwner}""",
                 ContentType.Application.Json
             )
         } catch (e: Exception) {
