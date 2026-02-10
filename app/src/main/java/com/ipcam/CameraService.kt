@@ -1120,6 +1120,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             Log.d(TAG, "Stopping camera...")
             
+            // Disable torch if it's on before stopping camera
+            if (isFlashlightOn) {
+                Log.d(TAG, "Disabling torch before stopping camera")
+                enableTorch(false)
+            }
+            
             // Stop H.264 encoder first
             h264Encoder?.stop()
             h264Encoder = null
@@ -1814,6 +1820,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Turn off flashlight when switching cameras
         if (isFlashlightOn) {
             isFlashlightOn = false
+            enableTorch(false)  // Actually disable the torch hardware
             saveSettings()
         }
         
@@ -2810,6 +2817,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Clear all MainActivity callbacks immediately to prevent memory leaks
         // This breaks the reference cycle between Service and Activity
         clearCallbacks()
+        
+        // Disable torch if it's on before destroying service
+        if (isFlashlightOn) {
+            Log.d(TAG, "Disabling torch before destroying service")
+            enableTorch(false)
+        }
         
         unregisterNetworkReceiver()
         orientationEventListener?.disable()
