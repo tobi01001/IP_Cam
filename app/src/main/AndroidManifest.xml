@@ -81,6 +81,15 @@
             </intent-filter>
         </receiver>
 
+        <!-- Silent update installation result receiver (Device Owner mode) -->
+        <receiver
+            android:name=".UpdateManager$InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.ipcam.INSTALL_COMPLETE" />
+            </intent-filter>
+        </receiver>
+
         <!-- FileProvider for secure APK file sharing during updates -->
         <provider
             android:name="androidx.core.content.FileProvider"

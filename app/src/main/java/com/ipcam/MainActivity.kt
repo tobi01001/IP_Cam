@@ -1927,34 +1927,111 @@ class MainActivity : AppCompatActivity() {
     
     /**
      * Reboot the device (requires Device Owner mode)
+     * Uses enhanced RebootHelper with multiple fallback methods and diagnostics
      */
     private fun rebootDevice() {
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val isDeviceOwner = dpm.isDeviceOwnerApp(packageName)
+        // Run diagnostics first
+        val diagnostics = RebootHelper.diagnoseRebootCapability(this)
         
-        if (!isDeviceOwner) {
+        if (!diagnostics.isDeviceOwner) {
+            val message = if (diagnostics.isDeviceAdmin) {
+                "Device reboot requires Device Owner mode.\n\n" +
+                "This app is currently Device Admin (not Device Owner).\n\n" +
+                "Device Admin can lock screen and wipe data, but cannot reboot.\n" +
+                "Device Owner has additional privileges including reboot capability.\n\n" +
+                "To set as Device Owner:\n" +
+                "1. Factory reset device (or use fresh device)\n" +
+                "2. Install IP_Cam APK\n" +
+                "3. Run: adb shell dpm set-device-owner com.ipcam/.DeviceAdminReceiver"
+            } else {
+                "Device reboot requires Device Owner mode.\n\n" +
+                "This app is not currently set as Device Owner or Device Admin.\n\n" +
+                "See documentation for setup instructions."
+            }
+            
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Device Owner Required")
-                .setMessage("Device reboot requires Device Owner mode. This app is not currently set as Device Owner.")
+                .setMessage(message)
                 .setPositiveButton("OK", null)
                 .show()
             return
         }
         
+        // Build confirmation message with diagnostic info
+        val confirmMessage = buildString {
+            append("This will completely restart the Android device. All apps will be closed.\n\n")
+            
+            if (diagnostics.isDeviceLocked) {
+                append("⚠️ WARNING: Device is currently locked.\n")
+                append("Reboot may fail on locked devices. Please unlock first.\n\n")
+            }
+            
+            if (diagnostics.deviceManufacturer.equals("samsung", ignoreCase = true)) {
+                append("ℹ️ Samsung device detected")
+                if (diagnostics.knoxVersion != null) {
+                    append(" with Knox ${diagnostics.knoxVersion}")
+                }
+                append(".\n")
+                append("Multiple reboot methods will be tried.\n\n")
+            }
+            
+            append("Continue?")
+        }
+        
         androidx.appcompat.app.AlertDialog.Builder(this)
             .setTitle("Reboot Device")
-            .setMessage("This will completely restart the Android device. All apps will be closed. Continue?")
+            .setMessage(confirmMessage)
             .setPositiveButton("Reboot") { _, _ ->
                 try {
-                    Toast.makeText(this, "Rebooting device...", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Attempting device reboot...", Toast.LENGTH_SHORT).show()
                     Log.i(TAG, "Device reboot triggered from MainActivity")
                     
-                    // Reboot using Device Policy Manager
-                    val adminComponent = ComponentName(this, DeviceAdminReceiver::class.java)
-                    dpm.reboot(adminComponent)
+                    // Use RebootHelper with multiple fallback methods
+                    val result = RebootHelper.rebootDevice(this)
+                    
+                    // Handle result (though device may reboot before we can show this)
+                    when (result) {
+                        is RebootResult.Success -> {
+                            Toast.makeText(this, "Reboot initiated successfully", Toast.LENGTH_SHORT).show()
+                        }
+                        is RebootResult.NotDeviceOwner -> {
+                            Toast.makeText(this, "Error: Not Device Owner", Toast.LENGTH_LONG).show()
+                        }
+                        is RebootResult.DeviceLocked -> {
+                            Toast.makeText(this, "Error: Device is locked. Unlock and try again.", Toast.LENGTH_LONG).show()
+                        }
+                        is RebootResult.SecurityException -> {
+                            Toast.makeText(this, "Error: ${result.message}", Toast.LENGTH_LONG).show()
+                        }
+                        is RebootResult.AllMethodsFailed -> {
+                            val errorMsg = "All reboot methods failed.\n" +
+                                "Device Owner: ${diagnostics.isDeviceOwner}\n" +
+                                "Device Locked: ${diagnostics.isDeviceLocked}\n" +
+                                "Check logcat for details."
+                            Toast.makeText(this, errorMsg, Toast.LENGTH_LONG).show()
+                            
+                            // Show detailed error dialog
+                            androidx.appcompat.app.AlertDialog.Builder(this)
+                                .setTitle("Reboot Failed")
+                                .setMessage(
+                                    "All reboot methods failed:\n\n" +
+                                    "Device: ${diagnostics.deviceManufacturer} ${diagnostics.deviceModel}\n" +
+                                    "Android: ${diagnostics.androidVersionName}\n" +
+                                    "Device Owner: ${diagnostics.isDeviceOwner}\n" +
+                                    "Device Locked: ${diagnostics.isDeviceLocked}\n\n" +
+                                    "Possible causes:\n" +
+                                    "- Device is locked (unlock required)\n" +
+                                    "- Samsung Knox restrictions\n" +
+                                    "- SELinux policy denial\n\n" +
+                                    "See logcat for detailed diagnostics."
+                                )
+                                .setPositiveButton("OK", null)
+                                .show()
+                        }
+                    }
                 } catch (e: Exception) {
-                    Toast.makeText(this, "Error rebooting device: ${e.message}", Toast.LENGTH_LONG).show()
-                    Log.e(TAG, "Error rebooting device", e)
+                    Toast.makeText(this, "Error initiating reboot: ${e.message}", Toast.LENGTH_LONG).show()
+                    Log.e(TAG, "Error initiating reboot", e)
                 }
             }
             .setNegativeButton("Cancel", null)

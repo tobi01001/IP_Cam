@@ -481,6 +481,71 @@
                                 showAlert('Reboot command sent. Device should be restarting...', 'info');
                             });
                     }
+                    
+                    function showCameraDiagnostics() {
+                        showAlert('Loading camera diagnostics...', 'info');
+                        
+                        fetch('/diagnostics/camera')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    const diag = `Camera Diagnostics:
+                                    
+State: ${data.cameraState}
+Consumers: ${data.consumerCount}
+Has Provider: ${data.hasProvider}
+Last Frame Size: ${data.lastFrameSizeBytes} bytes
+Current FPS: ${data.currentFps.toFixed(1)}
+Permission: ${data.permissionGranted ? 'Granted' : 'DENIED'}
+MJPEG Clients: ${data.mjpegClients}
+RTSP Clients: ${data.rtspClients}
+RTSP Enabled: ${data.rtspEnabled}
+Server URL: ${data.serverUrl}
+Device Name: ${data.deviceName}`;
+                                    
+                                    alert(diag);
+                                } else {
+                                    showAlert('Failed to get diagnostics: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('Error fetching diagnostics: ' + error, 'danger');
+                            });
+                    }
+                    
+                    function showRebootDiagnostics() {
+                        showAlert('Loading reboot diagnostics...', 'info');
+                        
+                        fetch('/diagnostics/reboot')
+                            .then(response => response.json())
+                            .then(data => {
+                                if (data.status === 'ok') {
+                                    const diag = data.diagnostics;
+                                    const diagText = `Reboot Capability Diagnostics:
+                                    
+Device Owner: ${diag.isDeviceOwner ? 'YES ✓' : 'NO ✗'}
+Device Admin: ${diag.isDeviceAdmin ? 'YES' : 'NO'}
+Device Locked: ${diag.isDeviceLocked ? 'YES (unlock required)' : 'NO ✓'}
+Manufacturer: ${diag.deviceManufacturer}
+Model: ${diag.deviceModel}
+Android: ${diag.androidVersionName} (API ${diag.androidVersion})
+SELinux: ${diag.selinuxStatus}
+Knox: ${diag.knoxVersion || 'Not present'}
+
+Reboot Possible: ${diag.rebootPossible ? 'YES ✓' : 'NO ✗'}
+${diag.blockingReason ? 'Reason: ' + diag.blockingReason : ''}
+
+${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method fails.' : 'Device Owner mode required for reboot.'}`;
+                                    
+                                    alert(diagText);
+                                } else {
+                                    showAlert('Failed to get diagnostics: ' + data.message, 'danger');
+                                }
+                            })
+                            .catch(error => {
+                                showAlert('Error fetching diagnostics: ' + error, 'danger');
+                            });
+                    }
 
                     function toggleFullscreen() {
                         const container = document.getElementById('streamContainer');

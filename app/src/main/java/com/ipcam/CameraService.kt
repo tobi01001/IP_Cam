@@ -1178,54 +1178,120 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     /**
      * Full camera service reset - stronger than requestBindCamera.
-     * This performs a complete teardown and restart of the camera pipeline:
-     * 1. Stops camera completely
-     * 2. Clears camera provider
-     * 3. Resets all state variables
-     * 4. Reinitializes camera from scratch
+     * This performs a DEEP teardown and restart of the camera pipeline:
+     * 1. Stops camera completely (clears use cases, unbinds camera)
+     * 2. Clears ALL camera-related objects and state variables
+     * 3. Cancels pending operations and jobs
+     * 4. Forces complete reacquisition of ProcessCameraProvider
+     * 5. Reinitializes camera from scratch
      * 
      * Use this for recovery from frozen/broken camera states that don't respond
-     * to normal rebinding.
+     * to normal rebinding. This is the most thorough reset possible without
+     * restarting the entire service.
      * 
      * @return true if reset was initiated successfully
      */
     override fun fullCameraReset(): Boolean {
-        Log.w(TAG, "fullCameraReset() - Performing complete camera service reset...")
+        Log.w(TAG, "fullCameraReset() - Performing DEEP camera service reset...")
+        Log.i(TAG, "Pre-reset state: camera=$camera, provider=$cameraProvider, imageAnalysis=$imageAnalysis, state=$cameraState")
         
         return try {
-            // Stop camera first
+            // Cancel any pending bind operations
+            pendingBindJob?.cancel()
+            pendingBindJob = null
+            
+            // Stop camera first (clears H.264 encoder, analyzer, unbinds all)
             stopCamera()
             
-            // Clear camera provider to force complete reinitialization
+            // Wait for stopCamera to complete (unbindAll is posted to main thread)
+            Thread.sleep(300)
+            
+            // DEEP CLEAR: Explicitly null out ALL camera-related objects
+            // This ensures no stale references remain that could cause issues
+            
+            // Clear ImageAnalysis use case
+            imageAnalysis?.clearAnalyzer()
+            imageAnalysis = null
+            Log.d(TAG, "ImageAnalysis cleared")
+            
+            // Clear H.264 encoder and video use case (should already be cleared by stopCamera)
+            h264Encoder?.stop()
+            h264Encoder = null
+            videoCaptureUseCase = null
+            
+            // Clear camera reference
+            camera = null
+            
+            // Clear frame data
+            lastProcessedFrame.set(null)
+            
+            // Reset binding state flags to prevent stale state
+            synchronized(bindingLock) {
+                isBindingInProgress = false
+                hasPendingRebind = false
+                lastBindRequestTime = 0
+            }
+            
+            // Clear camera provider completely to force reacquisition
+            // This ensures we get a fresh provider instance, not a cached one
+            val oldProvider = cameraProvider
             cameraProvider = null
+            
+            // Explicitly shutdown the old provider if it exists
+            if (oldProvider != null) {
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try {
+                        oldProvider.unbindAll()
+                        Log.d(TAG, "Old camera provider explicitly unbound")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error unbinding old provider (this is okay)", e)
+                    }
+                }
+            }
+            
+            Log.d(TAG, "Camera provider cleared - will be reacquired on next start")
             
             // Reset watchdog state
             lastWatchdogFrameTimestamp = 0L
             frozenFrameDetectionCount = 0
             watchdogRetryDelay = WATCHDOG_RETRY_DELAY_MS
             
-            // Reset state to IDLE
-            synchronized(cameraStateLock) {
-                cameraState = CameraState.IDLE
+            // Reset FPS tracking
+            currentCameraFps = 0f
+            synchronized(fpsFrameTimes) {
+                fpsFrameTimes.clear()
             }
             
-            // Give system time to release resources
-            // Note: Thread.sleep() is used here instead of delay() because this function
-            // is part of an interface and may be called from non-coroutine contexts
-            Thread.sleep(500)
+            // Reset MJPEG throttling timestamp
+            lastMjpegFrameProcessedTimeMs = 0
+            
+            // Reset state to IDLE (force it even if in ERROR)
+            synchronized(cameraStateLock) {
+                cameraState = CameraState.IDLE
+                Log.d(TAG, "Camera state forced to IDLE")
+            }
+            
+            // Give system MORE time to fully release all camera resources
+            // This is critical for deep reset - ensures camera HAL is fully released
+            Log.d(TAG, "Waiting for camera resources to be fully released...")
+            Thread.sleep(800)
+            
+            Log.i(TAG, "Deep reset complete. Objects cleared: camera, provider, imageAnalysis, h264Encoder")
             
             // Restart camera if consumers are waiting
             if (hasConsumers()) {
                 Log.i(TAG, "fullCameraReset() - Restarting camera for ${getConsumerCount()} consumers")
+                // startCamera() will reacquire ProcessCameraProvider from scratch
                 startCamera()
             } else {
                 Log.i(TAG, "fullCameraReset() - Camera reset complete, no consumers waiting")
             }
             
-            Log.i(TAG, "fullCameraReset() - Reset successful")
+            Log.i(TAG, "fullCameraReset() - Deep reset successful")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "fullCameraReset() - Reset failed", e)
+            Log.e(TAG, "fullCameraReset() - Deep reset failed", e)
+            Log.e(TAG, "Exception type: ${e.javaClass.simpleName}, message: ${e.message}")
             synchronized(cameraStateLock) {
                 cameraState = CameraState.ERROR
             }

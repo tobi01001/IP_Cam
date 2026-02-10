@@ -1,8 +1,15 @@
 package com.ipcam
 
+import android.app.PendingIntent
+import android.app.admin.DevicePolicyManager
+import android.content.BroadcastReceiver
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageInstaller
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
@@ -22,18 +29,23 @@ import java.net.URL
  * 1. Check GitHub API for latest release
  * 2. Compare latest version with current BUILD_NUMBER
  * 3. Download APK if update is available
- * 4. Trigger Android's package installer (requires user confirmation)
+ * 4. Trigger installation:
+ *    - If Device Owner: Silent installation (no user confirmation)
+ *    - If not: Standard Android installer (requires user confirmation)
  * 
  * Architecture:
  * - Uses GitHub Releases API (no authentication required for public repos)
  * - Downloads APK to app's external files directory
- * - Uses FileProvider for secure file access during installation
+ * - Detects Device Owner mode automatically
+ * - Uses PackageInstaller API for silent installs (Device Owner)
+ * - Falls back to FileProvider for standard installs
  * - All network operations run on IO dispatcher
  * 
  * Security:
  * - Android verifies APK signature matches installed app
  * - Only APKs signed with same keystore can update the app
- * - User must explicitly confirm each installation (Android requirement)
+ * - Device Owner mode required for silent installation
+ * - User must explicitly confirm installation in non-Device Owner mode
  * 
  * @param context Application context for file operations and starting intents
  */
@@ -48,6 +60,9 @@ class UpdateManager(private val context: Context) {
             ignoreUnknownKeys = true
             isLenient = true
         }
+        
+        // Intent action for installation result broadcast
+        private const val ACTION_INSTALL_COMPLETE = "com.ipcam.INSTALL_COMPLETE"
     }
     
     /**
@@ -80,6 +95,22 @@ class UpdateManager(private val context: Context) {
         val releaseNotes: String,
         val isUpdateAvailable: Boolean
     )
+    
+    /**
+     * Check if app is running as Device Owner.
+     * Device Owner mode enables silent installations without user confirmation.
+     * 
+     * @return true if app is Device Owner, false otherwise
+     */
+    private fun isDeviceOwner(): Boolean {
+        return try {
+            val dpm = context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager
+            dpm?.isDeviceOwnerApp(context.packageName) ?: false
+        } catch (e: Exception) {
+            Log.e(TAG, "Error checking Device Owner status", e)
+            false
+        }
+    }
     
     /**
      * Check if an update is available by querying GitHub Releases API.
@@ -199,7 +230,82 @@ class UpdateManager(private val context: Context) {
     }
     
     /**
-     * Trigger installation using Android's package installer.
+     * Install APK silently using PackageInstaller API (Device Owner mode).
+     * 
+     * This method uses Android's PackageInstaller API to install updates without
+     * user confirmation. This only works when the app is set as Device Owner.
+     * 
+     * Process:
+     * 1. Creates a PackageInstaller session
+     * 2. Writes APK content to the session
+     * 3. Commits the session (triggers installation)
+     * 4. Installation happens silently in the background
+     * 5. App will restart automatically after installation
+     * 
+     * @param apkFile The APK file to install
+     * @return true if installation was triggered successfully, false otherwise
+     */
+    private fun installAPKSilently(apkFile: File): Boolean {
+        return try {
+            Log.i(TAG, "Installing APK silently (Device Owner mode)")
+            
+            val packageInstaller = context.packageManager.packageInstaller
+            
+            // Create session parameters
+            val params = PackageInstaller.SessionParams(
+                PackageInstaller.SessionParams.MODE_FULL_INSTALL
+            )
+            
+            // Require user action is not needed for Device Owner
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            }
+            
+            // Create installation session
+            val sessionId = packageInstaller.createSession(params)
+            val session = packageInstaller.openSession(sessionId)
+            
+            try {
+                // Write APK content to session
+                apkFile.inputStream().use { input ->
+                    session.openWrite("package", 0, -1).use { output ->
+                        input.copyTo(output)
+                        session.fsync(output)
+                    }
+                }
+                
+                // Create pending intent for installation result
+                val intent = Intent(context, InstallResultReceiver::class.java).apply {
+                    action = ACTION_INSTALL_COMPLETE
+                }
+                
+                val pendingIntent = PendingIntent.getBroadcast(
+                    context,
+                    sessionId,
+                    intent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
+                )
+                
+                // Commit the session (triggers installation)
+                session.commit(pendingIntent.intentSender)
+                session.close()
+                
+                Log.i(TAG, "Silent installation session committed successfully")
+                return true
+                
+            } catch (e: Exception) {
+                session.abandon()
+                throw e
+            }
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error installing APK silently", e)
+            false
+        }
+    }
+    
+    /**
+     * Install APK using standard Android installer (requires user confirmation).
      * 
      * This method:
      * 1. Creates a content URI using FileProvider for secure access
@@ -212,8 +318,10 @@ class UpdateManager(private val context: Context) {
      * 
      * @param apkFile The APK file to install
      */
-    fun installAPK(apkFile: File) {
+    private fun installAPKWithUserConfirmation(apkFile: File) {
         try {
+            Log.i(TAG, "Installing APK with user confirmation")
+            
             val apkUri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.fileprovider",
@@ -226,9 +334,39 @@ class UpdateManager(private val context: Context) {
             }
             
             context.startActivity(intent)
-            Log.i(TAG, "Installation intent sent")
+            Log.i(TAG, "Installation intent sent - user confirmation required")
         } catch (e: Exception) {
             Log.e(TAG, "Error installing APK", e)
+        }
+    }
+    
+    /**
+     * Install APK automatically detecting best method.
+     * 
+     * This method automatically chooses the appropriate installation method:
+     * - If Device Owner: Silent installation (no user interaction)
+     * - If not: Standard installation (requires user confirmation)
+     * 
+     * @param apkFile The APK file to install
+     * @return true if installation was triggered successfully, false otherwise
+     */
+    fun installAPK(apkFile: File): Boolean {
+        val isDeviceOwner = isDeviceOwner()
+        
+        if (isDeviceOwner) {
+            Log.i(TAG, "Device Owner mode detected - attempting silent installation")
+            val success = installAPKSilently(apkFile)
+            if (success) {
+                return true
+            } else {
+                Log.w(TAG, "Silent installation failed, falling back to user confirmation")
+                installAPKWithUserConfirmation(apkFile)
+                return false
+            }
+        } else {
+            Log.i(TAG, "Not Device Owner - using standard installation (user confirmation required)")
+            installAPKWithUserConfirmation(apkFile)
+            return false
         }
     }
     
@@ -237,6 +375,10 @@ class UpdateManager(private val context: Context) {
      * 
      * This is a convenience method that chains all update operations.
      * Use individual methods for more granular control.
+     * 
+     * Installation method is automatically chosen based on Device Owner status:
+     * - Device Owner: Silent installation (no user interaction)
+     * - Non-Device Owner: User must confirm installation
      * 
      * @return true if update was triggered successfully, false otherwise
      */
@@ -260,7 +402,52 @@ class UpdateManager(private val context: Context) {
             return false
         }
         
-        installAPK(apkFile)
-        return true
+        return installAPK(apkFile)
+    }
+    
+    /**
+     * BroadcastReceiver to handle installation results for silent installations.
+     * 
+     * This receiver is triggered after a silent installation completes (Device Owner mode).
+     * It logs the installation result and can be extended to handle errors or notifications.
+     */
+    class InstallResultReceiver : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -1)) {
+                PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                    Log.i(TAG, "Installation pending user action (shouldn't happen in Device Owner mode)")
+                    
+                    // This shouldn't happen in Device Owner mode, but handle it anyway
+                    val confirmIntent = intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT)
+                    if (confirmIntent != null) {
+                        confirmIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        try {
+                            context.startActivity(confirmIntent)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error starting confirmation intent", e)
+                        }
+                    }
+                }
+                
+                PackageInstaller.STATUS_SUCCESS -> {
+                    Log.i(TAG, "Silent installation successful! App will restart.")
+                }
+                
+                PackageInstaller.STATUS_FAILURE,
+                PackageInstaller.STATUS_FAILURE_ABORTED,
+                PackageInstaller.STATUS_FAILURE_BLOCKED,
+                PackageInstaller.STATUS_FAILURE_CONFLICT,
+                PackageInstaller.STATUS_FAILURE_INCOMPATIBLE,
+                PackageInstaller.STATUS_FAILURE_INVALID,
+                PackageInstaller.STATUS_FAILURE_STORAGE -> {
+                    val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
+                    Log.e(TAG, "Silent installation failed with status $status: $msg")
+                }
+                
+                else -> {
+                    Log.w(TAG, "Unknown installation status: $status")
+                }
+            }
+        }
     }
 }
