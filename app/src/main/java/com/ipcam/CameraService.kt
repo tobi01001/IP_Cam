@@ -3389,9 +3389,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        // Update CPU usage before sending state
-        updateCpuUsage()
-        
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
@@ -3406,8 +3403,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Get RTSP enabled status
         val rtspEnabled = isRTSPEnabled()
         
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
+        
         // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$currentCpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()},"batteryLevel":$batteryLevel,"isCharging":$isCharging,"bandwidthBps":$bandwidthBps,"rtspEnabled":$rtspEnabled}"""
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$cpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()},"batteryLevel":$batteryLevel,"isCharging":$isCharging,"bandwidthBps":$bandwidthBps,"rtspEnabled":$rtspEnabled}"""
     }
     
     /**
@@ -3419,9 +3419,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        // Update CPU usage before comparing state
-        updateCpuUsage()
-        
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
@@ -3435,6 +3432,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Get RTSP enabled status
         val rtspEnabled = isRTSPEnabled()
+        
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
         
         // Build map of current values
         val currentState = mapOf<String, Any>(
@@ -3449,7 +3449,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "currentCameraFps" to currentCameraFps,
             "currentMjpegFps" to currentMjpegFps,
             "currentRtspFps" to rtspEncodedFps,
-            "cpuUsage" to currentCpuUsage,
+            "cpuUsage" to cpuUsage,
             "targetMjpegFps" to targetMjpegFps,
             "targetRtspFps" to targetRtspFps,
             "adaptiveQualityEnabled" to adaptiveQualityEnabled,
@@ -3510,6 +3510,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Get RTSP encoder output FPS (actual encoded frames/sec)
         val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
         
+        // Get CPU usage from PerformanceMetrics (accurate calculation)
+        val cpuUsage = getCpuUsagePercent().toFloat()
+        
         synchronized(broadcastLock) {
             lastBroadcastState.clear()
             lastBroadcastState["camera"] = cameraName
@@ -3523,7 +3526,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastBroadcastState["currentCameraFps"] = currentCameraFps
             lastBroadcastState["currentMjpegFps"] = currentMjpegFps
             lastBroadcastState["currentRtspFps"] = rtspEncodedFps
-            lastBroadcastState["cpuUsage"] = currentCpuUsage
+            lastBroadcastState["cpuUsage"] = cpuUsage
             lastBroadcastState["targetMjpegFps"] = targetMjpegFps
             lastBroadcastState["targetRtspFps"] = targetRtspFps
             lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled
