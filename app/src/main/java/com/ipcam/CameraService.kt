@@ -497,6 +497,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // This queries hardware capabilities once and caches them for the service lifetime
         initializeCameraCharacteristicsCache()
         
+        // Check flash availability early so torch button is available on first page load
+        // This uses the cached characteristics to determine if current camera has flash
+        checkFlashAvailability()
+        Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
+        
         // Initialize bandwidth optimization components
         bandwidthMonitor = BandwidthMonitor()
         performanceMetrics = PerformanceMetrics(this)
@@ -1121,10 +1126,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             Log.d(TAG, "Stopping camera...")
             
-            // NOTE: Torch state is preserved in isFlashlightOn variable
-            // When camera unbinds, torch turns off automatically (CameraControl behavior)
-            // When camera rebinds, torch is restored from isFlashlightOn state
-            // No action needed here - state management happens at bind time
+            // TORCH INDEPENDENCE: Keep torch on after camera unbinds
+            // When camera unbinds via CameraControl, torch turns off automatically
+            // We need to re-enable it via CameraManager to maintain independence
+            val shouldMaintainTorch = isFlashlightOn && hasFlashUnit && currentCamera == CameraSelector.DEFAULT_BACK_CAMERA
             
             // Stop H.264 encoder first
             h264Encoder?.stop()
@@ -1139,6 +1144,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 try {
                     cameraProvider?.unbindAll()
                     Log.d(TAG, "Camera unbound from lifecycle")
+                    
+                    // Re-enable torch via CameraManager after camera unbinds (if it was on)
+                    // CameraControl.enableTorch() is no longer available after unbind
+                    // Use CameraManager.setTorchMode() to maintain torch independence
+                    if (shouldMaintainTorch) {
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            Log.d(TAG, "Re-enabling torch after camera unbind to maintain independence")
+                            enableTorch(true)
+                        }, 200) // Short delay to ensure unbind is complete
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error unbinding camera", e)
                 }
