@@ -158,6 +158,11 @@ class HttpServer(
                 
                 // Camera recovery endpoints
                 get("/resetCamera") { serveResetCamera() }
+                
+                // Diagnostic endpoints
+                get("/diagnostics/camera") { serveCameraDiagnostics() }
+                get("/diagnostics/reboot") { serveRebootDiagnostics() }
+                
                 // Auto update endpoints
                 get("/checkUpdate") { serveCheckUpdate() }
                 get("/triggerUpdate") { serveTriggerUpdate() }
@@ -1509,38 +1514,128 @@ class HttpServer(
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveReboot() {
         try {
-            // Check if app is Device Owner
-            val dpm = this@HttpServer.context.getSystemService(Context.DEVICE_POLICY_SERVICE) as? android.app.admin.DevicePolicyManager
-            val isDeviceOwner = dpm?.isDeviceOwnerApp(this@HttpServer.context.packageName) ?: false
-            
-            if (!isDeviceOwner) {
-                Log.w(TAG, "Reboot requested but app is not Device Owner")
-                call.respondText(
-                    """{"status":"error","message":"Reboot requires Device Owner mode. Current app is not Device Owner.","deviceOwner":false}""",
-                    ContentType.Application.Json,
-                    HttpStatusCode.Forbidden
-                )
-                return
-            }
-            
             Log.i(TAG, "Remote reboot requested via HTTP API")
             
-            // Respond first before rebooting
-            call.respondText(
-                """{"status":"ok","message":"Device rebooting...","deviceOwner":true}""",
-                ContentType.Application.Json
-            )
+            // Use RebootHelper for comprehensive diagnostics and multiple fallback methods
+            val result = RebootHelper.rebootDevice(this@HttpServer.context)
             
-            // Launch reboot in background with slight delay to ensure response is sent
-            serverScope.launch {
-                delay(500) // Give time for HTTP response to be sent
-                DeviceAdminReceiver.rebootDevice(this@HttpServer.context)
+            when (result) {
+                is RebootResult.Success -> {
+                    // Respond before device reboots
+                    call.respondText(
+                        result.toJson(),
+                        ContentType.Application.Json
+                    )
+                }
+                is RebootResult.NotDeviceOwner -> {
+                    Log.w(TAG, "Reboot failed: Not Device Owner")
+                    call.respondText(
+                        result.toJson(),
+                        ContentType.Application.Json,
+                        HttpStatusCode.Forbidden
+                    )
+                }
+                is RebootResult.DeviceLocked -> {
+                    Log.w(TAG, "Reboot failed: Device is locked")
+                    call.respondText(
+                        result.toJson(),
+                        ContentType.Application.Json,
+                        HttpStatusCode.BadRequest
+                    )
+                }
+                is RebootResult.SecurityException -> {
+                    Log.e(TAG, "Reboot failed: ${result.message}")
+                    call.respondText(
+                        result.toJson(),
+                        ContentType.Application.Json,
+                        HttpStatusCode.Forbidden
+                    )
+                }
+                is RebootResult.AllMethodsFailed -> {
+                    Log.e(TAG, "All reboot methods failed")
+                    call.respondText(
+                        result.toJson(),
+                        ContentType.Application.Json,
+                        HttpStatusCode.InternalServerError
+                    )
+                }
             }
             
         } catch (e: Exception) {
             Log.e(TAG, "Error processing reboot request", e)
             call.respondText(
                 """{"status":"error","message":"Error processing reboot request: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Diagnostic endpoint for camera status
+     * Returns detailed information about camera health and state
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCameraDiagnostics() {
+        try {
+            val cameraState = cameraService.getCameraStateString()
+            val consumerCount = cameraService.getTotalCameraClientCount()
+            val lastFrameBytes = cameraService.getLastFrameJpegBytes()
+            val currentFps = cameraService.getCurrentFps()
+            
+            // Check camera permission
+            val permissionGranted = context.checkSelfPermission(android.Manifest.permission.CAMERA) == 
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+            
+            // Create diagnostics JSON
+            val diagnostics = """
+                {
+                    "status": "ok",
+                    "cameraState": "$cameraState",
+                    "consumerCount": $consumerCount,
+                    "hasLastFrame": ${lastFrameBytes != null},
+                    "lastFrameSizeBytes": ${lastFrameBytes?.size ?: 0},
+                    "currentFps": $currentFps,
+                    "permissionGranted": $permissionGranted,
+                    "mjpegClients": ${cameraService.getMjpegClientCount()},
+                    "rtspClients": ${cameraService.getRtspClientCount()},
+                    "rtspEnabled": ${cameraService.isRTSPEnabled()},
+                    "serverUrl": "${cameraService.getServerUrl()}",
+                    "deviceName": "${cameraService.getDeviceName()}"
+                }
+            """.trimIndent()
+            
+            call.respondText(
+                diagnostics,
+                ContentType.Application.Json
+            )
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating camera diagnostics", e)
+            call.respondText(
+                """{"status":"error","message":"Error generating diagnostics: ${e.message}"}""",
+                ContentType.Application.Json,
+                HttpStatusCode.InternalServerError
+            )
+        }
+    }
+    
+    /**
+     * Diagnostic endpoint for reboot capability
+     * Returns detailed information about device reboot capability and restrictions
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRebootDiagnostics() {
+        try {
+            val diagnostics = RebootHelper.diagnoseRebootCapability(this@HttpServer.context)
+            
+            call.respondText(
+                """{"status":"ok","diagnostics":${diagnostics.toJson()}}""",
+                ContentType.Application.Json
+            )
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error generating reboot diagnostics", e)
+            call.respondText(
+                """{"status":"error","message":"Error generating diagnostics: ${e.message}"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.InternalServerError
             )

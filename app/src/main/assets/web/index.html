@@ -280,16 +280,18 @@
                             <h3>Camera Recovery</h3>
                             <div class="form-row">
                                 <button onclick="resetCamera()" class="danger">Reset Camera</button>
+                                <button onclick="showCameraDiagnostics()" class="secondary">Camera Diagnostics</button>
                             </div>
-                            <div class="alert warning">Use this if camera stream is frozen or broken. Performs a complete camera service reset and restart.</div>
+                            <div class="alert warning">Use Reset Camera if stream is frozen or broken. Check Diagnostics for detailed status.</div>
                         </div>
-                        
+
                         <div class="card">
                             <h3>Device Control</h3>
                             <div class="form-row">
                                 <button onclick="rebootDevice()" class="danger">Reboot Device</button>
+                                <button onclick="showRebootDiagnostics()" class="secondary">Reboot Diagnostics</button>
                             </div>
-                            <div class="alert warning">Reboot the Android device. Requires Device Owner mode. Device will restart completely.</div>
+                            <div class="alert warning">Reboot the Android device. Requires Device Owner mode. Check Diagnostics first to verify capability.</div>
                         </div>
                         
                         <div class="card">
@@ -423,8 +425,16 @@
                                 Performs a complete camera service reset to recover from frozen/broken camera states
                             </div>
                             <div class="endpoint">
+                                <strong>Camera Diagnostics:</strong> <a href="/diagnostics/camera" target="_blank"><code>GET /diagnostics/camera</code></a><br>
+                                Get detailed camera health information and status
+                            </div>
+                            <div class="endpoint">
                                 <strong>Reboot Device:</strong> <a href="/reboot" target="_blank"><code>GET /reboot</code></a><br>
                                 Reboot the Android device (requires Device Owner mode)
+                            </div>
+                            <div class="endpoint">
+                                <strong>Reboot Diagnostics:</strong> <a href="/diagnostics/reboot" target="_blank"><code>GET /diagnostics/reboot</code></a><br>
+                                Check device reboot capability and get diagnostic information
                             </div>
                             <div class="endpoint">
                                 <strong>Set Resolution Overlay:</strong> <code>GET /setResolutionOverlay?value=true|false</code><br>
