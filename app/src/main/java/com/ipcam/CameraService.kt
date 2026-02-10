@@ -1145,6 +1145,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     cameraProvider?.unbindAll()
                     Log.d(TAG, "Camera unbound from lifecycle")
                     
+                    // Clear camera reference AFTER unbind completes
+                    camera = null
+                    
                     // Re-enable torch via CameraManager after camera unbinds (if it was on)
                     // CameraControl.enableTorch() is no longer available after unbind
                     // Use CameraManager.setTorchMode() to maintain torch independence
@@ -1156,11 +1159,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error unbinding camera", e)
+                    // Clear camera reference even on error
+                    camera = null
                 }
             }
-            
-            // Clear camera reference
-            camera = null
             
             // Clear frame data
             lastProcessedFrame.set(null)
