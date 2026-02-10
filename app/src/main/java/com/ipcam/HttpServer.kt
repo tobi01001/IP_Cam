@@ -1583,7 +1583,7 @@ class HttpServer(
             val currentFps = cameraService.getCurrentFps()
             
             // Check camera permission
-            val permissionGranted = context.checkSelfPermission(android.Manifest.permission.CAMERA) == 
+            val permissionGranted = this@HttpServer.context.checkSelfPermission(android.Manifest.permission.CAMERA) == 
                 android.content.pm.PackageManager.PERMISSION_GRANTED
             
             // Create diagnostics JSON
