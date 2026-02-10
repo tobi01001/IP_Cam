@@ -690,8 +690,8 @@
                             if (deltaState.bandwidthBps !== undefined) {
                                 const bandwidthDisplay = document.getElementById('bandwidthDisplay');
                                 if (bandwidthDisplay) {
-                                    // Convert bps to Mbps
-                                    const mbps = (state.bandwidthBps / (1024 * 1024)).toFixed(2);
+                                    // Convert bps to Mbps (decimal: 1 Mbps = 1,000,000 bps)
+                                    const mbps = (state.bandwidthBps / (1000 * 1000)).toFixed(2);
                                     bandwidthDisplay.textContent = mbps;
                                 }
                             }
