@@ -1149,15 +1149,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     // Clear camera reference after unbind completes (or fails)
                     // This ensures enableTorch() will use CameraManager path
                     camera = null
+                    Log.d(TAG, "Camera reference cleared, shouldMaintainTorch=$shouldMaintainTorch")
                     
                     // Re-enable torch via CameraManager after camera unbinds (if it was on)
                     // CameraControl.enableTorch() is no longer available after unbind
                     // Use CameraManager.setTorchMode() to maintain torch independence
                     if (shouldMaintainTorch) {
+                        // Use longer delay to ensure camera is fully released
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            Log.d(TAG, "Re-enabling torch after camera unbind to maintain independence")
+                            Log.d(TAG, "Re-enabling torch after camera unbind to maintain independence (camera=$camera)")
                             enableTorch(true)
-                        }, 200) // Short delay to ensure unbind is complete
+                        }, 500) // Increased delay to ensure unbind is complete and camera fully released
                     }
                 }
             }
@@ -1965,6 +1967,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      */
     private fun enableTorch(enable: Boolean) {
         try {
+            Log.d(TAG, "enableTorch($enable) called, hasFlashUnit=$hasFlashUnit, camera=${camera != null}")
+            
             if (!hasFlashUnit) {
                 Log.w(TAG, "Cannot enable torch: no flash unit available")
                 return
@@ -1975,6 +1979,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             if (currentCamera != null) {
                 // Camera is bound - MUST use CameraControl.enableTorch()
                 // Android doesn't allow CameraManager.setTorchMode() on an in-use camera
+                Log.d(TAG, "Using CameraControl.enableTorch($enable) - camera is bound")
                 val cameraControl = currentCamera.cameraControl
                 val future = cameraControl.enableTorch(enable)
                 future.addListener({
@@ -1987,6 +1992,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }, ContextCompat.getMainExecutor(this))
             } else {
                 // Camera is NOT bound - use CameraManager for independent control
+                Log.d(TAG, "Using CameraManager.setTorchMode($enable) - camera not bound")
                 val cameraManager = getSystemService(Context.CAMERA_SERVICE) as CameraManager
                 
                 // Find the camera ID for the current camera (back or front)
