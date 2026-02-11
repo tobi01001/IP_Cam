@@ -1028,13 +1028,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Check if flash is available for current camera
             checkFlashAvailability()
             
-            // Restore torch state after camera rebind using camera state callback
-            // When camera is bound, we must use CameraControl which loses state on unbind
-            // So we restore the torch state from our saved isFlashlightOn variable
-            if (isFlashlightOn && hasFlashUnit) {
-                Log.d(TAG, "Torch was on before rebind, will restore after camera opens...")
-                // Note: Torch will be restored when camera state changes to OPEN (see observer below)
-            }
+            // Note: Torch restoration happens automatically via camera state observer
+            // When camera state changes to OPEN, torch is restored if isFlashlightOn=true
+            // See camera state observer below (line ~1067)
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
             
@@ -1836,11 +1832,22 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         saveSettings()
         
-        // Turn off flashlight when switching cameras
+        // TORCH INDEPENDENCE: Only disable torch if new camera doesn't have flash
+        // Check flash availability for new camera first
+        val oldHasFlash = hasFlashUnit
+        checkFlashAvailability() // Updates hasFlashUnit for new camera
+        
         if (isFlashlightOn) {
-            isFlashlightOn = false
-            enableTorch(false)  // Actually disable the torch hardware
-            saveSettings()
+            if (!hasFlashUnit) {
+                // New camera doesn't have flash - disable torch
+                Log.d(TAG, "Switching to camera without flash - disabling torch")
+                isFlashlightOn = false
+                enableTorch(false)
+                saveSettings()
+            } else {
+                // New camera also has flash - torch will be restored via camera state observer
+                Log.d(TAG, "Switching to camera with flash - torch will be restored after camera opens")
+            }
         }
         
         // Broadcast state change to web clients
