@@ -237,6 +237,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var camera: androidx.camera.core.Camera? = null
     @Volatile private var isFlashlightOn: Boolean = false
     @Volatile private var hasFlashUnit: Boolean = false
+    @Volatile private var isTorchOperationInProgress: Boolean = false // Prevent concurrent torch operations
     // Camera binding state management
     @Volatile private var isBindingInProgress: Boolean = false
     private val bindingLock = Any() // Lock for binding synchronization
@@ -1974,12 +1975,19 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 return
             }
             
+            // Prevent concurrent torch operations to avoid OperationCanceledException
+            if (isTorchOperationInProgress) {
+                Log.d(TAG, "Torch operation already in progress, skipping redundant call to enableTorch($enable)")
+                return
+            }
+            
             // Check if camera is currently bound
             val currentCamera = camera
             if (currentCamera != null) {
                 // Camera is bound - MUST use CameraControl.enableTorch()
                 // Android doesn't allow CameraManager.setTorchMode() on an in-use camera
                 Log.d(TAG, "Using CameraControl.enableTorch($enable) - camera is bound")
+                isTorchOperationInProgress = true
                 val cameraControl = currentCamera.cameraControl
                 val future = cameraControl.enableTorch(enable)
                 future.addListener({
@@ -1988,6 +1996,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         Log.d(TAG, "Torch ${if (enable) "enabled" else "disabled"} via CameraControl (camera bound)")
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to ${if (enable) "enable" else "disable"} torch via CameraControl", e)
+                    } finally {
+                        isTorchOperationInProgress = false
                     }
                 }, ContextCompat.getMainExecutor(this))
             } else {
