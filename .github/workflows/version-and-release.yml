@@ -1,0 +1,230 @@
+name: Version Bump and Release
+
+# Trigger on push to main branch (after PR merge)
+# This workflow automatically increments version and then builds/releases APK
+on:
+  push:
+    branches:
+      - main
+    # Skip if commit message contains [skip ci] to prevent infinite loops
+    # Also skip if this is the version bump commit itself
+    paths-ignore:
+      - '.github/workflows/**'
+      - 'docs/**'
+      - '**.md'
+
+jobs:
+  bump-version:
+    # Only run if not triggered by a version bump commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'Auto version bump')"
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  # Required to push changes back to main
+    
+    outputs:
+      new_version: ${{ steps.increment.outputs.new_version }}
+      new_code: ${{ steps.increment.outputs.new_code }}
+      version_changed: ${{ steps.check_changes.outputs.version_changed }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for proper git operations
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Configure Git
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+      
+      - name: Read current version
+        id: read_version
+        run: |
+          # Read version from version.properties
+          VERSION_NAME=$(grep "VERSION_NAME=" version.properties | cut -d'=' -f2)
+          VERSION_CODE=$(grep "VERSION_CODE=" version.properties | cut -d'=' -f2)
+          
+          echo "Current version: $VERSION_NAME (code: $VERSION_CODE)"
+          echo "version_name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version_code=$VERSION_CODE" >> $GITHUB_OUTPUT
+      
+      - name: Increment version
+        id: increment
+        run: |
+          # Parse current version (format: MAJOR.MINOR)
+          CURRENT_VERSION="${{ steps.read_version.outputs.version_name }}"
+          CURRENT_CODE="${{ steps.read_version.outputs.version_code }}"
+          
+          # Split version into major and minor
+          MAJOR=$(echo $CURRENT_VERSION | cut -d'.' -f1)
+          MINOR=$(echo $CURRENT_VERSION | cut -d'.' -f2)
+          
+          # Increment minor version
+          NEW_MINOR=$((MINOR + 1))
+          NEW_VERSION="${MAJOR}.${NEW_MINOR}"
+          
+          # Increment version code
+          NEW_CODE=$((CURRENT_CODE + 1))
+          
+          echo "New version: $NEW_VERSION (code: $NEW_CODE)"
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
+      
+      - name: Update version.properties
+        run: |
+          # Update version.properties file
+          cat > version.properties << EOF
+          # Version information for IP_Cam
+          # This file is automatically updated by GitHub Actions on merge to main
+          # Format: MAJOR.MINOR
+          VERSION_NAME=${{ steps.increment.outputs.new_version }}
+          VERSION_CODE=${{ steps.increment.outputs.new_code }}
+          EOF
+          
+          cat version.properties
+      
+      - name: Check if version changed
+        id: check_changes
+        run: |
+          if git diff --quiet version.properties; then
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            echo "No version changes detected"
+          else
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            echo "Version changes detected"
+          fi
+      
+      - name: Commit and push changes
+        if: steps.check_changes.outputs.version_changed == 'true'
+        run: |
+          git add version.properties
+          git commit -m "Auto version bump to ${{ steps.increment.outputs.new_version }} [skip ci]"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create summary
+        run: |
+          echo "### Version Bump Complete ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Previous Version:** ${{ steps.read_version.outputs.version_name }} (code: ${{ steps.read_version.outputs.version_code }})" >> $GITHUB_STEP_SUMMARY
+          echo "- **New Version:** ${{ steps.increment.outputs.new_version }} (code: ${{ steps.increment.outputs.new_code }})" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.check_changes.outputs.version_changed }}" == "true" ]; then
+            echo "- **Commit:** $(git rev-parse --short HEAD)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status:** No changes needed" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  build-and-release:
+    needs: bump-version
+    # Only run if version was bumped
+    if: needs.bump-version.outputs.version_changed == 'true'
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write  # Required to create releases and upload assets
+    
+    steps:
+      - name: Checkout code with updated version
+        uses: actions/checkout@v4
+        with:
+          ref: main  # Get the latest main branch with version bump
+          fetch-depth: 0
+      
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+      
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+      
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.ALIAS }}
+          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
+      
+      - name: Get version info
+        id: version
+        run: |
+          # Use the version that was just bumped
+          VERSION_NAME="${{ needs.bump-version.outputs.new_version }}"
+          VERSION_CODE="${{ needs.bump-version.outputs.new_code }}"
+          
+          # Extract BUILD_NUMBER from BuildConfig.java (generated during build)
+          BUILD_NUMBER=$(grep -oP 'BUILD_NUMBER\s*=\s*\K\d+' app/build/generated/source/buildConfig/release/com/ipcam/BuildConfig.java 2>/dev/null || echo "$VERSION_CODE")
+          # Remove trailing 'L' if present
+          BUILD_NUMBER="${BUILD_NUMBER%L}"
+          
+          echo "code=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "name=v$VERSION_NAME (Build $BUILD_NUMBER)" >> $GITHUB_OUTPUT
+          echo "tag=v$VERSION_NAME" >> $GITHUB_OUTPUT
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.name }}
+          body: |
+            # IP_Cam ${{ steps.version.outputs.name }}
+            
+            Automated build from commit: ${{ github.sha }}
+            
+            ## Version
+            - **Version Name:** ${{ needs.bump-version.outputs.new_version }}
+            - **Version Code:** ${{ needs.bump-version.outputs.new_code }}
+            
+            ## Commit Message
+            ${{ github.event.head_commit.message }}
+            
+            ## Changes
+            View diff: ${{ github.event.compare }}
+            
+            ## Installation
+            1. Download the APK file below
+            2. Allow installation from unknown sources if prompted
+            3. Install the APK
+            4. Or use the in-app update feature to install automatically
+            
+            ## Features
+            - MJPEG and RTSP streaming
+            - Hardware-accelerated encoding
+            - Adaptive quality management
+            - Battery-aware streaming
+            - OTA updates
+            - Web interface with real-time monitoring
+            
+            ## Endpoints
+            - `/stream` - MJPEG video stream
+            - `/snapshot` - Single frame snapshot
+            - `/status` - Server status (JSON)
+            - `/checkUpdate` - Check for updates
+            - `/triggerUpdate` - Download and install update
+            
+            For more information, see: https://github.com/tobi01001/IP_Cam
+          files: ${{ steps.sign_app.outputs.signedReleaseFile }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Create summary
+        run: |
+          echo "### Release Build Complete ✅" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version:** ${{ steps.version.outputs.name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Tag:** ${{ steps.version.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **APK:** ${{ steps.sign_app.outputs.signedReleaseFile }}" >> $GITHUB_STEP_SUMMARY
