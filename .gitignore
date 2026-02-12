@@ -95,3 +95,5 @@ lint/tmp/
 /.idea/runConfigurations.xml
 /.idea/.gitignore
 /.idea/deviceManager.xml
+/app/release/
+/release.keystore
