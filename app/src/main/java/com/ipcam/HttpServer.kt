@@ -18,6 +18,7 @@ import io.ktor.utils.io.*
 import kotlinx.coroutines.*
 import java.io.ByteArrayOutputStream
 import java.util.Locale
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -63,6 +64,22 @@ class HttpServer(
         val channel: ByteWriteChannel,
         @Volatile var active: Boolean = true
     )
+
+    /**
+     * Represents an active MJPEG stream connection.
+     * Keyed by remote IP in [streamClients] to enable reconnection deduplication:
+     * when a client reconnects from the same IP the old entry is cancelled so the
+     * stale coroutine exits on its next loop iteration.
+     */
+    private data class StreamClient(
+        val id: Long,
+        val remoteAddr: String,
+        val startTime: Long = System.currentTimeMillis(),
+        @Volatile var cancelled: Boolean = false
+    )
+
+    /** Active MJPEG stream clients keyed by remote IP address. */
+    private val streamClients = ConcurrentHashMap<String, StreamClient>()
     
     /**
      * Start the HTTP server on the specified port
@@ -182,6 +199,10 @@ class HttpServer(
     fun stop() {
         server?.stop(1000, 2000)
         server = null
+        
+        // Clean up stream clients
+        streamClients.values.forEach { it.cancelled = true }
+        streamClients.clear()
         
         // Clean up SSE clients
         synchronized(sseClientsLock) {
@@ -485,8 +506,34 @@ class HttpServer(
         }
         
         // Normal streaming logic
+        // Use clientId as fallback key when IP is unavailable, so deduplication is scoped to
+        // known IPs only and never conflates distinct clients with an unresolvable address.
+        val rawIp = call.request.local.remoteAddress
         val clientId = clientIdCounter.incrementAndGet()
-        val isFirstStream = activeStreams.incrementAndGet() == 1
+        val clientIp = rawIp.ifBlank { "unknown-$clientId" }
+
+        // Atomically reserve a slot before touching any other state.
+        // Incrementing first (then rolling back on rejection) avoids the TOCTOU race of a
+        // separate get() + incrementAndGet() pair.
+        val maxConns = cameraService.getMaxConnections()
+        val streamCount = activeStreams.incrementAndGet()
+        if (streamCount > maxConns) {
+            activeStreams.decrementAndGet()
+            Log.w(TAG, "Max connections ($maxConns) reached, rejecting stream from $clientIp")
+            call.respond(HttpStatusCode.ServiceUnavailable, "Max connections reached ($maxConns)")
+            return
+        }
+
+        // Handle reconnection: if a stream from this IP already exists, cancel it so its
+        // coroutine exits on the next loop iteration and frees the slot cleanly.
+        val newClient = StreamClient(clientId, clientIp)
+        val existingClient = streamClients.put(clientIp, newClient)
+        if (existingClient != null) {
+            Log.d(TAG, "Client $clientIp reconnected (new id=$clientId, replacing old id=${existingClient.id}), cancelling old stream")
+            existingClient.cancelled = true
+        }
+
+        val isFirstStream = streamCount == 1
         
         // Register MJPEG consumer when first stream connects
         if (isFirstStream) {
@@ -494,11 +541,11 @@ class HttpServer(
             cameraService.registerMjpegConsumer()
         }
         
-        Log.d(TAG, "Stream connection opened. Client $clientId. Active streams: ${activeStreams.get()}")
+        Log.d(TAG, "Stream connection opened. Client $clientId (IP: $clientIp). Active streams: $streamCount")
         
         call.respondBytesWriter(ContentType.parse("multipart/x-mixed-replace; boundary=--jpgboundary")) {
             try {
-                while (isActive) {
+                while (isActive && !newClient.cancelled) {
                     // Check if streaming is still allowed (battery might have dropped during stream)
                     if (!cameraService.isStreamingAllowed()) {
                         Log.d(TAG, "Stream client $clientId - streaming no longer allowed (critical battery)")
@@ -533,9 +580,12 @@ class HttpServer(
                     delay(frameDelayMs)
                 }
             } finally {
+                // Conditional remove: only clear the map entry if it still belongs to this client.
+                // If a newer connection from the same IP replaced us, leave the new entry intact.
+                streamClients.remove(clientIp, newClient)
                 cameraService.removeClient(clientId)
                 val remainingStreams = activeStreams.decrementAndGet()
-                Log.d(TAG, "Stream connection closed. Client $clientId. Active streams: $remainingStreams")
+                Log.d(TAG, "Stream connection closed. Client $clientId (IP: $clientIp). Active streams: $remainingStreams")
                 
                 // Unregister MJPEG consumer when last stream disconnects
                 if (remainingStreams == 0) {
@@ -654,24 +704,23 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveConnections() {
-        val activeStreamCount = activeStreams.get()
-        val sseCount = synchronized(sseClientsLock) { sseClients.size }
-        
         val jsonArray = mutableListOf<String>()
         
-        // Add active streaming connections
-        for (i in 1..activeStreamCount) {
-            jsonArray.add("""
-            {
-                "id": ${System.currentTimeMillis() + i},
-                "remoteAddr": "Stream Connection $i",
-                "endpoint": "/stream",
-                "startTime": ${System.currentTimeMillis()},
-                "duration": 0,
-                "active": true,
-                "type": "stream"
+        // Add active streaming connections with real per-client metadata
+        streamClients.values.forEach { client ->
+            if (!client.cancelled) {
+                jsonArray.add("""
+                {
+                    "id": ${client.id},
+                    "remoteAddr": "${client.remoteAddr}",
+                    "endpoint": "/stream",
+                    "startTime": ${client.startTime},
+                    "duration": ${System.currentTimeMillis() - client.startTime},
+                    "active": true,
+                    "type": "stream"
+                }
+                """.trimIndent())
             }
-            """.trimIndent())
         }
         
         // Add SSE clients
