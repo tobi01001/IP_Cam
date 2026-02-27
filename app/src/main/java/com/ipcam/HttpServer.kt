@@ -54,6 +54,8 @@ class HttpServer(
     companion object {
         private const val TAG = "HttpServer"
         private const val JPEG_QUALITY_STREAM = 75
+        /** Default maximum concurrent streams allowed from a single IP address. */
+        const val DEFAULT_MAX_STREAMS_PER_IP = 3
     }
     
     /**
@@ -67,9 +69,9 @@ class HttpServer(
 
     /**
      * Represents an active MJPEG stream connection.
-     * Keyed by remote IP in [streamClients] to enable reconnection deduplication:
-     * when a client reconnects from the same IP the old entry is cancelled so the
-     * stale coroutine exits on its next loop iteration.
+     * Stored in [streamClients] keyed by [id]. Per-IP tracking is maintained separately
+     * in [streamClientsByIp] so multiple streams from the same IP are allowed up to
+     * [maxStreamsPerIp] (default [DEFAULT_MAX_STREAMS_PER_IP]).
      */
     private data class StreamClient(
         val id: Long,
@@ -78,8 +80,25 @@ class HttpServer(
         @Volatile var cancelled: Boolean = false
     )
 
-    /** Active MJPEG stream clients keyed by remote IP address. */
-    private val streamClients = ConcurrentHashMap<String, StreamClient>()
+    /** All active MJPEG stream clients, keyed by unique client ID. */
+    private val streamClients = ConcurrentHashMap<Long, StreamClient>()
+
+    /**
+     * Per-IP ordered list of active client IDs (oldest first) used to enforce the
+     * [maxStreamsPerIp] limit. All accesses are guarded by [streamClientsByIpLock].
+     * HashMap is intentionally used (not ConcurrentHashMap) because every access is
+     * wrapped in `synchronized(streamClientsByIpLock)`, so no additional internal
+     * synchronization from ConcurrentHashMap is needed.
+     */
+    private val streamClientsByIp = HashMap<String, ArrayDeque<Long>>()
+    private val streamClientsByIpLock = Any()
+
+    /**
+     * Maximum number of concurrent /stream connections allowed from a single IP.
+     * When a new connection would exceed this limit, the oldest stream from that IP
+     * is cancelled to free its slot. Default is [DEFAULT_MAX_STREAMS_PER_IP].
+     */
+    @Volatile var maxStreamsPerIp: Int = DEFAULT_MAX_STREAMS_PER_IP
     
     /**
      * Start the HTTP server on the specified port
@@ -203,6 +222,9 @@ class HttpServer(
         // Clean up stream clients
         streamClients.values.forEach { it.cancelled = true }
         streamClients.clear()
+        synchronized(streamClientsByIpLock) {
+            streamClientsByIp.clear()
+        }
         
         // Clean up SSE clients
         synchronized(sseClientsLock) {
@@ -524,13 +546,24 @@ class HttpServer(
             return
         }
 
-        // Handle reconnection: if a stream from this IP already exists, cancel it so its
-        // coroutine exits on the next loop iteration and frees the slot cleanly.
+        // Register this client and enforce the per-IP limit.
+        // If the IP already has maxStreamsPerIp active streams, cancel the oldest one so that
+        // reconnecting clients never accumulate stale coroutines beyond the configured limit.
         val newClient = StreamClient(clientId, clientIp)
-        val existingClient = streamClients.put(clientIp, newClient)
-        if (existingClient != null) {
-            Log.d(TAG, "Client $clientIp reconnected (new id=$clientId, replacing old id=${existingClient.id}), cancelling old stream")
-            existingClient.cancelled = true
+        streamClients[clientId] = newClient
+        var oldestClientToCancel: StreamClient? = null
+        synchronized(streamClientsByIpLock) {
+            val ipQueue = streamClientsByIp.getOrPut(clientIp) { ArrayDeque() }
+            if (ipQueue.size >= maxStreamsPerIp) {
+                // Remove the oldest client ID and look up its StreamClient for cancellation
+                val oldestId = ipQueue.removeFirst()
+                oldestClientToCancel = streamClients[oldestId]
+            }
+            ipQueue.addLast(clientId)
+        }
+        oldestClientToCancel?.let { oldest ->
+            Log.d(TAG, "Per-IP limit ($maxStreamsPerIp) reached for $clientIp, cancelling oldest stream id=${oldest.id}")
+            oldest.cancelled = true
         }
 
         val isFirstStream = streamCount == 1
@@ -580,9 +613,15 @@ class HttpServer(
                     delay(frameDelayMs)
                 }
             } finally {
-                // Conditional remove: only clear the map entry if it still belongs to this client.
-                // If a newer connection from the same IP replaced us, leave the new entry intact.
-                streamClients.remove(clientIp, newClient)
+                // Remove this client from both tracking structures
+                streamClients.remove(clientId)
+                synchronized(streamClientsByIpLock) {
+                    val ipQueue = streamClientsByIp[clientIp]
+                    if (ipQueue != null) {
+                        ipQueue.remove(clientId)
+                        if (ipQueue.isEmpty()) streamClientsByIp.remove(clientIp)
+                    }
+                }
                 cameraService.removeClient(clientId)
                 val remainingStreams = activeStreams.decrementAndGet()
                 Log.d(TAG, "Stream connection closed. Client $clientId (IP: $clientIp). Active streams: $remainingStreams")
@@ -639,6 +678,7 @@ class HttpServer(
                 "activeConnections": $activeConns,
                 "maxConnections": $maxConns,
                 "connections": "$activeConns/$maxConns",
+                "maxStreamsPerIp": $maxStreamsPerIp,
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
                 "batteryMode": "$batteryMode",
