@@ -101,4 +101,7 @@ interface CameraServiceInterface {
     
     // Camera reset for recovery
     fun fullCameraReset(): Boolean
+
+    // Log access
+    fun getLogs(): String
 }

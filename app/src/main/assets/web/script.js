@@ -855,7 +855,7 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                         'Use with VLC, FFmpeg, ZoneMinder, Shinobi, Blue Iris, MotionEye';
                                 } else {
                                     statusEl.className = 'alert danger';
-                                    statusEl.innerHTML = '<strong>✗ Failed to enable RTSP</strong><br>' + data.message;
+                                    statusEl.innerHTML = '<strong>✗ Failed to enable RTSP</strong><br>' + escapeHtml(data.message) + (data.logsUrl ? ' <a href="' + escapeHtml(data.logsUrl) + '" target="_blank">View logs</a>' : '');
                                 }
                             })
                             .catch(error => {

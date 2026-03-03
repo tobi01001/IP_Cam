@@ -56,6 +56,8 @@ class HttpServer(
         private const val JPEG_QUALITY_STREAM = 75
         /** Default maximum concurrent streams allowed from a single IP address. */
         const val DEFAULT_MAX_STREAMS_PER_IP = 3
+        /** Path of the log endpoint used in error responses and links. */
+        private const val LOGS_PATH = "/logs"
     }
     
     /**
@@ -194,6 +196,9 @@ class HttpServer(
                 
                 // Camera recovery endpoints
                 get("/resetCamera") { serveResetCamera() }
+
+                // Log access endpoint
+                get("/logs") { serveLogs() }
                 
                 // Diagnostic endpoints
                 get("/diagnostics/camera") { serveCameraDiagnostics() }
@@ -1252,7 +1257,7 @@ class HttpServer(
             )
         } else {
             call.respondText(
-                """{"status":"error","message":"Failed to enable RTSP streaming. Check logs for details.","rtspEnabled":false}""",
+                """{"status":"error","message":"Failed to enable RTSP streaming. Check $LOGS_PATH for details.","rtspEnabled":false,"logsUrl":"$LOGS_PATH"}""",
                 ContentType.Application.Json,
                 HttpStatusCode.InternalServerError
             )
@@ -1479,6 +1484,19 @@ class HttpServer(
         }
     }
     
+    /**
+     * Serve recent in-memory log entries as plain text for remote debugging.
+     * Allows retrieving logs without ADB or Android Studio.
+     *
+     * Note: No authentication is applied here, consistent with all other endpoints.
+     * This API is designed for use on trusted local/private networks only.
+     */
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveLogs() {
+        val logs = cameraService.getLogs()
+        val content = if (logs.isBlank()) "No log entries captured yet." else logs
+        call.respondText(content, ContentType.Text.Plain)
+    }
+
     // ==================== End Camera State Management Endpoints ====================
     
     // ==================== Auto Update Endpoints ====================

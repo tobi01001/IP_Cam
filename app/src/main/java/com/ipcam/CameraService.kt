@@ -3789,6 +3789,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Check if hardware encoder is available
             if (!RTSPServer.isHardwareEncoderAvailable()) {
                 Log.w(TAG, "Hardware encoder not available, RTSP may use software fallback")
+                InMemoryLogBuffer.add("W", TAG, "Hardware encoder not available, RTSP may use software fallback")
             }
             
             // Get current camera resolution for encoder
@@ -3819,7 +3820,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             )
             
             if (rtspServer?.start() != true) {
-                Log.e(TAG, "Failed to start RTSP server")
+                val startError = rtspServer?.getMetrics()?.lastError ?: "unknown error"
+                Log.e(TAG, "Failed to start RTSP server: $startError")
+                InMemoryLogBuffer.add("E", TAG, "Failed to start RTSP server: $startError")
                 rtspServer = null
                 rtspEnabled = false
                 saveSettings()
@@ -3847,6 +3850,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             saveSettings()
             Log.i(TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             Log.i(TAG, "Server is idling - camera will activate when clients connect and send PLAY")
+            InMemoryLogBuffer.add("I", TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
             // DO NOT rebind camera here - it will activate on-demand when clients connect
             
@@ -3854,6 +3858,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
         } catch (e: Exception) {
             Log.e(TAG, "Error enabling RTSP streaming", e)
+            InMemoryLogBuffer.add("E", TAG, "Error enabling RTSP streaming: ${e.message}")
             rtspEnabled = false
             rtspServer = null
             saveSettings()
@@ -4159,4 +4164,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.d(TAG, "Manual camera deactivation requested")
         unregisterConsumer(ConsumerType.MANUAL)
     }
+
+    override fun getLogs(): String = InMemoryLogBuffer.getText()
 }
