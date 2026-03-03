@@ -6,6 +6,7 @@ import android.media.MediaCodecList
 import android.media.MediaFormat
 import android.util.Log
 import androidx.camera.core.ImageProxy
+import com.ipcam.InMemoryLogBuffer
 import kotlinx.coroutines.*
 import java.io.*
 import java.net.BindException
@@ -382,12 +383,14 @@ class RTSPServer(
                 } else {
                     Log.e(TAG, "Failed to start RTSP server after $maxAttempts attempts", e)
                     lastError = "Server start failed after $maxAttempts attempts: ${e.message}"
+                    InMemoryLogBuffer.add("E", TAG, "RTSP server start failed after $maxAttempts attempts: ${e.message}")
                     cleanup()
                     return false
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start RTSP server on attempt $attempt", e)
                 lastError = "Server start failed: ${e.message}"
+                InMemoryLogBuffer.add("E", TAG, "RTSP server start failed on attempt $attempt: ${e.message}")
                 isEncoding.set(false)
                 cleanup()
                 return false
