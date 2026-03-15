@@ -1028,6 +1028,11 @@ class RTSPServer(
                 // Last client disconnected - unregister RTSP consumer to deactivate camera
                 Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
                 cameraService?.unregisterRtspConsumer()
+                // Reset flag so the next DESCRIBE/PLAY cycle re-registers the consumer and
+                // reactivates the camera.  Without this reset, subsequent clients skip
+                // consumer registration in handleDescribe/handlePlay and wait forever for
+                // SPS/PPS that never arrive (camera is inactive).
+                cameraConsumerRegistered.set(false)
             }
         }
         
@@ -1061,6 +1066,9 @@ class RTSPServer(
                 // Last client paused - unregister RTSP consumer to deactivate camera
                 Log.i(TAG, "Last RTSP client paused - unregistering consumer to deactivate camera")
                 cameraService?.unregisterRtspConsumer()
+                // Reset the flag so a subsequent PLAY re-registers the consumer and
+                // reactivates the camera (same reason as in handleTeardown).
+                cameraConsumerRegistered.set(false)
             }
         }
         
@@ -1820,9 +1828,16 @@ class RTSPServer(
     }
     
     /**
-     * Check if server is alive
+     * Check if server is alive (accepting connections).
+     *
+     * NOTE: [encoder] belongs to the legacy [encodeFrame] code-path which is currently
+     * unused – actual H.264 encoding is performed by [H264PreviewEncoder] in CameraService.
+     * Requiring `encoder != null` therefore always returns false and causes
+     * [CameraService.enableRTSPStreaming] to needlessly stop and restart the server on
+     * every call, which in turn triggers EADDRINUSE bind failures.  The server is
+     * considered alive as long as its accept-loop is running.
      */
-    fun isAlive(): Boolean = isRunning.get() && encoder != null
+    fun isAlive(): Boolean = isRunning.get()
     
     /**
      * Get server metrics

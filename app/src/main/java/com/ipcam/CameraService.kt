@@ -1185,6 +1185,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
             }
             
+            // If consumers registered while the camera was stopping (e.g. a new MJPEG client
+            // connected just as the last one disconnected), reactivate the camera immediately
+            // instead of waiting for the watchdog (which runs every 5-10 s).
+            if (hasConsumers()) {
+                Log.d(TAG, "Consumers waiting after stopCamera(), reactivating camera immediately")
+                activateCameraForConsumers()
+            }
+            
             // Update notification
             updateNotification("Camera inactive - No consumers")
             
