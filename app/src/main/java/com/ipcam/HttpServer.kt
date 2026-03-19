@@ -54,10 +54,16 @@ class HttpServer(
     companion object {
         private const val TAG = "HttpServer"
         private const val JPEG_QUALITY_STREAM = 75
-        /** Default maximum concurrent streams allowed from a single IP address. */
-        const val DEFAULT_MAX_STREAMS_PER_IP = 3
         /** Path of the log endpoint used in error responses and links. */
         private const val LOGS_PATH = "/logs"
+
+        /**
+         * Compute the maximum number of concurrent /stream connections allowed from a
+         * single IP, derived from the global connection cap.  The formula—one quarter of
+         * the global limit, minimum 1—keeps per-IP usage proportional as the global limit
+         * is scaled between 4 and 100 (yielding a per-IP range of 1 to 25).
+         */
+        fun maxStreamsPerIp(maxConnections: Int): Int = maxOf(1, maxConnections / 4)
     }
     
     /**
@@ -73,7 +79,7 @@ class HttpServer(
      * Represents an active MJPEG stream connection.
      * Stored in [streamClients] keyed by [id]. Per-IP tracking is maintained separately
      * in [streamClientsByIp] so multiple streams from the same IP are allowed up to
-     * [maxStreamsPerIp] (default [DEFAULT_MAX_STREAMS_PER_IP]).
+     * [maxStreamsPerIp] (derived as a quarter of the global connection limit).
      */
     private data class StreamClient(
         val id: Long,
@@ -87,20 +93,13 @@ class HttpServer(
 
     /**
      * Per-IP ordered list of active client IDs (oldest first) used to enforce the
-     * [maxStreamsPerIp] limit. All accesses are guarded by [streamClientsByIpLock].
+     * per-IP stream limit. All accesses are guarded by [streamClientsByIpLock].
      * HashMap is intentionally used (not ConcurrentHashMap) because every access is
      * wrapped in `synchronized(streamClientsByIpLock)`, so no additional internal
      * synchronization from ConcurrentHashMap is needed.
      */
     private val streamClientsByIp = HashMap<String, ArrayDeque<Long>>()
     private val streamClientsByIpLock = Any()
-
-    /**
-     * Maximum number of concurrent /stream connections allowed from a single IP.
-     * When a new connection would exceed this limit, the oldest stream from that IP
-     * is cancelled to free its slot. Default is [DEFAULT_MAX_STREAMS_PER_IP].
-     */
-    @Volatile var maxStreamsPerIp: Int = DEFAULT_MAX_STREAMS_PER_IP
     
     /**
      * Start the HTTP server on the specified port
@@ -542,6 +541,7 @@ class HttpServer(
         // Atomically reserve a slot before touching any other state.
         // Incrementing first avoids the TOCTOU race of a separate get() + incrementAndGet() pair.
         val maxConns = cameraService.getMaxConnections()
+        val maxPerIp = maxStreamsPerIp(maxConns)  // derived as maxConns / 4, min 1
         val streamCount = activeStreams.incrementAndGet()
         if (streamCount > maxConns) {
             // Rather than rejecting the new client with 503, evict the globally oldest active
@@ -571,14 +571,14 @@ class HttpServer(
         }
 
         // Register this client and enforce the per-IP limit.
-        // If the IP already has maxStreamsPerIp active streams, cancel the oldest one so that
-        // reconnecting clients never accumulate stale coroutines beyond the configured limit.
+        // If the IP already has maxPerIp active streams, cancel the oldest one so that
+        // reconnecting clients never accumulate stale coroutines beyond the limit.
         val newClient = StreamClient(clientId, clientIp)
         streamClients[clientId] = newClient
         var oldestClientToCancel: StreamClient? = null
         synchronized(streamClientsByIpLock) {
             val ipQueue = streamClientsByIp.getOrPut(clientIp) { ArrayDeque() }
-            if (ipQueue.size >= maxStreamsPerIp) {
+            if (ipQueue.size >= maxPerIp) {
                 // Remove the oldest client ID and look up its StreamClient for cancellation
                 val oldestId = ipQueue.removeFirst()
                 oldestClientToCancel = streamClients[oldestId]
@@ -586,7 +586,7 @@ class HttpServer(
             ipQueue.addLast(clientId)
         }
         oldestClientToCancel?.let { oldest ->
-            Log.d(TAG, "Per-IP limit ($maxStreamsPerIp) reached for $clientIp, cancelling oldest stream id=${oldest.id}")
+            Log.d(TAG, "Per-IP limit ($maxPerIp) reached for $clientIp, cancelling oldest stream id=${oldest.id}")
             oldest.cancelled = true
         }
 
@@ -702,7 +702,7 @@ class HttpServer(
                 "activeConnections": $activeConns,
                 "maxConnections": $maxConns,
                 "connections": "$activeConns/$maxConns",
-                "maxStreamsPerIp": $maxStreamsPerIp,
+                "maxStreamsPerIp": ${maxStreamsPerIp(maxConns)},
                 "activeStreams": $activeStreamCount,
                 "activeSSEClients": $sseCount,
                 "batteryMode": "$batteryMode",
@@ -1310,7 +1310,7 @@ class HttpServer(
             val bitrateMbps = metrics.bitrateMbps
             val bitrateMode = metrics.bitrateMode
             call.respondText(
-                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"bitrateMode":"$bitrateMode","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"bitrateMode":"$bitrateMode","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"maxSessions":${metrics.maxSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
