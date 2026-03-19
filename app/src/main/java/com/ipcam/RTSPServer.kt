@@ -138,6 +138,14 @@ class RTSPServer(
             }
             return false
         }
+
+        /**
+         * Compute the maximum number of concurrent RTSP sessions allowed, derived from the
+         * global HTTP connection cap.  Mirrors [HttpServer.maxStreamsPerIp]: one quarter of
+         * the global limit (minimum 1) so that RTSP scales proportionally with the HTTP cap.
+         * Falls back to a default of 32 when the cap cannot be read.
+         */
+        fun maxRtspSessions(maxConnections: Int): Int = maxOf(1, maxConnections / 4)
     }
     
     /**
@@ -750,6 +758,28 @@ class RTSPServer(
         
         val session = RTSPSession(sessionId, socket)
         sessions[sessionId] = session
+
+        // Enforce session limit: evict the globally oldest session when the cap is exceeded.
+        // The limit is derived from the global HTTP max-connections setting (1/4, min 1) so
+        // that it scales proportionally (e.g. 8 RTSP sessions at the default 32 global cap).
+        val maxSessions = maxRtspSessions(cameraService?.getMaxConnections() ?: 32)
+        if (sessions.size > maxSessions) {
+            val oldest = sessions.values
+                .filter { it.sessionId != sessionId }
+                .minByOrNull { it.numericId }
+            if (oldest != null) {
+                Log.w(
+                    TAG,
+                    "Max RTSP sessions ($maxSessions) reached, closing oldest session " +
+                    "${oldest.sessionId} (${oldest.socket.inetAddress}) to accept $sessionId"
+                )
+                try {
+                    oldest.socket.close()
+                } catch (e: Exception) {
+                    Log.d(TAG, "Error closing evicted RTSP session ${oldest.sessionId}", e)
+                }
+            }
+        }
         
         try {
             val reader = BufferedReader(InputStreamReader(socket.getInputStream()))
@@ -1867,6 +1897,7 @@ class RTSPServer(
             bitrateMode = bitrateModeName,
             activeSessions = sessions.size,
             playingSessions = sessions.values.count { it.state == SessionState.PLAYING },
+            maxSessions = maxRtspSessions(cameraService?.getMaxConnections() ?: 32),
             framesEncoded = frameCount.get(),
             droppedFrames = droppedFrameCount.get(),
             targetFps = fps,
@@ -1947,6 +1978,8 @@ class RTSPServer(
         val bitrateMode: String,
         val activeSessions: Int,
         val playingSessions: Int,
+        /** Maximum concurrent sessions allowed (derived as 1/4 of the global HTTP max-connections). */
+        val maxSessions: Int,
         val framesEncoded: Long,
         val droppedFrames: Long,
         val targetFps: Int,
