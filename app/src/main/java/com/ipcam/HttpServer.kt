@@ -540,15 +540,34 @@ class HttpServer(
         val clientIp = rawIp.ifBlank { "unknown-$clientId" }
 
         // Atomically reserve a slot before touching any other state.
-        // Incrementing first (then rolling back on rejection) avoids the TOCTOU race of a
-        // separate get() + incrementAndGet() pair.
+        // Incrementing first avoids the TOCTOU race of a separate get() + incrementAndGet() pair.
         val maxConns = cameraService.getMaxConnections()
         val streamCount = activeStreams.incrementAndGet()
         if (streamCount > maxConns) {
-            activeStreams.decrementAndGet()
-            Log.w(TAG, "Max connections ($maxConns) reached, rejecting stream from $clientIp")
-            call.respond(HttpStatusCode.ServiceUnavailable, "Max connections reached ($maxConns)")
-            return
+            // Rather than rejecting the new client with 503, evict the globally oldest active
+            // stream so that reconnecting clients (or NVR systems that reopen streams) are never
+            // stuck waiting for a slot.  The evicted stream's finally-block will decrement
+            // activeStreams, bringing the count back to maxConns.
+            val globallyOldest = streamClients.values
+                .filter { !it.cancelled }
+                .minByOrNull { it.startTime }
+            if (globallyOldest != null) {
+                Log.w(
+                    TAG,
+                    "Max connections ($maxConns) reached, evicting oldest stream " +
+                    "id=${globallyOldest.id} (IP: ${globallyOldest.remoteAddr}) " +
+                    "to accept new client from $clientIp"
+                )
+                globallyOldest.cancelled = true
+            } else {
+                // All existing streams are already in the process of being cancelled; the count
+                // will normalise as their finally-blocks run.  Log and continue.
+                Log.d(
+                    TAG,
+                    "Max connections ($maxConns) temporarily exceeded (count: $streamCount); " +
+                    "all excess streams are already being cancelled"
+                )
+            }
         }
 
         // Register this client and enforce the per-IP limit.
