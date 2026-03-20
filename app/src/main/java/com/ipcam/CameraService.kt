@@ -390,6 +390,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         PREVIEW,    // MainActivity preview
         MJPEG,      // MJPEG stream clients
         RTSP,       // RTSP streaming
+        SNAPSHOT,   // Single-frame snapshot requests
         MANUAL      // Manual activation via API (for testing/debugging)
     }
     
@@ -4134,6 +4135,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     override fun unregisterMjpegConsumer() {
         unregisterConsumer(ConsumerType.MJPEG)
+    }
+    
+    override fun registerSnapshotConsumer() {
+        registerConsumer(ConsumerType.SNAPSHOT)
+    }
+    
+    override fun unregisterSnapshotConsumer() {
+        unregisterConsumer(ConsumerType.SNAPSHOT)
     }
     
     override fun getCameraStateString(): String {

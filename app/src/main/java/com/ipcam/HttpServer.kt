@@ -46,6 +46,7 @@ class HttpServer(
 ) {
     private var server: ApplicationEngine? = null
     private val activeStreams = AtomicInteger(0)
+    private val activeSnapshots = AtomicInteger(0)
     private val sseClients = mutableListOf<SSEClient>()
     private val sseClientsLock = Any()
     private val clientIdCounter = AtomicLong(0)
@@ -404,43 +405,47 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
-        // Check if camera is idle and needs activation
-        val cameraState = cameraService.getCameraStateString()
-        val needsActivation = cameraState == "IDLE"
-        
-        if (needsActivation) {
-            Log.d(TAG, "Camera IDLE, temporarily activating for snapshot...")
-            cameraService.registerMjpegConsumer()
-            
-            // Poll for camera to become active with timeout
+        // Use a dedicated SNAPSHOT consumer type so that snapshot requests never
+        // interfere with MJPEG streams or RTSP sessions.  The activeSnapshots counter
+        // ensures camera activation on the first concurrent snapshot and deactivation
+        // only after the last one finishes – even when multiple snapshots run in parallel.
+        val snapshotCount = activeSnapshots.incrementAndGet()
+        val isFirstSnapshot = snapshotCount == 1
+        if (isFirstSnapshot) {
+            Log.d(TAG, "First snapshot request, registering snapshot consumer...")
+            cameraService.registerSnapshotConsumer()
+        }
+
+        try {
+            // Wait for camera to become active (needed when camera was IDLE)
             var attempts = 0
-            val maxAttempts = 20 // 2 seconds total (20 * 100ms)
+            val maxAttempts = 20 // 2 seconds total (20 × 100 ms)
             while (attempts < maxAttempts && cameraService.getCameraStateString() != "ACTIVE") {
                 delay(100)
                 attempts++
             }
-            
+
             if (cameraService.getCameraStateString() != "ACTIVE") {
                 Log.w(TAG, "Camera failed to activate within timeout for snapshot")
             }
-        }
-        
-        val jpegBytes = cameraService.getLastFrameJpegBytes()
-        
-        if (jpegBytes != null) {
-            call.respondBytes(jpegBytes, ContentType.Image.JPEG)
-        } else {
-            call.respondText(
-                "No frame available - Camera may be initializing",
-                ContentType.Text.Plain,
-                HttpStatusCode.ServiceUnavailable
-            )
-        }
-        
-        // If we activated camera just for snapshot and no streams are active, deactivate
-        if (needsActivation && activeStreams.get() == 0) {
-            Log.d(TAG, "No active streams, deactivating camera after snapshot")
-            cameraService.unregisterMjpegConsumer()
+
+            val jpegBytes = cameraService.getLastFrameJpegBytes()
+
+            if (jpegBytes != null) {
+                call.respondBytes(jpegBytes, ContentType.Image.JPEG)
+            } else {
+                call.respondText(
+                    "No frame available - Camera may be initializing",
+                    ContentType.Text.Plain,
+                    HttpStatusCode.ServiceUnavailable
+                )
+            }
+        } finally {
+            val remaining = activeSnapshots.decrementAndGet()
+            if (remaining == 0) {
+                Log.d(TAG, "Last snapshot finished, unregistering snapshot consumer")
+                cameraService.unregisterSnapshotConsumer()
+            }
         }
     }
     
