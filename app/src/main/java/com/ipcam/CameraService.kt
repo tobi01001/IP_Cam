@@ -204,7 +204,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     // H.264 encoder for RTSP streaming (parallel pipeline)
-    private var h264Encoder: H264PreviewEncoder? = null
+    // @Volatile so that the null-check in registerRtspConsumer() (called from a coroutine
+    // thread) sees the value written by bindCamera()/stopCamera() on the main thread.
+    @Volatile private var h264Encoder: H264PreviewEncoder? = null
     private var videoCaptureUseCase: androidx.camera.core.Preview? = null // For H.264 encoding
     
     // MJPEG frame throttling
@@ -3861,8 +3863,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.i(TAG, "Server is idling - camera will activate when clients connect and send PLAY")
             InMemoryLogBuffer.add("I", TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
-            // DO NOT rebind camera here - it will activate on-demand when clients connect
-            
+            // If the camera is already ACTIVE it was bound before RTSP was enabled (e.g. for
+            // MJPEG-only streaming) and therefore does NOT include the H264PreviewEncoder use
+            // case.  Rebinding now ensures the encoder pipeline is wired up immediately so that
+            // the first RTSP client gets frames instead of timing out waiting for SPS/PPS.
+            // When the camera is IDLE the on-demand path in registerConsumer() will bind it
+            // correctly (with rtspEnabled=true) when the first client connects.
+            // Read cameraState under the dedicated lock to get a consistent snapshot.
+            val cameraCurrentlyActive = synchronized(cameraStateLock) { cameraState == CameraState.ACTIVE }
+            if (cameraCurrentlyActive) {
+                Log.i(TAG, "Camera already active when RTSP enabled – rebinding to include H264 encoder pipeline")
+                InMemoryLogBuffer.add("I", TAG, "RTSP enabled: rebinding camera to add H264 encoder")
+                serviceScope.launch { requestBindCamera() }
+            }
+
             return true
             
         } catch (e: Exception) {
@@ -4164,6 +4178,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     fun registerRtspConsumer() {
         Log.d(TAG, "RTSP client connected, registering consumer")
         registerConsumer(ConsumerType.RTSP)
+
+        // Safety-net: if the camera is already ACTIVE but the H264PreviewEncoder has not
+        // been initialised (e.g. RTSP was enabled after the camera was already bound for
+        // MJPEG, and the rebind in enableRTSPStreaming() hasn't completed yet), trigger
+        // another rebind so that the encoder is connected before the client waits for SPS/PPS.
+        // All three fields are @Volatile so each read is coherent; we capture them into
+        // local vals to keep the condition check consistent within this call even if another
+        // thread updates them concurrently (a spurious rebind is harmless – requestBindCamera
+        // has its own debounce protection).
+        val rtspOn = rtspEnabled
+        val encoderMissing = h264Encoder == null
+        val cameraActive = synchronized(cameraStateLock) { cameraState == CameraState.ACTIVE }
+        if (rtspOn && encoderMissing && cameraActive) {
+            Log.i(TAG, "RTSP consumer registered but H264 encoder absent – rebinding camera to add RTSP pipeline")
+            InMemoryLogBuffer.add("I", TAG, "RTSP consumer: rebinding camera to add H264 encoder")
+            serviceScope.launch { requestBindCamera() }
+        }
     }
     
     fun unregisterRtspConsumer() {
