@@ -95,6 +95,8 @@ interface CameraServiceInterface {
     // Consumer management for on-demand camera activation
     fun registerMjpegConsumer()
     fun unregisterMjpegConsumer()
+    fun registerSnapshotConsumer()
+    fun unregisterSnapshotConsumer()
     fun getCameraStateString(): String
     fun manualActivateCamera()
     fun manualDeactivateCamera()
