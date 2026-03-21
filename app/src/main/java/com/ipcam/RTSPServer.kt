@@ -244,9 +244,9 @@ class RTSPServer(
                     }
                 }
                 
-                // Track bandwidth for this session
+                // Track aggregate RTSP bandwidth using actual bytes written
                 if (totalBytesSent > 0) {
-                    this@RTSPServer.cameraService?.recordBytesSent(numericId, totalBytesSent.toLong())
+                    this@RTSPServer.cameraService?.recordStreamingBytes(StreamTransport.RTSP, totalBytesSent.toLong())
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending RTP packet for session $sessionId", e)

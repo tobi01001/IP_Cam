@@ -227,13 +227,22 @@ class PerformanceMetrics(private val context: Context) {
             isHighUsage = processUsage > CPU_HIGH_THRESHOLD * 100
         )
     }
+
+    fun createCpuStats(processUsagePercent: Double): CpuStats {
+        val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        return CpuStats(
+            processUsagePercent = processUsagePercent,
+            perCoreUsagePercent = processUsagePercent / cores,
+            isHighUsage = processUsagePercent > CPU_HIGH_THRESHOLD * 100
+        )
+    }
     
     /**
      * Check if system is under performance pressure.
      */
-    fun isUnderPressure(): PerformancePressure {
+    fun isUnderPressure(cpuStatsOverride: CpuStats? = null): PerformancePressure {
         val memStats = getMemoryStats()
-        val cpuStats = getCpuUsage()
+        val cpuStats = cpuStatsOverride ?: getCpuUsage()
         val frameDropRate = getFrameDropRate()
         
         val memoryPressure = when {
@@ -269,7 +278,7 @@ class PerformanceMetrics(private val context: Context) {
     /**
      * Get comprehensive statistics for debugging.
      */
-    fun getDetailedStats(): String {
+    fun getDetailedStats(cpuStatsOverride: CpuStats? = null): String {
         val sb = StringBuilder()
         sb.append("=== Performance Metrics ===\n")
         
@@ -295,14 +304,14 @@ class PerformanceMetrics(private val context: Context) {
         sb.append("  Low memory: ${mem.systemLowMemory}\n")
         
         // CPU stats
-        val cpu = getCpuUsage()
+        val cpu = cpuStatsOverride ?: getCpuUsage()
         sb.append("\nCPU:\n")
         sb.append("  Process: ${String.format("%.1f", cpu.processUsagePercent)}%\n")
         sb.append("  Per core: ${String.format("%.1f", cpu.perCoreUsagePercent)}%\n")
         sb.append("  High usage: ${cpu.isHighUsage}\n")
         
         // Pressure
-        val pressure = isUnderPressure()
+        val pressure = isUnderPressure(cpu)
         sb.append("\nPressure:\n")
         sb.append("  Memory: ${pressure.memoryPressure}\n")
         sb.append("  CPU: ${pressure.cpuPressure}\n")

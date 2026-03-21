@@ -592,6 +592,10 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                     loadFormats();
                     refreshConnections();
                     updateFlashlightButton();
+
+                    let lastConnectionCount = '';
+                    let lastReceivedState = {};
+                    let lastReceivedMetrics = {};
                     
                     // Load max connections and battery status from server status
                     fetch('/status')
@@ -605,33 +609,103 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                     break;
                                 }
                             }
-                            
-                            if (data.batteryMode && data.streamingAllowed !== undefined) {
-                                updateBatteryStatusDisplay(data.batteryMode, data.streamingAllowed, data.batteryLevel, data.isCharging);
-                            }
-                        });
-                    
-                    // Set up Server-Sent Events for real-time updates
-                    const eventSource = new EventSource('/events');
-                    let lastConnectionCount = '';
-                    
-                    eventSource.onmessage = function(event) {
-                        try {
-                            const data = JSON.parse(event.data);
+
                             const connectionCount = document.getElementById('connectionCount');
                             if (connectionCount && data.connections) {
                                 connectionCount.textContent = data.connections;
-                                if (lastConnectionCount !== data.connections) {
-                                    lastConnectionCount = data.connections;
-                                    setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
-                                }
+                                lastConnectionCount = data.connections;
                             }
-                        } catch (e) {
-                            console.error('Failed to parse SSE data:', e);
+
+                            if (data.batteryMode && data.streamingAllowed !== undefined) {
+                                lastReceivedState.batteryMode = data.batteryMode;
+                                lastReceivedState.streamingAllowed = data.streamingAllowed;
+                                updateBatteryStatusDisplay(
+                                    data.batteryMode,
+                                    data.streamingAllowed,
+                                    lastReceivedMetrics.batteryLevel,
+                                    lastReceivedMetrics.isCharging
+                                );
+                            }
+                        });
+
+                    function updateConnectionCountDisplay(metrics) {
+                        const connectionCount = document.getElementById('connectionCount');
+                        if (!connectionCount) {
+                            return;
                         }
-                    };
+
+                        const activeConnections = (metrics.activeHttpStreams || 0) + (metrics.activeSseClients || 0);
+                        const maxConnections = parseInt(document.getElementById('maxConnectionsSelect')?.value || '0', 10);
+                        const displayValue = maxConnections > 0 ? (activeConnections + '/' + maxConnections) : String(activeConnections);
+
+                        connectionCount.textContent = displayValue;
+                        if (lastConnectionCount !== displayValue) {
+                            lastConnectionCount = displayValue;
+                            setTimeout(refreshConnections, CONNECTIONS_REFRESH_DEBOUNCE_MS);
+                        }
+                    }
+
+                    function updateRtspStatusDisplay() {
+                        const rtspStatusDisplay = document.getElementById('rtspStatusDisplay');
+                        if (!rtspStatusDisplay) {
+                            return;
+                        }
+
+                        if (lastReceivedState.rtspEnabled) {
+                            const rtspFps = Number(lastReceivedMetrics.currentRtspFps || 0).toFixed(1);
+                            rtspStatusDisplay.innerHTML = '<span style="color: #4CAF50;">Enabled</span><br><span style="font-size: 20px;">' + rtspFps + ' fps</span>';
+                        } else {
+                            rtspStatusDisplay.innerHTML = '<span style="color: #999;">Disabled</span>';
+                        }
+                    }
+
+                    function applyMetrics(metrics) {
+                        const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
+                        if (cpuUsageDisplay) {
+                            cpuUsageDisplay.textContent = Number(metrics.cpuUsagePercent || 0).toFixed(1);
+                        }
+
+                        const bandwidthDisplay = document.getElementById('bandwidthDisplay');
+                        if (bandwidthDisplay) {
+                            const mbps = (Number(metrics.bandwidthBps || 0) / (1000 * 1000)).toFixed(2);
+                            bandwidthDisplay.textContent = mbps;
+                        }
+
+                        const cameraFpsDisplay = document.getElementById('currentCameraFpsDisplay');
+                        if (cameraFpsDisplay) {
+                            cameraFpsDisplay.textContent = Number(metrics.currentCameraFps || 0).toFixed(1);
+                        }
+
+                        const mjpegFpsDisplay = document.getElementById('currentMjpegFpsDisplay');
+                        if (mjpegFpsDisplay) {
+                            mjpegFpsDisplay.textContent = Number(metrics.currentMjpegFps || 0).toFixed(1);
+                        }
+
+                        updateRtspStatusDisplay();
+                        updateConnectionCountDisplay(metrics);
+
+                        if (lastReceivedState.batteryMode !== undefined && lastReceivedState.streamingAllowed !== undefined) {
+                            updateBatteryStatusDisplay(
+                                lastReceivedState.batteryMode,
+                                lastReceivedState.streamingAllowed,
+                                metrics.batteryLevel,
+                                metrics.isCharging
+                            );
+                        }
+                    }
                     
-                    let lastReceivedState = {};
+                    // Set up Server-Sent Events for real-time updates
+                    const eventSource = new EventSource('/events');
+
+                    eventSource.addEventListener('metrics', function(event) {
+                        try {
+                            const deltaMetrics = JSON.parse(event.data);
+                            Object.assign(lastReceivedMetrics, deltaMetrics);
+                            applyMetrics(lastReceivedMetrics);
+                        } catch (e) {
+                            console.error('Failed to handle metrics update:', e);
+                        }
+                    });
                     
                     eventSource.addEventListener('state', function(event) {
                         try {
@@ -719,46 +793,22 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                 }
                             }
                             
-                            // Update FPS displays if delta contains them (live updates)
-                            if (deltaState.currentCameraFps !== undefined) {
-                                const cameraFpsDisplay = document.getElementById('currentCameraFpsDisplay');
-                                if (cameraFpsDisplay) {
-                                    cameraFpsDisplay.textContent = state.currentCameraFps.toFixed(1);
-                                }
+                            if (deltaState.rtspEnabled !== undefined) {
+                                updateRtspStatusDisplay();
                             }
-                            
-                            if (deltaState.currentMjpegFps !== undefined) {
-                                const mjpegFpsDisplay = document.getElementById('currentMjpegFpsDisplay');
-                                if (mjpegFpsDisplay) {
-                                    mjpegFpsDisplay.textContent = state.currentMjpegFps.toFixed(1);
-                                }
+
+                            if (deltaState.maxConnections !== undefined) {
+                                applyMetrics(lastReceivedMetrics);
                             }
-                            
-                            if (deltaState.currentRtspFps !== undefined || deltaState.rtspEnabled !== undefined) {
-                                const rtspStatusDisplay = document.getElementById('rtspStatusDisplay');
-                                if (rtspStatusDisplay) {
-                                    if (state.rtspEnabled) {
-                                        rtspStatusDisplay.innerHTML = '<span style="color: #4CAF50;">Enabled</span><br><span style="font-size: 20px;">' + state.currentRtspFps.toFixed(1) + ' fps</span>';
-                                    } else {
-                                        rtspStatusDisplay.innerHTML = '<span style="color: #999;">Disabled</span>';
-                                    }
-                                }
-                            }
-                            
-                            if (deltaState.cpuUsage !== undefined) {
-                                const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
-                                if (cpuUsageDisplay) {
-                                    cpuUsageDisplay.textContent = state.cpuUsage.toFixed(1);
-                                }
-                            }
-                            
-                            if (deltaState.bandwidthBps !== undefined) {
-                                const bandwidthDisplay = document.getElementById('bandwidthDisplay');
-                                if (bandwidthDisplay) {
-                                    // Convert bps to Mbps (decimal: 1 Mbps = 1,000,000 bps)
-                                    const mbps = (state.bandwidthBps / (1000 * 1000)).toFixed(2);
-                                    bandwidthDisplay.textContent = mbps;
-                                }
+
+                            // Update battery status display
+                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined) {
+                                updateBatteryStatusDisplay(
+                                    state.batteryMode,
+                                    state.streamingAllowed,
+                                    lastReceivedMetrics.batteryLevel,
+                                    lastReceivedMetrics.isCharging
+                                );
                             }
                             
                             if (deltaState.targetMjpegFps !== undefined) {
@@ -791,11 +841,6 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                         }
                                     }
                                 }
-                            }
-                            
-                            // Update battery status display
-                            if (deltaState.batteryMode !== undefined || deltaState.streamingAllowed !== undefined || deltaState.batteryLevel !== undefined || deltaState.isCharging !== undefined) {
-                                updateBatteryStatusDisplay(state.batteryMode, state.streamingAllowed, state.batteryLevel, state.isCharging);
                             }
                             
                             // Update flashlight button state
@@ -899,7 +944,7 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                     const dropRate = data.framesEncoded > 0 
                                         ? (data.droppedFrames / (data.framesEncoded + data.droppedFrames) * 100).toFixed(1)
                                         : '0.0';
-                                    const bandwidthMbps = (data.bitrateMbps * encodedFps / data.targetFps).toFixed(2);
+                                    const bandwidthMbps = ((data.currentRtspBandwidthBps || 0) / 1000000).toFixed(2);
                                     
                                     statusEl.className = 'alert success';
                                     statusEl.innerHTML = 
@@ -909,7 +954,7 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                                         'Resolution: ' + data.resolution + ' @ ' + data.bitrateMbps.toFixed(1) + ' Mbps (' + data.bitrateMode + ')<br>' +
                                         'Camera FPS: ' + encodedFps + ' fps (encoder configured: ' + data.targetFps + ' fps)<br>' +
                                         'Frames: ' + data.framesEncoded + ' encoded, ' + data.droppedFrames + ' dropped (' + dropRate + '%)<br>' +
-                                        'Bandwidth: ~' + bandwidthMbps + ' Mbps (actual)<br>' +
+                                        'Bandwidth: ' + bandwidthMbps + ' Mbps (sampled)<br>' +
                                         'Active Sessions: ' + data.activeSessions + ' | Playing: ' + data.playingSessions + '<br>' +
                                         'URL: <a href="' + data.url + '" target="_blank">' + data.url + '</a><br>' +
                                         'Port: ' + data.port;

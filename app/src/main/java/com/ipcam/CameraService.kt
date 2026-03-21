@@ -248,7 +248,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
     private var lastBatteryUpdate: Long = 0
-    @Volatile private var batteryUpdatePending: Boolean = false
     
     // Enhanced Battery Management System
     // Battery thresholds for power management
@@ -309,13 +308,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     // CPU usage tracking
     @Volatile private var currentCpuUsage: Float = 0f // Current CPU usage percentage (0-100)
-    private var lastCpuCheckTime: Long = 0
     
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
     // Enhanced watchdog - track last frame timestamp to detect frozen frames
     @Volatile private var lastWatchdogFrameTimestamp: Long = 0L
     @Volatile private var frozenFrameDetectionCount: Int = 0
     private var networkReceiver: BroadcastReceiver? = null
+    private var batteryReceiver: BroadcastReceiver? = null
     @Volatile private var actualPort: Int = PORT // The actual port being used (may differ from PORT if unavailable)
     // Server-Sent Events (SSE) clients for real-time updates
     private val sseClients = mutableListOf<SSEClient>()
@@ -336,12 +335,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     // Track if server was intentionally stopped (don't auto-restart in watchdog)
     @Volatile private var serverIntentionallyStopped: Boolean = false
     
-    // Bandwidth optimization and adaptive quality
-    private lateinit var bandwidthMonitor: BandwidthMonitor
     private lateinit var performanceMetrics: PerformanceMetrics
-    private lateinit var adaptiveQualityManager: AdaptiveQualityManager
-    @Volatile private var adaptiveQualityEnabled: Boolean = true // Can be toggled
-    private val clientIdCounter = AtomicInteger(0) // For unique client IDs
+    private lateinit var runtimeTelemetrySampler: RuntimeTelemetrySampler
+    @Volatile private var latestRuntimeTelemetry: RuntimeTelemetrySnapshot = RuntimeTelemetrySnapshot.empty()
+    private var telemetryJob: Job? = null
+    @Volatile private var adaptiveQualityEnabled: Boolean = false // Deprecated compatibility flag
     
     // RTSP server for hardware-accelerated H.264 streaming
     private var rtspServer: RTSPServer? = null
@@ -429,8 +427,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val JPEG_QUALITY_STREAM = 75 // Balanced quality for streaming
          // Stream timing
          private const val STREAM_FRAME_DELAY_MS = 100L // ~10 fps
-         // Battery cache update interval
-         private const val BATTERY_CACHE_UPDATE_INTERVAL_MS = 30_000L // 30 seconds
+         private const val TELEMETRY_UPDATE_INTERVAL_MS = 2000L
          // Camera activation delay
          private const val CAMERA_ACTIVATION_DELAY_MS = 500L // Delay before activating camera when consumer registers
          // Settings keys
@@ -504,22 +501,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         checkFlashAvailability()
         Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
         
-        // Initialize bandwidth optimization components
-        bandwidthMonitor = BandwidthMonitor()
         performanceMetrics = PerformanceMetrics(this)
-        adaptiveQualityManager = AdaptiveQualityManager(bandwidthMonitor, performanceMetrics)
-        Log.d(TAG, "Bandwidth optimization components initialized")
+        runtimeTelemetrySampler = RuntimeTelemetrySampler()
+        latestRuntimeTelemetry = RuntimeTelemetrySnapshot.empty()
+        Log.d(TAG, "Runtime telemetry components initialized")
         
         // Cache display density to avoid Binder calls from HTTP threads
         cachedDensity = resources.displayMetrics.density
-        // Schedule initial battery cache update to ensure context is initialized
-        serviceScope.launch(Dispatchers.Main) {
-            try {
-                updateBatteryCache()
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to initialize battery cache", e)
-            }
-        }
+        registerBatteryReceiver()
         
         // Check for POST_NOTIFICATIONS permission on Android 13+
         // Note: startForeground() will still succeed even without permission on Android 13+,
@@ -532,6 +521,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         registerNetworkReceiver()
         setupOrientationListener()
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
+        startTelemetryLoop()
         
         // CAMERA INITIALIZATION:
         // DO NOT automatically start camera on service creation
@@ -1603,13 +1593,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     return
                 }
                 
-                // Determine JPEG quality - use adaptive quality if enabled
-                val jpegQuality = if (adaptiveQualityEnabled) {
-                    val settings = adaptiveQualityManager.getClientSettings(0L)
-                    settings.jpegQuality
-                } else {
-                    JPEG_QUALITY_STREAM
-                }
+                val jpegQuality = JPEG_QUALITY_STREAM
                 
                 // Pre-compress to JPEG for HTTP serving
                 val encodingStart = System.currentTimeMillis()
@@ -2420,59 +2404,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     /**
-     * Get current CPU usage percentage for this process
-     * Returns value between 0-100
-     */
-    private fun updateCpuUsage() {
-        try {
-            val now = System.currentTimeMillis()
-            // Update CPU usage every 2 seconds to avoid overhead
-            if (now - lastCpuCheckTime < 2000) {
-                return
-            }
-            lastCpuCheckTime = now
-            
-            // Read /proc/self/stat for process CPU time
-            val pid = android.os.Process.myPid()
-            val statFile = java.io.File("/proc/$pid/stat")
-            if (!statFile.exists()) {
-                return
-            }
-            
-            val statContent = statFile.readText()
-            val stats = statContent.split(" ")
-            
-            // CPU time is at indices 13 (utime) and 14 (stime) in /proc/[pid]/stat
-            // These are in clock ticks, need to convert to milliseconds
-            if (stats.size > 14) {
-                val utime = stats[13].toLongOrNull() ?: 0
-                val stime = stats[14].toLongOrNull() ?: 0
-                val totalTime = utime + stime
-                
-                // Get number of CPU cores
-                val cores = Runtime.getRuntime().availableProcessors()
-                
-                // Calculate CPU percentage
-                // This is a simplified calculation - for more accuracy, we'd need to track
-                // the delta between two measurements
-                // For now, we'll use a simple heuristic based on active threads
-                val activeThreads = Thread.activeCount()
-                val estimatedUsage = (activeThreads.toFloat() / (cores * 2)) * 100f
-                
-                // Clamp to 0-100
-                currentCpuUsage = estimatedUsage.coerceIn(0f, 100f)
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Error reading CPU usage", e)
-            currentCpuUsage = 0f
-        }
-    }
-    
-    /**
      * Get current CPU usage percentage
      */
     fun getCurrentCpuUsage(): Float {
-        updateCpuUsage()
         return currentCpuUsage
     }
     
@@ -2491,8 +2425,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         targetMjpegFps = prefs.getInt("targetMjpegFps", 10).coerceIn(1, 60)
         targetRtspFps = prefs.getInt("targetRtspFps", 30).coerceIn(1, 60)
         
-        // Adaptive quality setting
-        adaptiveQualityEnabled = prefs.getBoolean("adaptiveQualityEnabled", true)
+        // Adaptive quality is currently removed from runtime logic.
+        adaptiveQualityEnabled = false
         
         maxConnections = prefs.getInt(PREF_MAX_CONNECTIONS, HTTP_DEFAULT_MAX_POOL_SIZE)
             .coerceIn(HTTP_MIN_MAX_POOL_SIZE, HTTP_ABSOLUTE_MAX_POOL_SIZE)
@@ -2572,8 +2506,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             putInt("targetMjpegFps", targetMjpegFps)
             putInt("targetRtspFps", targetRtspFps)
             
-            // Adaptive quality setting
-            putBoolean("adaptiveQualityEnabled", adaptiveQualityEnabled)
+            // Keep deprecated setting persisted as disabled for compatibility.
+            putBoolean("adaptiveQualityEnabled", false)
             
             putInt(PREF_MAX_CONNECTIONS, maxConnections)
             putBoolean("flashlightOn", isFlashlightOn)
@@ -2888,6 +2822,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         unregisterNetworkReceiver()
+        unregisterBatteryReceiver()
         orientationEventListener?.disable()
         httpServer?.stop()
         wifiDebuggingManager?.stopMonitoring()
@@ -2925,6 +2860,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         bitmapPool.clear()
         Log.d(TAG, "Bitmap pool cleared on service destroy")
         
+        telemetryJob?.cancel()
         // LIFECYCLE MANAGEMENT: Cancel all coroutines LAST after other cleanup
         // This ensures no coroutines try to use resources that have been cleaned up
         serviceScope.cancel()
@@ -2999,8 +2935,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Update battery management mode and apply appropriate actions.
      * Called periodically by watchdog to monitor battery state and adjust behavior.
      */
-    private fun updateBatteryManagement() {
-        val batteryInfo = getBatteryInfo()
+    private fun updateBatteryManagement(batteryInfo: BatteryInfo = getBatteryInfo()): Boolean {
         val newMode = determineBatteryMode(batteryInfo)
         
         // Only log and take action if mode changed
@@ -3037,7 +2972,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     )
                 }
             }
+            return true
         }
+        return false
     }
     
     /**
@@ -3102,7 +3039,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Set override flag and update mode
         userOverrideBatteryLimit = true
-        updateBatteryManagement()
+        if (updateBatteryManagement()) {
+            broadcastCameraState()
+        }
         
         Log.i(TAG, "User override battery limit: streaming restored (battery: $batteryLevel%)")
         showUserNotification(
@@ -3322,6 +3261,39 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
         }
     }
+
+    private fun startTelemetryLoop() {
+        telemetryJob?.cancel()
+        telemetryJob = serviceScope.launch {
+            while (isActive) {
+                val cpuUsage = performanceMetrics.getCpuUsage().processUsagePercent.toFloat()
+                currentCpuUsage = cpuUsage
+
+                val batteryInfo = getCachedBatteryInfo()
+                val activeHttpStreams = httpServer?.getActiveStreamsCount() ?: 0
+                val activeSseClients = httpServer?.getActiveSseClientsCount() ?: 0
+                val rtspPlayingSessions = rtspServer?.getMetrics()?.playingSessions ?: 0
+
+                val snapshot = runtimeTelemetrySampler.sample(
+                    cpuUsagePercent = cpuUsage,
+                    currentCameraFps = currentCameraFps,
+                    currentMjpegFps = currentMjpegFps,
+                    currentRtspFps = currentRtspFps,
+                    activeHttpStreams = activeHttpStreams,
+                    activeSseClients = activeSseClients,
+                    rtspPlayingSessions = rtspPlayingSessions,
+                    totalCameraClients = activeHttpStreams + rtspPlayingSessions,
+                    batteryLevel = batteryInfo.level,
+                    isCharging = batteryInfo.isCharging
+                )
+
+                latestRuntimeTelemetry = snapshot
+                httpServer?.broadcastMetrics(snapshot)
+
+                delay(TELEMETRY_UPDATE_INTERVAL_MS)
+            }
+        }
+    }
     
     private fun registerNetworkReceiver() {
         val filter = IntentFilter().apply {
@@ -3361,6 +3333,39 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             }
         }
         networkReceiver = null
+    }
+
+    private fun registerBatteryReceiver() {
+        val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+        batteryReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context?, intent: Intent?) {
+                val batteryInfo = batteryInfoFromIntent(intent)
+                updateBatteryCache(batteryInfo)
+                if (updateBatteryManagement(batteryInfo)) {
+                    broadcastCameraState()
+                }
+            }
+        }
+
+        val initialIntent = registerReceiver(batteryReceiver, filter)
+        if (initialIntent != null) {
+            val batteryInfo = batteryInfoFromIntent(initialIntent)
+            updateBatteryCache(batteryInfo)
+            updateBatteryManagement(batteryInfo)
+        }
+        Log.d(TAG, "Battery receiver registered")
+    }
+
+    private fun unregisterBatteryReceiver() {
+        batteryReceiver?.let {
+            try {
+                unregisterReceiver(it)
+                Log.d(TAG, "Battery receiver unregistered")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error unregistering battery receiver", e)
+            }
+        }
+        batteryReceiver = null
     }
     
     /**
@@ -3487,32 +3492,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     private data class BatteryInfo(val level: Int, val isCharging: Boolean)
     
-    private fun updateBatteryCache() {
-        cachedBatteryInfo = getBatteryInfo()
-        lastBatteryUpdate = System.currentTimeMillis()
-    }
-    
-    private fun getCachedBatteryInfo(): BatteryInfo {
-        // Update battery cache if it's older than 30 seconds and no update is pending
-        if (System.currentTimeMillis() - lastBatteryUpdate > BATTERY_CACHE_UPDATE_INTERVAL_MS 
-            && !batteryUpdatePending) {
-            batteryUpdatePending = true
-            // Schedule update on main thread to avoid Binder issues
-            serviceScope.launch(Dispatchers.Main) {
-                try {
-                    updateBatteryCache()
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to update battery cache", e)
-                } finally {
-                    batteryUpdatePending = false
-                }
-            }
-        }
-        return cachedBatteryInfo
-    }
-    
-    private fun getBatteryInfo(): BatteryInfo {
-        val intent = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+    private fun batteryInfoFromIntent(intent: Intent?): BatteryInfo {
         val level = intent?.getIntExtra(BatteryManager.EXTRA_LEVEL, -1) ?: -1
         val scale = intent?.getIntExtra(BatteryManager.EXTRA_SCALE, -1) ?: -1
         val percentage = if (level >= 0 && scale > 0) {
@@ -3523,7 +3503,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val status = intent?.getIntExtra(BatteryManager.EXTRA_STATUS, -1) ?: -1
         val isCharging = status == BatteryManager.BATTERY_STATUS_CHARGING ||
             status == BatteryManager.BATTERY_STATUS_FULL
+
         return BatteryInfo(percentage, isCharging)
+    }
+
+    private fun updateBatteryCache(batteryInfo: BatteryInfo) {
+        cachedBatteryInfo = batteryInfo
+        lastBatteryUpdate = System.currentTimeMillis()
+    }
+    
+    private fun getCachedBatteryInfo(): BatteryInfo {
+        return cachedBatteryInfo
+    }
+    
+    private fun getBatteryInfo(): BatteryInfo {
+        return cachedBatteryInfo
     }
     
     override fun sizeLabel(size: Size): String = "${size.width}$RESOLUTION_DELIMITER${size.height}"
@@ -3590,26 +3584,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun getCameraStateJson(): String {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
-        
-        // Get RTSP encoder output FPS (actual encoded frames/sec)
-        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
-        
-        // Get battery information
-        val batteryInfo = getCachedBatteryInfo()
-        val batteryLevel = batteryInfo.level
-        val isCharging = batteryInfo.isCharging
-        
-        // Get bandwidth information (device bandwidth, not client bandwidth)
-        val bandwidthBps = getBandwidthBps()
-        
-        // Get RTSP enabled status
         val rtspEnabled = isRTSPEnabled()
-        
-        // Get CPU usage from PerformanceMetrics (accurate calculation)
-        val cpuUsage = getCpuUsagePercent().toFloat()
-        
-        // Full state JSON - used for /status endpoint and initial SSE connection
-        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"currentCameraFps":$currentCameraFps,"currentMjpegFps":$currentMjpegFps,"currentRtspFps":$rtspEncodedFps,"cpuUsage":$cpuUsage,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":$adaptiveQualityEnabled,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"$batteryMode","streamingAllowed":${isStreamingAllowed()},"batteryLevel":$batteryLevel,"isCharging":$isCharging,"bandwidthBps":$bandwidthBps,"rtspEnabled":$rtspEnabled}"""
+
+        return """{"camera":"$cameraName","resolution":"$resolutionLabel","cameraOrientation":"$cameraOrientation","rotation":$rotation,"showDateTimeOverlay":$showDateTimeOverlay,"showBatteryOverlay":$showBatteryOverlay,"showResolutionOverlay":$showResolutionOverlay,"showFpsOverlay":$showFpsOverlay,"targetMjpegFps":$targetMjpegFps,"targetRtspFps":$targetRtspFps,"adaptiveQualityEnabled":false,"flashlightAvailable":${isFlashlightAvailable()},"flashlightOn":${isFlashlightEnabled()},"batteryMode":"${batteryMode.name}","streamingAllowed":${isStreamingAllowed()},"rtspEnabled":$rtspEnabled}"""
     }
     
     /**
@@ -3620,25 +3597,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun getCameraStateDeltaJson(): String? {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
-        
-        // Get RTSP encoder output FPS (actual encoded frames/sec)
-        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
-        
-        // Get battery information
-        val batteryInfo = getCachedBatteryInfo()
-        val batteryLevel = batteryInfo.level
-        val isCharging = batteryInfo.isCharging
-        
-        // Get bandwidth information (device bandwidth, not client bandwidth)
-        val bandwidthBps = getBandwidthBps()
-        
-        // Get RTSP enabled status
         val rtspEnabled = isRTSPEnabled()
-        
-        // Get CPU usage from PerformanceMetrics (accurate calculation)
-        val cpuUsage = getCpuUsagePercent().toFloat()
-        
-        // Build map of current values
+
         val currentState = mapOf<String, Any>(
             "camera" to cameraName,
             "resolution" to resolutionLabel,
@@ -3648,20 +3608,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             "showBatteryOverlay" to showBatteryOverlay,
             "showResolutionOverlay" to showResolutionOverlay,
             "showFpsOverlay" to showFpsOverlay,
-            "currentCameraFps" to currentCameraFps,
-            "currentMjpegFps" to currentMjpegFps,
-            "currentRtspFps" to rtspEncodedFps,
-            "cpuUsage" to cpuUsage,
             "targetMjpegFps" to targetMjpegFps,
             "targetRtspFps" to targetRtspFps,
-            "adaptiveQualityEnabled" to adaptiveQualityEnabled,
+            "adaptiveQualityEnabled" to false,
             "flashlightAvailable" to isFlashlightAvailable(),
             "flashlightOn" to isFlashlightEnabled(),
             "batteryMode" to batteryMode.name,
             "streamingAllowed" to isStreamingAllowed(),
-            "batteryLevel" to batteryLevel,
-            "isCharging" to isCharging,
-            "bandwidthBps" to bandwidthBps,
             "rtspEnabled" to rtspEnabled
         )
         
@@ -3709,12 +3662,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         val cameraName = if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val resolutionLabel = selectedResolution?.let { sizeLabel(it) } ?: "auto"
         
-        // Get RTSP encoder output FPS (actual encoded frames/sec)
-        val rtspEncodedFps = rtspServer?.getMetrics()?.encodedFps ?: 0f
-        
-        // Get CPU usage from PerformanceMetrics (accurate calculation)
-        val cpuUsage = getCpuUsagePercent().toFloat()
-        
         synchronized(broadcastLock) {
             lastBroadcastState.clear()
             lastBroadcastState["camera"] = cameraName
@@ -3725,57 +3672,48 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             lastBroadcastState["showBatteryOverlay"] = showBatteryOverlay
             lastBroadcastState["showResolutionOverlay"] = showResolutionOverlay
             lastBroadcastState["showFpsOverlay"] = showFpsOverlay
-            lastBroadcastState["currentCameraFps"] = currentCameraFps
-            lastBroadcastState["currentMjpegFps"] = currentMjpegFps
-            lastBroadcastState["currentRtspFps"] = rtspEncodedFps
-            lastBroadcastState["cpuUsage"] = cpuUsage
             lastBroadcastState["targetMjpegFps"] = targetMjpegFps
             lastBroadcastState["targetRtspFps"] = targetRtspFps
-            lastBroadcastState["adaptiveQualityEnabled"] = adaptiveQualityEnabled
+            lastBroadcastState["adaptiveQualityEnabled"] = false
             lastBroadcastState["flashlightAvailable"] = isFlashlightAvailable()
             lastBroadcastState["flashlightOn"] = isFlashlightEnabled()
             lastBroadcastState["batteryMode"] = batteryMode.name
             lastBroadcastState["streamingAllowed"] = isStreamingAllowed()
+            lastBroadcastState["rtspEnabled"] = isRTSPEnabled()
         }
     }
     
-    override fun recordBytesSent(clientId: Long, bytes: Long) {
-        bandwidthMonitor.recordBytesSent(clientId, bytes)
+    override fun recordStreamingBytes(transport: StreamTransport, bytes: Long) {
+        runtimeTelemetrySampler.recordBytes(transport, bytes)
     }
-    
-    override fun removeClient(clientId: Long) {
-        bandwidthMonitor.removeClient(clientId)
-        adaptiveQualityManager.removeClient(clientId)
-    }
-    
+
     override fun getDetailedStats(): String {
-        val bandwidthStats = bandwidthMonitor.getDetailedStats()
-        val performanceStats = performanceMetrics.getDetailedStats()
-        val adaptiveStats = adaptiveQualityManager.getDetailedStats()
+        val cpuStats = performanceMetrics.createCpuStats(latestRuntimeTelemetry.cpuUsagePercent.toDouble())
+        val performanceStats = performanceMetrics.getDetailedStats(cpuStats)
         
         return """
-            $bandwidthStats
+            ${latestRuntimeTelemetry.toDebugString()}
             
             $performanceStats
-            
-            $adaptiveStats
         """.trimIndent()
     }
     
     override fun getCpuUsagePercent(): Double {
-        return performanceMetrics.getCpuUsage().processUsagePercent
+        return latestRuntimeTelemetry.cpuUsagePercent.toDouble()
     }
     
     override fun getBandwidthBps(): Long {
-        // Get current bandwidth from all active clients
-        // This is more responsive than lifetime average
-        return bandwidthMonitor.getCurrentBandwidthBps()
+        return latestRuntimeTelemetry.bandwidthBps
+    }
+
+    override fun getRuntimeTelemetrySnapshot(): RuntimeTelemetrySnapshot {
+        return latestRuntimeTelemetry
     }
     
     override fun setAdaptiveQualityEnabled(enabled: Boolean) {
-        adaptiveQualityEnabled = enabled
+        adaptiveQualityEnabled = false
         saveSettings()
-        Log.d(TAG, "Adaptive quality ${if (enabled) "enabled" else "disabled"} via HTTP")
+        Log.w(TAG, "Adaptive quality toggle ignored - feature is deprecated")
     }
     
     // ==================== RTSP Streaming Control ====================
@@ -3958,13 +3896,6 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     }
     
     // ==================== End RTSP Streaming Control ====================
-    
-    /**
-     * Broadcast connection count update to all SSE clients via HttpServer
-     */
-    private fun broadcastConnectionCount() {
-        httpServer?.broadcastConnectionCount()
-    }
     
     /**
      * Broadcast camera state changes to all SSE clients via HttpServer
