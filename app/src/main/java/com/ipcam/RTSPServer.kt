@@ -56,11 +56,11 @@ class RTSPServer(
     private var serverJob: Job? = null
     private val serverScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     
-    // Track number of actively playing sessions for consumer management
-    private val activePlayingSessions = AtomicInteger(0)
-    
-    // Track if camera consumer has been registered (for DESCRIBE early activation)
-    private val cameraConsumerRegistered = AtomicBoolean(false)
+    // Sessions that currently hold the RTSP camera lease. The lease is acquired on
+    // DESCRIBE/PLAY and released on PAUSE/TEARDOWN/disconnect so camera activation
+    // stays symmetric even when clients disconnect mid-handshake.
+    private val cameraLeaseSessions = LinkedHashSet<String>()
+    private val cameraLeaseLock = Any()
     
     // Synchronization lock for start/stop operations
     private val serverLock = Any()
@@ -808,7 +808,7 @@ class RTSPServer(
                 // Handle RTSP methods
                 when (method) {
                     "OPTIONS" -> handleOptions(writer, headers)
-                    "DESCRIBE" -> handleDescribe(writer, url, headers)
+                    "DESCRIBE" -> handleDescribe(writer, session, headers)
                     "SETUP" -> handleSetup(writer, session, headers)
                     "PLAY" -> handlePlay(writer, session, headers)
                     "PAUSE" -> handlePause(writer, session, headers)
@@ -819,21 +819,13 @@ class RTSPServer(
         } catch (e: Exception) {
             Log.e(TAG, "Error handling client $sessionId", e)
         } finally {
-            // Handle cleanup and consumer unregistration if session was playing
-            val wasPlaying = session.state == SessionState.PLAYING
-            
-            if (wasPlaying) {
-                val playingCount = activePlayingSessions.decrementAndGet()
-                Log.d(TAG, "Client $sessionId disconnected while playing (active sessions: $playingCount)")
-                
-                if (playingCount == 0 && cameraConsumerRegistered.get()) {
-                    // Last client disconnected - unregister RTSP consumer to deactivate camera
-                    Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
-                    cameraService?.unregisterRtspConsumer()
-                    cameraConsumerRegistered.set(false)
-                }
+            releaseCameraLease(sessionId, "disconnect")
+            try {
+                session.rtpSocket?.close()
+                session.rtcpSocket?.close()
+            } catch (e: Exception) {
+                Log.d(TAG, "Error closing RTP/RTCP sockets for $sessionId during disconnect", e)
             }
-            
             sessions.remove(sessionId)
             try {
                 socket.close()
@@ -853,18 +845,65 @@ class RTSPServer(
         writer.flush()
     }
     
-    private suspend fun handleDescribe(writer: BufferedWriter, url: String, headers: Map<String, String>) {
+    private fun acquireCameraLease(sessionId: String, trigger: String) {
+        synchronized(cameraLeaseLock) {
+            if (!cameraLeaseSessions.add(sessionId)) {
+                Log.d(TAG, "RTSP camera lease already held by $sessionId ($trigger)")
+                return
+            }
+
+            val leaseCount = cameraLeaseSessions.size
+            if (leaseCount == 1) {
+                Log.i(TAG, "Acquiring RTSP camera lease for $sessionId via $trigger")
+                cameraService?.registerRtspConsumer()
+            } else {
+                Log.d(TAG, "RTSP camera lease acquired for $sessionId via $trigger (leases: $leaseCount)")
+            }
+        }
+    }
+
+    fun hasActiveCameraLease(): Boolean {
+        synchronized(cameraLeaseLock) {
+            return cameraLeaseSessions.isNotEmpty()
+        }
+    }
+
+    private fun releaseCameraLease(sessionId: String, trigger: String) {
+        synchronized(cameraLeaseLock) {
+            if (!cameraLeaseSessions.remove(sessionId)) {
+                return
+            }
+
+            val leaseCount = cameraLeaseSessions.size
+            if (leaseCount == 0) {
+                Log.i(TAG, "Releasing last RTSP camera lease from $sessionId via $trigger")
+                cameraService?.unregisterRtspConsumer()
+            } else {
+                Log.d(TAG, "RTSP camera lease released from $sessionId via $trigger (leases: $leaseCount)")
+            }
+        }
+    }
+
+    private fun releaseAllCameraLeases(trigger: String) {
+        synchronized(cameraLeaseLock) {
+            val leaseCount = cameraLeaseSessions.size
+            if (leaseCount == 0) {
+                return
+            }
+
+            cameraLeaseSessions.clear()
+            Log.i(TAG, "Releasing all RTSP camera leases via $trigger (leases: $leaseCount)")
+            cameraService?.unregisterRtspConsumer()
+        }
+    }
+
+    private suspend fun handleDescribe(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
         Log.d(TAG, "DESCRIBE request received")
         
-        // Activate camera if not already active (needed to generate SPS/PPS)
-        // This ensures camera starts streaming before we wait for encoder data
-        if (!cameraConsumerRegistered.get()) {
-            Log.i(TAG, "DESCRIBE: Camera not active, registering consumer to start streaming")
-            cameraService?.registerRtspConsumer()
-            cameraConsumerRegistered.set(true)
-        }
+        // Activate camera early so SPS/PPS can be generated even before PLAY.
+        acquireCameraLease(session.sessionId, "DESCRIBE")
         
         Log.d(TAG, "Waiting for SPS/PPS...")
         
@@ -1018,22 +1057,9 @@ class RTSPServer(
     private fun handlePlay(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
-        // Update session state to playing
-        val wasPlaying = session.state == SessionState.PLAYING
+        acquireCameraLease(session.sessionId, "PLAY")
         session.state = SessionState.PLAYING
-        
-        // Register RTSP consumer when first client starts playing (if not already registered by DESCRIBE)
-        if (!wasPlaying) {
-            val playingCount = activePlayingSessions.incrementAndGet()
-            Log.d(TAG, "Client ${session.sessionId} started playing (active sessions: $playingCount)")
-            
-            if (playingCount == 1 && !cameraConsumerRegistered.get()) {
-                // First client to play and not yet registered - register RTSP consumer to activate camera
-                Log.i(TAG, "First RTSP client playing - registering consumer to activate camera")
-                cameraService?.registerRtspConsumer()
-                cameraConsumerRegistered.set(true)
-            }
-        }
+        Log.d(TAG, "Client ${session.sessionId} started playing")
         
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
@@ -1046,25 +1072,8 @@ class RTSPServer(
     private fun handleTeardown(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
-        // Handle consumer unregistration if session was playing
-        val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.INIT
-        
-        if (wasPlaying) {
-            val playingCount = activePlayingSessions.decrementAndGet()
-            Log.d(TAG, "Client ${session.sessionId} teardown (active sessions: $playingCount)")
-            
-            if (playingCount == 0) {
-                // Last client disconnected - unregister RTSP consumer to deactivate camera
-                Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
-                cameraService?.unregisterRtspConsumer()
-                // Reset flag so the next DESCRIBE/PLAY cycle re-registers the consumer and
-                // reactivates the camera.  Without this reset, subsequent clients skip
-                // consumer registration in handleDescribe/handlePlay and wait forever for
-                // SPS/PPS that never arrive (camera is inactive).
-                cameraConsumerRegistered.set(false)
-            }
-        }
+        releaseCameraLease(session.sessionId, "TEARDOWN")
         
         // Close RTP/RTCP sockets
         try {
@@ -1084,23 +1093,8 @@ class RTSPServer(
     private fun handlePause(writer: BufferedWriter, session: RTSPSession, headers: Map<String, String>) {
         val cseq = headers["cseq"] ?: "0"
         
-        // Update session state and handle consumer unregistration
-        val wasPlaying = session.state == SessionState.PLAYING
         session.state = SessionState.READY
-        
-        if (wasPlaying) {
-            val playingCount = activePlayingSessions.decrementAndGet()
-            Log.d(TAG, "Client ${session.sessionId} paused (active sessions: $playingCount)")
-            
-            if (playingCount == 0) {
-                // Last client paused - unregister RTSP consumer to deactivate camera
-                Log.i(TAG, "Last RTSP client paused - unregistering consumer to deactivate camera")
-                cameraService?.unregisterRtspConsumer()
-                // Reset the flag so a subsequent PLAY re-registers the consumer and
-                // reactivates the camera (same reason as in handleTeardown).
-                cameraConsumerRegistered.set(false)
-            }
-        }
+        releaseCameraLease(session.sessionId, "PAUSE")
         
         writer.write("RTSP/1.0 200 OK\r\n")
         writer.write("CSeq: $cseq\r\n")
@@ -1781,13 +1775,7 @@ class RTSPServer(
             isRunning.set(false)
             isEncoding.set(false)
             
-            // Unregister RTSP consumer if there were active sessions or camera was registered
-            if (activePlayingSessions.get() > 0 || cameraConsumerRegistered.get()) {
-                Log.i(TAG, "RTSP server stopping with ${activePlayingSessions.get()} active sessions - unregistering consumer")
-                cameraService?.unregisterRtspConsumer()
-                activePlayingSessions.set(0)
-                cameraConsumerRegistered.set(false)
-            }
+            releaseAllCameraLeases("server stop")
             
             try {
                 // Close all sessions

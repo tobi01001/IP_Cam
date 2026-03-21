@@ -235,6 +235,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var frontCameraResolution: Size? = null
     // Flashlight control
     @Volatile private var camera: androidx.camera.core.Camera? = null
+    private var cameraStateLiveData: androidx.lifecycle.LiveData<androidx.camera.core.CameraState>? = null
+    private var cameraStateObserver: androidx.lifecycle.Observer<androidx.camera.core.CameraState>? = null
     @Volatile private var isFlashlightOn: Boolean = false
     @Volatile private var hasFlashUnit: Boolean = false
     @Volatile private var isTorchOperationInProgress: Boolean = false // Prevent concurrent torch operations
@@ -244,6 +246,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var lastBindRequestTime: Long = 0 // Time of last bind request
     private var pendingBindJob: Job? = null // Job for pending bind operation
     @Volatile private var hasPendingRebind: Boolean = false // Track if a rebind was requested while binding in progress
+    @Volatile private var pendingRtspPipelineRefresh: Boolean = false
     // Cache display metrics and battery info to avoid Binder calls from HTTP threads
     private var cachedDensity: Float = 0f
     private var cachedBatteryInfo: BatteryInfo = BatteryInfo(0, false)
@@ -310,6 +313,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     @Volatile private var currentCpuUsage: Float = 0f // Current CPU usage percentage (0-100)
     
     private var watchdogRetryDelay: Long = WATCHDOG_RETRY_DELAY_MS
+    @Volatile private var lastCameraStartupAtMs: Long = 0L
     // Enhanced watchdog - track last frame timestamp to detect frozen frames
     @Volatile private var lastWatchdogFrameTimestamp: Long = 0L
     @Volatile private var frozenFrameDetectionCount: Int = 0
@@ -363,6 +367,70 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     
     // Bitmap pool for memory-efficient bitmap reuse
     private val bitmapPool = BitmapPool(maxPoolSizeBytes = 64L * 1024 * 1024) // 64 MB pool
+
+    private fun clearLastProcessedFrame(reason: String) {
+        val oldFrame = lastProcessedFrame.getAndSet(null) ?: return
+        bitmapPool.recycleBitmap(oldFrame.bitmap)
+        Log.d(TAG, "Last processed frame cleared ($reason)")
+    }
+
+    private fun clearRtspPipeline(reason: String) {
+        val hadRtspPipeline = h264Encoder != null || videoCaptureUseCase != null
+        if (hadRtspPipeline) {
+            Log.d(TAG, "Clearing RTSP pipeline ($reason)")
+        }
+
+        h264Encoder?.stop()
+        h264Encoder = null
+        videoCaptureUseCase = null
+    }
+
+    private fun hasBoundRtspPipeline(): Boolean {
+        return h264Encoder != null || videoCaptureUseCase != null
+    }
+
+    private fun shouldBindRtspPipeline(): Boolean {
+        return rtspEnabled && rtspServer?.hasActiveCameraLease() == true
+    }
+
+    private fun refreshRtspPipelineIfNeeded(reason: String) {
+        val shouldBind = shouldBindRtspPipeline()
+        val isBound = hasBoundRtspPipeline()
+
+        if (shouldBind == isBound) {
+            pendingRtspPipelineRefresh = false
+            return
+        }
+
+        val currentState = synchronized(cameraStateLock) { cameraState }
+        if (currentState != CameraState.ACTIVE) {
+            pendingRtspPipelineRefresh = true
+            Log.d(
+                TAG,
+                "Deferring RTSP pipeline refresh ($reason): state=$currentState, shouldBind=$shouldBind, isBound=$isBound"
+            )
+            return
+        }
+
+        pendingRtspPipelineRefresh = false
+        Log.i(
+            TAG,
+            "RTSP pipeline refresh required ($reason): state=$currentState, shouldBind=$shouldBind, isBound=$isBound"
+        )
+        requestBindCamera()
+    }
+
+    private fun noteCameraStartup(reason: String) {
+        lastCameraStartupAtMs = System.currentTimeMillis()
+        lastWatchdogFrameTimestamp = 0L
+        frozenFrameDetectionCount = 0
+        Log.d(TAG, "Camera startup grace window refreshed ($reason)")
+    }
+
+    private fun isWithinCameraStartupGracePeriod(now: Long = System.currentTimeMillis()): Boolean {
+        val startupAt = lastCameraStartupAtMs
+        return startupAt > 0L && now - startupAt < CAMERA_WATCHDOG_STARTUP_GRACE_MS
+    }
     
     // ==================== Camera State Management ====================
     
@@ -407,6 +475,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
          private const val RESOLUTION_DELIMITER = "x"
          private const val WATCHDOG_RETRY_DELAY_MS = 1_000L
          private const val WATCHDOG_MAX_RETRY_DELAY_MS = 30_000L
+         private const val CAMERA_WATCHDOG_STARTUP_GRACE_MS = 3_000L
          // Camera rebinding debounce
          private const val CAMERA_REBIND_DEBOUNCE_MS = 500L // Minimum time between rebind requests
          // Intent extras
@@ -855,6 +924,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         }
         
         try {
+            detachCameraStateObserver()
             Log.d(TAG, "Unbinding all use cases before rebinding...")
             cameraProvider?.unbindAll()
             
@@ -862,8 +932,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "Binding camera with resolution: ${resolution.width}x${resolution.height}")
             
             // === Use Case 1: Preview for H.264 Encoding (Hardware MediaCodec) ===
-            // Only create if RTSP is enabled
-            if (rtspEnabled) {
+            // Only create when an RTSP client currently holds a camera lease.
+            val bindRtspPipeline = shouldBindRtspPipeline()
+            if (bindRtspPipeline) {
                 try {
                     // Create H.264 encoder
                     h264Encoder = H264PreviewEncoder(
@@ -930,14 +1001,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.i(TAG, "H.264 encoder created and connected with target FPS: $targetRtspFps")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create H.264 encoder", e)
-                    h264Encoder = null
-                    videoCaptureUseCase = null
+                    clearRtspPipeline("encoder creation failure")
                 }
             } else {
-                // RTSP disabled - clean up encoder if exists
-                h264Encoder?.stop()
-                h264Encoder = null
-                videoCaptureUseCase = null
+                clearRtspPipeline(if (rtspEnabled) "no active RTSP leases" else "RTSP disabled")
             }
             
             // === Use Case 2: ImageAnalysis for MJPEG (CPU, throttled to targetMjpegFps) ===
@@ -1000,7 +1067,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 mjpegAnalysis         // Always bind MJPEG/ImageAnalysis pipeline
             )
             
-            // Add H.264 encoder preview if RTSP is enabled
+            // Add H.264 encoder preview only when an active RTSP session needs it
             videoCaptureUseCase?.let { useCases.add(it) }
             
             Log.d(TAG, "Binding ${useCases.size} use cases to lifecycle (ImageAnalysis${if (videoCaptureUseCase != null) " + H264 Preview" else ""})")
@@ -1022,63 +1089,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             // Note: Torch restoration happens automatically via camera state observer
             // When camera state changes to OPEN, torch is restored if isFlashlightOn=true
-            // See camera state observer below (line ~1067)
+            // See attachCameraStateObserver() for the observer lifecycle
             
             Log.d(TAG, "Camera bound successfully to ${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"} camera. Frame processing should resume.")
             
-            // Monitor camera state for lifecycle events
-            // This helps detect when camera is closed or in error state
-            // Use observeForever to avoid triggering multiple times on same state
-            val cameraStateObserver = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { cameraState ->
-                Log.d(TAG, "Camera state changed: ${cameraState.type}, error: ${cameraState.error?.toString() ?: "none"}")
-                
-                when (cameraState.type) {
-                    androidx.camera.core.CameraState.Type.CLOSED -> {
-                        Log.w(TAG, "Camera CLOSED state detected - camera may need rebinding")
-                        // Don't automatically rebind here to avoid infinite loops
-                        // Let the watchdog handle recovery via frame stale detection
-                    }
-                    androidx.camera.core.CameraState.Type.CLOSING -> {
-                        Log.d(TAG, "Camera closing...")
-                    }
-                    androidx.camera.core.CameraState.Type.PENDING_OPEN -> {
-                        Log.d(TAG, "Camera opening...")
-                    }
-                    androidx.camera.core.CameraState.Type.OPENING -> {
-                        Log.d(TAG, "Camera is opening...")
-                    }
-                    androidx.camera.core.CameraState.Type.OPEN -> {
-                        Log.i(TAG, "Camera is open and ready")
-                        // Restore torch state now that camera is fully open
-                        if (isFlashlightOn && hasFlashUnit) {
-                            Log.d(TAG, "Camera opened - restoring torch state")
-                            enableTorch(true)
-                        }
-                    }
-                }
-                
-                // Log any errors for debugging
-                cameraState.error?.let { error ->
-                    Log.e(TAG, "Camera error: code=${error.code}, ${error.cause?.message ?: "no cause"}", error.cause)
-                    
-                    // For critical errors, clear camera reference so watchdog can retry
-                    // Only clear once to avoid repeated logging
-                    if (camera != null && 
-                        (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
-                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
-                         error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE)) {
-                        Log.e(TAG, "Critical camera error detected, clearing camera reference for recovery")
-                        camera = null
-                    }
-                }
-            }
-            
-            camera?.cameraInfo?.cameraState?.observe(this, cameraStateObserver)
+            camera?.let { attachCameraStateObserver(it) }
             
             // Camera binding successful - update state
+            noteCameraStartup("camera bound")
             synchronized(cameraStateLock) {
                 cameraState = CameraState.ACTIVE
                 Log.d(TAG, "Camera binding successful → ACTIVE state")
+            }
+
+            if (pendingRtspPipelineRefresh) {
+                refreshRtspPipelineIfNeeded("post-bind deferred refresh")
             }
             
             // Notify observers that camera state has changed (binding completed)
@@ -1112,7 +1137,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * 
      * MUST be called on main thread due to CameraX unbindAll() requirement.
      */
-    private fun stopCamera() {
+    private fun stopCamera(reactivateConsumersAfterStop: Boolean = true) {
         try {
             Log.d(TAG, "Stopping camera...")
             
@@ -1122,13 +1147,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Only maintain torch if it was on and device has flash capability
             val shouldMaintainTorch = isFlashlightOn && hasFlashUnit
             
-            // Stop H.264 encoder first
-            h264Encoder?.stop()
-            h264Encoder = null
-            videoCaptureUseCase = null
+            // Stop RTSP pipeline first so MediaCodec and Preview surface are released before unbind.
+            clearRtspPipeline("camera stop")
             
             // Clear old analyzer to stop frame processing
             imageAnalysis?.clearAnalyzer()
+            detachCameraStateObserver()
             
             // Unbind all use cases from lifecycle - MUST be on main thread
             android.os.Handler(android.os.Looper.getMainLooper()).post {
@@ -1156,8 +1180,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 }
             }
             
-            // Clear frame data
-            lastProcessedFrame.set(null)
+            clearLastProcessedFrame("camera stop")
             
             // Reset FPS counters when camera is stopped
             currentCameraFps = 0f
@@ -1179,7 +1202,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // If consumers registered while the camera was stopping (e.g. a new MJPEG client
             // connected just as the last one disconnected), reactivate the camera immediately
             // instead of waiting for the watchdog (which runs every 5-10 s).
-            if (hasConsumers()) {
+            if (reactivateConsumersAfterStop && hasConsumers()) {
                 Log.d(TAG, "Consumers waiting after stopCamera(), reactivating camera immediately")
                 activateCameraForConsumers()
             }
@@ -1224,7 +1247,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             pendingBindJob = null
             
             // Stop camera first (clears H.264 encoder, analyzer, unbinds all)
-            stopCamera()
+            // Full reset manages restart explicitly after teardown completes.
+            stopCamera(reactivateConsumersAfterStop = false)
             
             // Wait for stopCamera to complete (unbindAll is posted to main thread)
             Thread.sleep(300)
@@ -1238,15 +1262,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.d(TAG, "ImageAnalysis cleared")
             
             // Clear H.264 encoder and video use case (should already be cleared by stopCamera)
-            h264Encoder?.stop()
-            h264Encoder = null
-            videoCaptureUseCase = null
+            clearRtspPipeline("full camera reset")
             
             // Clear camera reference
             camera = null
             
-            // Clear frame data
-            lastProcessedFrame.set(null)
+            clearLastProcessedFrame("full camera reset")
             
             // Reset binding state flags to prevent stale state
             synchronized(bindingLock) {
@@ -1346,6 +1367,17 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      */
     private fun requestBindCamera() {
         val now = System.currentTimeMillis()
+        val currentCameraLifecycleState = synchronized(cameraStateLock) { cameraState }
+        val hasActiveConsumers = hasConsumers()
+
+        if (!hasActiveConsumers &&
+            (currentCameraLifecycleState == CameraState.IDLE || currentCameraLifecycleState == CameraState.ERROR)) {
+            Log.d(
+                TAG,
+                "requestBindCamera() skipped - no active consumers and camera state is $currentCameraLifecycleState; settings will apply on next activation"
+            )
+            return
+        }
         
         // Time-based debouncing: Check if enough time has passed since last request
         synchronized(bindingLock) {
@@ -1390,12 +1422,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             try {
                 // Stop camera first to ensure clean state
                 Log.d(TAG, "Stopping camera before rebinding...")
-                stopCamera()
+                stopCamera(reactivateConsumersAfterStop = false)
                 
                 // Schedule rebinding after a short delay to ensure resources are released
                 // Using Handler instead of Thread.sleep to avoid blocking main thread
                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                     try {
+                        if (!hasConsumers()) {
+                            pendingRtspPipelineRefresh = false
+                            Log.d(TAG, "Skipping delayed rebind - consumers disappeared after stop; camera stays idle")
+                            return@postDelayed
+                        }
+
                         Log.d(TAG, "Delay complete, rebinding camera now...")
                         bindCamera()
                         // Callback is now invoked directly in bindCamera() after binding succeeds
@@ -1630,16 +1668,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 // Note: MJPEG FPS is tracked by HttpServer when frames are actually served to clients
                 // Don't track here to avoid double-counting
                 
-                // Notify MainActivity if it's listening - use pool for copying
-                val previewCopy = try {
-                    bitmapPool.copy(annotatedBitmap, annotatedBitmap.config ?: Bitmap.Config.ARGB_8888, false)
-                } catch (t: Throwable) {
-                    Log.w(TAG, "Failed to copy bitmap for MainActivity preview", t)
-                    null
-                }
-                if (previewCopy != null) {
-                    // LIFECYCLE SAFETY: Use safe callback invocation to prevent crashes if MainActivity destroyed
-                    safeInvokeFrameCallback(previewCopy)
+                // Notify MainActivity only when it actively requested preview frames.
+                if (onFrameAvailableCallback != null) {
+                    val previewCopy = try {
+                        bitmapPool.copy(annotatedBitmap, annotatedBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Failed to copy bitmap for MainActivity preview", t)
+                        null
+                    }
+                    if (previewCopy != null) {
+                        // LIFECYCLE SAFETY: Use safe callback invocation to prevent crashes if MainActivity destroyed
+                        safeInvokeFrameCallback(previewCopy)
+                    }
                 }
                 
             } catch (e: Exception) {
@@ -2139,6 +2179,14 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Broadcast state change to web clients
         broadcastCameraState()
+
+        if (!hasConsumers()) {
+            val currentState = synchronized(cameraStateLock) { cameraState }
+            if (currentState == CameraState.IDLE || currentState == CameraState.ERROR) {
+                Log.d(TAG, "Resolution updated with no active consumers, deferring camera rebind until next activation")
+                return
+            }
+        }
         
         requestBindCamera()
     }
@@ -2246,15 +2294,16 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             targetRtspFps = newFps
             saveSettings()
             
-            // If FPS changed and RTSP is enabled, need to rebind camera to recreate encoder with new FPS
-            if (rtspEnabled) {
-                Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding camera to apply change")
+            // Only a live RTSP pipeline needs an immediate rebind; otherwise the next RTSP lease
+            // will pick up the new FPS automatically.
+            if (hasBoundRtspPipeline()) {
+                Log.d(TAG, "RTSP FPS changed from $oldFps to $targetRtspFps, rebinding active RTSP pipeline")
                 broadcastCameraState()
                 // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
                 safeInvokeCameraStateCallback(currentCamera)
                 requestBindCamera()
             } else {
-                // RTSP not enabled, just broadcast the setting change
+                // No active RTSP pipeline, just broadcast the setting change
                 broadcastCameraState()
                 // LIFECYCLE SAFETY: Use safe callback to prevent crashes if MainActivity destroyed
                 safeInvokeCameraStateCallback(currentCamera)
@@ -2565,8 +2614,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         onCameraStateChangedCallback = callback
     }
     
-    fun setOnFrameAvailableCallback(callback: (Bitmap) -> Unit) {
+    fun setOnFrameAvailableCallback(callback: ((Bitmap) -> Unit)?) {
         onFrameAvailableCallback = callback
+    }
+
+    fun releasePreviewBitmap(bitmap: Bitmap?) {
+        bitmapPool.recycleBitmap(bitmap)
     }
     
     fun setOnConnectionsChangedCallback(callback: () -> Unit) {
@@ -2646,6 +2699,89 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         
         // Invoke callback if set
         onConnectionsChangedCallback?.invoke()
+    }
+
+    private fun attachCameraStateObserver(boundCamera: androidx.camera.core.Camera) {
+        if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                attachCameraStateObserver(boundCamera)
+            }
+            return
+        }
+
+        detachCameraStateObserver()
+
+        val liveData = boundCamera.cameraInfo.cameraState
+        val observer = androidx.lifecycle.Observer<androidx.camera.core.CameraState> { cameraState ->
+            Log.d(TAG, "Camera state changed: ${cameraState.type}, error: ${cameraState.error?.toString() ?: "none"}")
+
+            when (cameraState.type) {
+                androidx.camera.core.CameraState.Type.CLOSED -> {
+                    Log.w(TAG, "Camera CLOSED state detected - camera may need rebinding")
+                    // Don't automatically rebind here to avoid infinite loops
+                    // Let the watchdog handle recovery via frame stale detection
+                }
+                androidx.camera.core.CameraState.Type.CLOSING -> {
+                    Log.d(TAG, "Camera closing...")
+                }
+                androidx.camera.core.CameraState.Type.PENDING_OPEN -> {
+                    Log.d(TAG, "Camera opening...")
+                }
+                androidx.camera.core.CameraState.Type.OPENING -> {
+                    Log.d(TAG, "Camera is opening...")
+                }
+                androidx.camera.core.CameraState.Type.OPEN -> {
+                    Log.i(TAG, "Camera is open and ready")
+                    if (isFlashlightOn && hasFlashUnit) {
+                        Log.d(TAG, "Camera opened - restoring torch state")
+                        enableTorch(true)
+                    }
+                }
+            }
+
+            cameraState.error?.let { error ->
+                Log.e(TAG, "Camera error: code=${error.code}, ${error.cause?.message ?: "no cause"}", error.cause)
+
+                if (camera != null &&
+                    (error.code == androidx.camera.core.CameraState.ERROR_CAMERA_DISABLED ||
+                     error.code == androidx.camera.core.CameraState.ERROR_CAMERA_FATAL_ERROR ||
+                     error.code == androidx.camera.core.CameraState.ERROR_CAMERA_IN_USE)) {
+                    Log.e(TAG, "Critical camera error detected, clearing camera reference for recovery")
+                    camera = null
+                }
+            }
+        }
+
+        liveData.observe(this, observer)
+        cameraStateLiveData = liveData
+        cameraStateObserver = observer
+    }
+
+    private fun detachCameraStateObserver() {
+        val liveData = cameraStateLiveData
+        val observer = cameraStateObserver
+        if (liveData == null || observer == null) {
+            return
+        }
+
+        cameraStateLiveData = null
+        cameraStateObserver = null
+
+        val detachAction = {
+            try {
+                liveData.removeObserver(observer)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error detaching camera state observer", e)
+            }
+        }
+
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            detachAction()
+        } else {
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                detachAction()
+            }
+        }
     }
     
     override fun getActiveConnectionsCount(): Int {
@@ -2826,6 +2962,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         orientationEventListener?.disable()
         httpServer?.stop()
         wifiDebuggingManager?.stopMonitoring()
+        detachCameraStateObserver()
         cameraProvider?.unbindAll()
         
         // Shutdown executors in proper order
@@ -2849,12 +2986,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // 3. Streaming executor (stops client connections)
         streamingExecutor.shutdownNow() // Forcefully terminate streaming threads
         
-        // ATOMIC FRAME CLEANUP: Clear the processed frame and return bitmap to pool
-        val oldFrame = lastProcessedFrame.getAndSet(null)
-        if (oldFrame != null) {
-            bitmapPool.returnBitmap(oldFrame.bitmap)
-            Log.d(TAG, "Last processed frame cleared and bitmap returned to pool")
-        }
+        clearLastProcessedFrame("service destroy")
         
         // Clear bitmap pool to free all memory
         bitmapPool.clear()
@@ -3127,103 +3259,120 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 
                 // Only check camera health if there are active consumers
                 val hasActiveConsumers = hasConsumers()
+                val currentCameraLifecycleState = synchronized(cameraStateLock) { cameraState }
+                val bindingInProgress = synchronized(bindingLock) { isBindingInProgress }
+                val now = System.currentTimeMillis()
+                val startupGraceActive = isWithinCameraStartupGracePeriod(now)
                 
                 if (hasActiveConsumers) {
-                    // Check camera provider health - ensure camera is initialized when consumers need it
-                    // This handles cases where permission was granted after service started
-                    if (cameraProvider == null) {
-                        val hasPermission = ContextCompat.checkSelfPermission(
-                            this@CameraService, 
-                            Manifest.permission.CAMERA
-                        ) == PackageManager.PERMISSION_GRANTED
-                        
-                        if (hasPermission) {
-                            Log.w(TAG, "Watchdog: Camera provider not initialized but consumers waiting, starting camera...")
-                            startCamera()
-                            needsRecovery = true
-                        } else {
-                            // Permission not granted - don't count as recovery needed
-                            // Log every 30 seconds to avoid spam
-                            if (watchdogRetryDelay >= 30_000L) {
-                                Log.d(TAG, "Watchdog: Camera provider not initialized, waiting for permission...")
-                            }
-                        }
-                    } else if (camera == null) {
-                        // Camera provider exists but camera not bound, with active consumers
-                        // This happens after ERROR_CAMERA_DISABLED or other binding failures
-                        Log.w(TAG, "Watchdog: Camera provider exists but camera not bound (${getConsumerCount()} consumers), binding camera...")
-                        
-                        // CameraX requires main thread for binding operations
-                        // Post to main thread to avoid IllegalStateException
-                        android.os.Handler(android.os.Looper.getMainLooper()).post {
-                            try {
-                                bindCamera()
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
-                            }
-                        }
-                        needsRecovery = true
-                    }
-                    
-                    // Check camera health - only if camera is bound
-                    if (camera != null) {
-                        // ATOMIC FRAME ACCESS: Get timestamp from atomic reference
-                        val currentFrame = lastProcessedFrame.get()
-                        val lastTimestamp = currentFrame?.timestamp ?: 0L
-                        val frameAge = System.currentTimeMillis() - lastTimestamp
-                        
-                        // Check 1: Frame stale (no new frames)
-                        if (frameAge > FRAME_STALE_THRESHOLD_MS) {
-                            Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
-                            requestBindCamera()
-                            needsRecovery = true
-                            // Reset frozen frame detection since we're doing basic recovery
-                            frozenFrameDetectionCount = 0
-                            lastWatchdogFrameTimestamp = 0L
-                        } else {
-                            // Check 2: Frozen frame detection (same frame being served repeatedly)
-                            // This catches cases where timestamp updates but content is frozen
-                            if (lastTimestamp > 0L) {
-                                if (lastTimestamp == lastWatchdogFrameTimestamp) {
-                                    // Same frame as last check - increment frozen counter
-                                    frozenFrameDetectionCount++
-                                    Log.w(TAG, "Watchdog: Same frame detected (timestamp=$lastTimestamp) - frozen count: $frozenFrameDetectionCount/$FROZEN_FRAME_DETECTION_COUNT")
-                                    
-                                    // If frozen for too many consecutive checks, trigger full reset
-                                    if (frozenFrameDetectionCount >= FROZEN_FRAME_DETECTION_COUNT) {
-                                        Log.e(TAG, "Watchdog: Camera frozen detected (same frame $FROZEN_FRAME_DETECTION_COUNT times), performing FULL RESET...")
-                                        serviceScope.launch {
-                                            val resetSuccess = fullCameraReset()
-                                            if (!resetSuccess) {
-                                                Log.e(TAG, "Watchdog: Full camera reset failed")
-                                            }
-                                        }
-                                        needsRecovery = true
-                                        frozenFrameDetectionCount = 0
-                                    }
-                                } else {
-                                    // Different frame - camera is working, reset counter
-                                    if (frozenFrameDetectionCount > 0) {
-                                        Log.d(TAG, "Watchdog: Frame updated (new timestamp=$lastTimestamp), reset frozen counter")
-                                    }
-                                    frozenFrameDetectionCount = 0
+                    if (bindingInProgress) {
+                        Log.d(TAG, "Watchdog: Managed rebind in progress, skipping recovery checks")
+                    } else if (currentCameraLifecycleState == CameraState.INITIALIZING ||
+                        currentCameraLifecycleState == CameraState.STOPPING) {
+                        Log.d(TAG, "Watchdog: Camera transition in progress ($currentCameraLifecycleState), skipping recovery checks")
+                    } else {
+                        // Check camera provider health - ensure camera is initialized when consumers need it
+                        // This handles cases where permission was granted after service started
+                        if (cameraProvider == null) {
+                            val hasPermission = ContextCompat.checkSelfPermission(
+                                this@CameraService, 
+                                Manifest.permission.CAMERA
+                            ) == PackageManager.PERMISSION_GRANTED
+                            
+                            if (hasPermission) {
+                                Log.w(TAG, "Watchdog: Camera provider not initialized but consumers waiting, starting camera...")
+                                noteCameraStartup("watchdog startCamera")
+                                startCamera()
+                                needsRecovery = true
+                            } else {
+                                // Permission not granted - don't count as recovery needed
+                                // Log every 30 seconds to avoid spam
+                                if (watchdogRetryDelay >= 30_000L) {
+                                    Log.d(TAG, "Watchdog: Camera provider not initialized, waiting for permission...")
                                 }
-                                lastWatchdogFrameTimestamp = lastTimestamp
                             }
-                        }
-                        
-                        // Check camera state - detect CLOSED state which indicates camera was released
-                        val cameraState = try {
-                            camera?.cameraInfo?.cameraState?.value
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Watchdog: Error reading camera state", e)
-                            null
-                        }
-                        
-                        if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
-                            Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
-                            requestBindCamera()
+                        } else if (camera == null) {
+                            // Camera provider exists but camera not bound, with active consumers
+                            // This happens after ERROR_CAMERA_DISABLED or other binding failures
+                            Log.w(TAG, "Watchdog: Camera provider exists but camera not bound (${getConsumerCount()} consumers), binding camera...")
+                            
+                            // CameraX requires main thread for binding operations
+                            // Post to main thread to avoid IllegalStateException
+                            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                try {
+                                    noteCameraStartup("watchdog bindCamera")
+                                    bindCamera()
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Watchdog: Error binding camera from main thread", e)
+                                }
+                            }
                             needsRecovery = true
+                        }
+                        
+                        // Check camera health - only if camera is bound
+                        if (camera != null) {
+                            if (startupGraceActive) {
+                                Log.d(TAG, "Watchdog: Camera startup grace active, skipping frame health checks")
+                            } else {
+                                // ATOMIC FRAME ACCESS: Get timestamp from atomic reference
+                                val currentFrame = lastProcessedFrame.get()
+                                val lastTimestamp = currentFrame?.timestamp ?: 0L
+                                val frameAge = now - lastTimestamp
+                                
+                                // Check 1: Frame stale (no new frames)
+                                if (frameAge > FRAME_STALE_THRESHOLD_MS) {
+                                    Log.w(TAG, "Watchdog: Frame stale (${frameAge}ms), restarting camera...")
+                                    requestBindCamera()
+                                    needsRecovery = true
+                                    // Reset frozen frame detection since we're doing basic recovery
+                                    frozenFrameDetectionCount = 0
+                                    lastWatchdogFrameTimestamp = 0L
+                                } else {
+                                    // Check 2: Frozen frame detection (same frame being served repeatedly)
+                                    // This catches cases where timestamp updates but content is frozen
+                                    if (lastTimestamp > 0L) {
+                                        if (lastTimestamp == lastWatchdogFrameTimestamp) {
+                                            // Same frame as last check - increment frozen counter
+                                            frozenFrameDetectionCount++
+                                            Log.w(TAG, "Watchdog: Same frame detected (timestamp=$lastTimestamp) - frozen count: $frozenFrameDetectionCount/$FROZEN_FRAME_DETECTION_COUNT")
+                                            
+                                            // If frozen for too many consecutive checks, trigger full reset
+                                            if (frozenFrameDetectionCount >= FROZEN_FRAME_DETECTION_COUNT) {
+                                                Log.e(TAG, "Watchdog: Camera frozen detected (same frame $FROZEN_FRAME_DETECTION_COUNT times), performing FULL RESET...")
+                                                serviceScope.launch {
+                                                    val resetSuccess = fullCameraReset()
+                                                    if (!resetSuccess) {
+                                                        Log.e(TAG, "Watchdog: Full camera reset failed")
+                                                    }
+                                                }
+                                                needsRecovery = true
+                                                frozenFrameDetectionCount = 0
+                                            }
+                                        } else {
+                                            // Different frame - camera is working, reset counter
+                                            if (frozenFrameDetectionCount > 0) {
+                                                Log.d(TAG, "Watchdog: Frame updated (new timestamp=$lastTimestamp), reset frozen counter")
+                                            }
+                                            frozenFrameDetectionCount = 0
+                                        }
+                                        lastWatchdogFrameTimestamp = lastTimestamp
+                                    }
+                                }
+                                
+                                // Check camera state - detect CLOSED state which indicates camera was released
+                                val cameraState = try {
+                                    camera?.cameraInfo?.cameraState?.value
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Watchdog: Error reading camera state", e)
+                                    null
+                                }
+                                
+                                if (cameraState?.type == androidx.camera.core.CameraState.Type.CLOSED) {
+                                    Log.w(TAG, "Watchdog: Camera is in CLOSED state, rebinding...")
+                                    requestBindCamera()
+                                    needsRecovery = true
+                                }
+                            }
                         }
                     }
                 } else {
@@ -3784,9 +3933,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             
             rtspEnabled = true
             
-            // NOTE: Camera is NOT activated here - it stays idle
-            // RTSP server just starts listening for connections
-            // Camera will activate when clients send PLAY command
+            // NOTE: Camera is NOT activated here - it stays idle.
+            // RTSP server just starts listening for connections.
+            // Camera/pipeline will activate on-demand when a client acquires an RTSP session lease.
             
             // Reset RTSP FPS counter when enabling to start fresh
             currentRtspFps = 0f
@@ -3841,10 +3990,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             saveSettings()
             Log.i(TAG, "RTSP streaming disabled")
             
-            // Rebind camera to remove H.264 encoder use case
-            // This frees resources when RTSP is disabled
-            Log.d(TAG, "Rebinding camera to remove H.264 encoder pipeline")
-            requestBindCamera()
+            // Rebind only if a camera is still active for other consumers and the RTSP pipeline
+            // is currently attached. Otherwise stopCamera()/next bind will handle cleanup.
+            if (hasConsumers() && hasBoundRtspPipeline()) {
+                Log.d(TAG, "Rebinding camera to remove active H.264 encoder pipeline")
+                requestBindCamera()
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Error disabling RTSP streaming", e)
@@ -3991,6 +4142,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 CameraState.IDLE -> {
                     Log.d(TAG, "Camera IDLE → INITIALIZING (on-demand activation)")
                     cameraState = CameraState.INITIALIZING
+                    noteCameraStartup("consumer activation from IDLE")
                     serviceScope.launch {
                         delay(CAMERA_ACTIVATION_DELAY_MS)
                         startCamera()
@@ -3999,6 +4151,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 CameraState.ERROR -> {
                     Log.d(TAG, "Camera in ERROR state, retrying initialization...")
                     cameraState = CameraState.INITIALIZING
+                    noteCameraStartup("consumer activation from ERROR")
                     serviceScope.launch {
                         delay(CAMERA_ACTIVATION_DELAY_MS)
                         startCamera()
@@ -4037,7 +4190,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                     Log.d(TAG, "Camera $cameraState → STOPPING (no consumers)")
                     cameraState = CameraState.STOPPING
                     serviceScope.launch {
-                        stopCamera()
+                        stopCamera(reactivateConsumersAfterStop = false)
                     }
                 }
                 CameraState.IDLE -> {
@@ -4095,11 +4248,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     fun registerRtspConsumer() {
         Log.d(TAG, "RTSP client connected, registering consumer")
         registerConsumer(ConsumerType.RTSP)
+        refreshRtspPipelineIfNeeded("RTSP consumer registered")
     }
     
     fun unregisterRtspConsumer() {
         Log.d(TAG, "RTSP client disconnected, unregistering consumer")
         unregisterConsumer(ConsumerType.RTSP)
+        refreshRtspPipelineIfNeeded("RTSP consumer unregistered")
     }
     
     // Manual activation methods implementing interface (for testing/debugging)
