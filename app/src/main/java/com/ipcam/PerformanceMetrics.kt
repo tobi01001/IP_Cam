@@ -185,10 +185,11 @@ class PerformanceMetrics(private val context: Context) {
     /**
      * Get CPU usage estimate using Process.getElapsedCpuTime().
      * This uses the official Android API that doesn't require reading /proc/stat.
-     * Returns the percentage of CPU time used by this process.
+     * Returns the process CPU usage normalized to total device CPU capacity (0-100%).
      */
     fun getCpuUsage(): CpuStats {
         val currentTimeMs = System.currentTimeMillis()
+        val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
         
         // Get elapsed CPU time for this process (in milliseconds)
         // This is the total CPU time consumed by the process since it started
@@ -200,13 +201,10 @@ class PerformanceMetrics(private val context: Context) {
             val wallClockDeltaMs = currentTimeMs - lastMeasurementTimeMs
             
             if (wallClockDeltaMs > 0) {
-                // CPU usage = (CPU time delta / wall-clock time delta) * 100
-                // This gives us the percentage of one core's time that we're using
-                val cores = Runtime.getRuntime().availableProcessors()
-                // Normalize to show usage across all cores (0-100% range)
-                val usagePercent = (cpuDeltaMs.toDouble() / wallClockDeltaMs) * 100.0
-                // Cap at 100% to handle any measurement anomalies
-                usagePercent.coerceIn(0.0, 100.0)
+                // Process.getElapsedCpuTime() accumulates CPU time across all threads/cores.
+                // Divide by core count so UI shows share of total device CPU capacity.
+                val totalCoreUsagePercent = (cpuDeltaMs.toDouble() / wallClockDeltaMs) * 100.0
+                (totalCoreUsagePercent / cores).coerceIn(0.0, 100.0)
             } else {
                 0.0
             }
@@ -218,22 +216,22 @@ class PerformanceMetrics(private val context: Context) {
         lastCpuTimeMs = currentCpuTimeMs
         lastMeasurementTimeMs = currentTimeMs
         
-        // Get number of CPU cores
-        val cores = Runtime.getRuntime().availableProcessors()
-        
         return CpuStats(
             processUsagePercent = processUsage,
-            perCoreUsagePercent = processUsage / cores,
+            equivalentBusyCores = (processUsage / 100.0) * cores,
+            availableCores = cores,
             isHighUsage = processUsage > CPU_HIGH_THRESHOLD * 100
         )
     }
 
     fun createCpuStats(processUsagePercent: Double): CpuStats {
         val cores = Runtime.getRuntime().availableProcessors().coerceAtLeast(1)
+        val normalizedUsagePercent = processUsagePercent.coerceIn(0.0, 100.0)
         return CpuStats(
-            processUsagePercent = processUsagePercent,
-            perCoreUsagePercent = processUsagePercent / cores,
-            isHighUsage = processUsagePercent > CPU_HIGH_THRESHOLD * 100
+            processUsagePercent = normalizedUsagePercent,
+            equivalentBusyCores = (normalizedUsagePercent / 100.0) * cores,
+            availableCores = cores,
+            isHighUsage = normalizedUsagePercent > CPU_HIGH_THRESHOLD * 100
         )
     }
     
@@ -306,8 +304,8 @@ class PerformanceMetrics(private val context: Context) {
         // CPU stats
         val cpu = cpuStatsOverride ?: getCpuUsage()
         sb.append("\nCPU:\n")
-        sb.append("  Process: ${String.format("%.1f", cpu.processUsagePercent)}%\n")
-        sb.append("  Per core: ${String.format("%.1f", cpu.perCoreUsagePercent)}%\n")
+        sb.append("  Process (all cores): ${String.format("%.1f", cpu.processUsagePercent)}%\n")
+        sb.append("  Equivalent busy cores: ${String.format("%.2f", cpu.equivalentBusyCores)}/${cpu.availableCores}\n")
         sb.append("  High usage: ${cpu.isHighUsage}\n")
         
         // Pressure
@@ -357,7 +355,8 @@ data class MemoryStats(
  */
 data class CpuStats(
     val processUsagePercent: Double,
-    val perCoreUsagePercent: Double,
+    val equivalentBusyCores: Double,
+    val availableCores: Int,
     val isHighUsage: Boolean
 )
 
