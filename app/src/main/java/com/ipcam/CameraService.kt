@@ -2381,34 +2381,28 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
      * Called periodically to ensure FPS displays accurately reflect current state
      */
     fun checkAndResetFpsCounters() {
-        var needsBroadcast = false
+        var needsMetricsBroadcast = false
         
         // Check MJPEG FPS - reset if no clients and FPS is not zero
         if (getMjpegClientCount() == 0) {
             synchronized(mjpegFpsLock) {
-                if (currentMjpegFps != 0f) {
+                if (currentMjpegFps != 0f || mjpegFpsFrameTimes.isNotEmpty()) {
                     currentMjpegFps = 0f
                     mjpegFpsFrameTimes.clear()
-                    needsBroadcast = true
+                    lastMjpegFpsCalculation = 0L
+                    needsMetricsBroadcast = true
                     Log.d(TAG, "Reset MJPEG FPS to 0 (no clients)")
                 }
             }
         }
         
         // Check RTSP FPS - reset if no clients and FPS is not zero
-        if (getRtspClientCount() == 0) {
-            synchronized(rtspFpsLock) {
-                if (currentRtspFps != 0f) {
-                    currentRtspFps = 0f
-                    rtspFpsFrameTimes.clear()
-                    needsBroadcast = true
-                    Log.d(TAG, "Reset RTSP FPS to 0 (no clients)")
-                }
-            }
+        if (resetRtspFpsCounters("no RTSP clients", onlyWhenIdle = true, broadcastImmediately = false)) {
+            needsMetricsBroadcast = true
         }
         
-        if (needsBroadcast) {
-            broadcastCameraState()
+        if (needsMetricsBroadcast) {
+            broadcastImmediateTelemetrySnapshot()
         }
     }
     
@@ -2450,6 +2444,33 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                 lastRtspFpsCalculation = now
             }
         }
+    }
+
+    private fun resetRtspFpsCounters(
+        reason: String,
+        onlyWhenIdle: Boolean = false,
+        broadcastImmediately: Boolean = true
+    ): Boolean {
+        if (onlyWhenIdle && getRtspClientCount() > 0) {
+            return false
+        }
+
+        var changed = false
+        synchronized(rtspFpsLock) {
+            if (currentRtspFps != 0f || rtspFpsFrameTimes.isNotEmpty()) {
+                currentRtspFps = 0f
+                rtspFpsFrameTimes.clear()
+                lastRtspFpsCalculation = 0L
+                changed = true
+                Log.d(TAG, "Reset RTSP FPS to 0 ($reason)")
+            }
+        }
+
+        if (changed && broadcastImmediately) {
+            broadcastImmediateTelemetrySnapshot()
+        }
+
+        return changed
     }
     
     /**
@@ -3415,33 +3436,70 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         telemetryJob?.cancel()
         telemetryJob = serviceScope.launch {
             while (isActive) {
-                val cpuUsage = performanceMetrics.getCpuUsage().processUsagePercent.toFloat()
-                currentCpuUsage = cpuUsage
-
-                val batteryInfo = getCachedBatteryInfo()
-                val activeHttpStreams = httpServer?.getActiveStreamsCount() ?: 0
-                val activeSseClients = httpServer?.getActiveSseClientsCount() ?: 0
-                val rtspPlayingSessions = rtspServer?.getMetrics()?.playingSessions ?: 0
-
-                val snapshot = runtimeTelemetrySampler.sample(
-                    cpuUsagePercent = cpuUsage,
-                    currentCameraFps = currentCameraFps,
-                    currentMjpegFps = currentMjpegFps,
-                    currentRtspFps = currentRtspFps,
-                    activeHttpStreams = activeHttpStreams,
-                    activeSseClients = activeSseClients,
-                    rtspPlayingSessions = rtspPlayingSessions,
-                    totalCameraClients = activeHttpStreams + rtspPlayingSessions,
-                    batteryLevel = batteryInfo.level,
-                    isCharging = batteryInfo.isCharging
-                )
-
+                val snapshot = sampleRuntimeTelemetry()
                 latestRuntimeTelemetry = snapshot
                 httpServer?.broadcastMetrics(snapshot)
 
                 delay(TELEMETRY_UPDATE_INTERVAL_MS)
             }
         }
+    }
+
+    private fun sampleRuntimeTelemetry(nowMs: Long = System.currentTimeMillis()): RuntimeTelemetrySnapshot {
+        val cpuUsage = performanceMetrics.getCpuUsage().processUsagePercent.toFloat()
+        currentCpuUsage = cpuUsage
+
+        val batteryInfo = getCachedBatteryInfo()
+        val activeHttpStreams = httpServer?.getActiveStreamsCount() ?: 0
+        val activeSseClients = httpServer?.getActiveSseClientsCount() ?: 0
+        val rtspPlayingSessions = rtspServer?.getMetrics()?.playingSessions ?: 0
+        val currentRtspFpsForSnapshot = if (rtspEnabled && rtspPlayingSessions > 0) {
+            currentRtspFps
+        } else {
+            0f
+        }
+
+        return runtimeTelemetrySampler.sample(
+            cpuUsagePercent = cpuUsage,
+            currentCameraFps = currentCameraFps,
+            currentMjpegFps = currentMjpegFps,
+            currentRtspFps = currentRtspFpsForSnapshot,
+            activeHttpStreams = activeHttpStreams,
+            activeSseClients = activeSseClients,
+            rtspPlayingSessions = rtspPlayingSessions,
+            totalCameraClients = activeHttpStreams + rtspPlayingSessions,
+            batteryLevel = batteryInfo.level,
+            isCharging = batteryInfo.isCharging,
+            nowMs = nowMs
+        )
+    }
+
+    private fun broadcastImmediateTelemetrySnapshot(nowMs: Long = System.currentTimeMillis()) {
+        val batteryInfo = getCachedBatteryInfo()
+        val activeHttpStreams = httpServer?.getActiveStreamsCount() ?: 0
+        val activeSseClients = httpServer?.getActiveSseClientsCount() ?: 0
+        val rtspPlayingSessions = rtspServer?.getMetrics()?.playingSessions ?: 0
+        val currentRtspFpsForSnapshot = if (rtspEnabled && rtspPlayingSessions > 0) {
+            currentRtspFps
+        } else {
+            0f
+        }
+
+        val snapshot = latestRuntimeTelemetry.copy(
+            timestampMs = nowMs,
+            currentCameraFps = currentCameraFps,
+            currentMjpegFps = currentMjpegFps,
+            currentRtspFps = currentRtspFpsForSnapshot,
+            activeHttpStreams = activeHttpStreams,
+            activeSseClients = activeSseClients,
+            rtspPlayingSessions = rtspPlayingSessions,
+            totalCameraClients = activeHttpStreams + rtspPlayingSessions,
+            batteryLevel = batteryInfo.level,
+            isCharging = batteryInfo.isCharging
+        )
+
+        latestRuntimeTelemetry = snapshot
+        httpServer?.broadcastMetrics(snapshot)
     }
     
     private fun registerNetworkReceiver() {
@@ -3873,6 +3931,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun enableRTSPStreaming(): Boolean {
         if (rtspEnabled && rtspServer != null && rtspServer?.isAlive() == true) {
             Log.d(TAG, "RTSP already enabled and server is running")
+            broadcastCameraState()
+            broadcastImmediateTelemetrySnapshot()
             return true
         }
         
@@ -3938,10 +3998,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // Camera/pipeline will activate on-demand when a client acquires an RTSP session lease.
             
             // Reset RTSP FPS counter when enabling to start fresh
-            currentRtspFps = 0f
-            synchronized(rtspFpsLock) {
-                rtspFpsFrameTimes.clear()
-            }
+            resetRtspFpsCounters("RTSP enabled", broadcastImmediately = false)
             
             saveSettings()
             Log.i(TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
@@ -3949,6 +4006,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             InMemoryLogBuffer.add("I", TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
             // DO NOT rebind camera here - it will activate on-demand when clients connect
+            broadcastCameraState()
+            broadcastImmediateTelemetrySnapshot()
             
             return true
             
@@ -3968,6 +4027,8 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     override fun disableRTSPStreaming() {
         if (!rtspEnabled) {
             Log.w(TAG, "RTSP already disabled")
+            broadcastCameraState()
+            broadcastImmediateTelemetrySnapshot()
             return
         }
         
@@ -3982,13 +4043,12 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             // which checks for active playing sessions and unregisters accordingly
             
             // Reset RTSP FPS counter to avoid showing stale values
-            currentRtspFps = 0f
-            synchronized(rtspFpsLock) {
-                rtspFpsFrameTimes.clear()
-            }
+            resetRtspFpsCounters("RTSP disabled", broadcastImmediately = false)
             
             saveSettings()
             Log.i(TAG, "RTSP streaming disabled")
+            broadcastCameraState()
+            broadcastImmediateTelemetrySnapshot()
             
             // Rebind only if a camera is still active for other consumers and the RTSP pipeline
             // is currently attached. Otherwise stopCamera()/next bind will handle cleanup.
@@ -4255,6 +4315,7 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         Log.d(TAG, "RTSP client disconnected, unregistering consumer")
         unregisterConsumer(ConsumerType.RTSP)
         refreshRtspPipelineIfNeeded("RTSP consumer unregistered")
+        resetRtspFpsCounters("last RTSP client disconnected")
     }
     
     // Manual activation methods implementing interface (for testing/debugging)

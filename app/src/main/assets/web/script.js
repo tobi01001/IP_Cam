@@ -659,6 +659,17 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                         }
                     }
 
+                    function syncRtspIndicator(rtspEnabled, currentRtspFps) {
+                        lastReceivedState.rtspEnabled = rtspEnabled;
+                        if (currentRtspFps !== undefined) {
+                            lastReceivedMetrics.currentRtspFps = currentRtspFps;
+                        }
+                        if (!rtspEnabled) {
+                            lastReceivedMetrics.rtspPlayingSessions = 0;
+                        }
+                        updateRtspStatusDisplay();
+                    }
+
                     function applyMetrics(metrics) {
                         const cpuUsageDisplay = document.getElementById('cpuUsageDisplay');
                         if (cpuUsageDisplay) {
@@ -890,6 +901,7 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
+                                    syncRtspIndicator(true, 0);
                                     statusEl.className = 'alert success';
                                     statusEl.innerHTML = 
                                         '<strong>✓ RTSP Enabled</strong><br>' +
@@ -918,6 +930,7 @@ ${diag.isDeviceOwner ? 'Multiple reboot methods will be tried if primary method 
                             .then(response => response.json())
                             .then(data => {
                                 if (data.status === 'ok') {
+                                    syncRtspIndicator(false, 0);
                                     statusEl.className = 'alert warning';
                                     statusEl.innerHTML = '<strong>RTSP Disabled</strong>';
                                 } else {
