@@ -3863,19 +3863,20 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.i(TAG, "Server is idling - camera will activate when clients connect and send PLAY")
             InMemoryLogBuffer.add("I", TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
-            // If the camera is already ACTIVE it was bound before RTSP was enabled (e.g. for
-            // MJPEG-only streaming) and therefore does NOT include the H264PreviewEncoder use
-            // case.  Rebinding now ensures the encoder pipeline is wired up immediately so that
-            // the first RTSP client gets frames instead of timing out waiting for SPS/PPS.
-            // When the camera is IDLE the on-demand path in registerConsumer() will bind it
-            // correctly (with rtspEnabled=true) when the first client connects.
-            // Read cameraState under the dedicated lock to get a consistent snapshot.
-            val cameraCurrentlyActive = synchronized(cameraStateLock) { cameraState == CameraState.ACTIVE }
-            if (cameraCurrentlyActive) {
-                Log.i(TAG, "Camera already active when RTSP enabled – rebinding to include H264 encoder pipeline")
-                InMemoryLogBuffer.add("I", TAG, "RTSP enabled: rebinding camera to add H264 encoder")
-                serviceScope.launch { requestBindCamera() }
-            }
+            // Camera is NOT rebound here on purpose.
+            //
+            // If the camera is already ACTIVE (e.g. serving MJPEG/preview when RTSP auto-starts
+            // after 2 s) a proactive rebind at this moment adds MediaCodec creation + CameraX
+            // bindToLifecycle() onto the main thread during the critical startup window, which
+            // can trigger a WindowManager SurfaceSyncGroup timeout and kill the process.
+            //
+            // The encoder-missing case is handled lazily and safely by registerRtspConsumer():
+            // when the first RTSP client sends DESCRIBE, registerRtspConsumer() detects
+            // h264Encoder == null while the camera is ACTIVE and triggers requestBindCamera()
+            // at that point — well after startup completes.
+            //
+            // When the camera is IDLE the on-demand path in activateCameraForConsumers() calls
+            // bindCamera() with rtspEnabled=true so the encoder is included from the start.
 
             return true
             
