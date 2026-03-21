@@ -885,8 +885,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         bitrate = if (rtspBitrate > 0) rtspBitrate else RTSPServer.calculateBitrate(resolution.width, resolution.height),
                         rtspServer = rtspServer
                     )
-                    h264Encoder?.start()
-                    
+                    // NOTE: h264Encoder.start() is intentionally NOT called here.
+                    // MediaCodec.createEncoderByType() + configure() + start() can take 2-5 seconds
+                    // on slow devices, which would block the main thread and cause an ANR.
+                    // Instead, start() is called asynchronously inside the SurfaceProvider callback
+                    // below (on Dispatchers.Default), so bindCamera() returns quickly and the main
+                    // thread remains responsive while the encoder initialises in the background.
+
                     // Create Preview for H.264 encoder (feeds to encoder's surface)
                     // CRITICAL: Must match the resolution that the encoder expects
                     val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
@@ -924,22 +929,37 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         .setTargetFrameRate(android.util.Range(targetRtspFps, targetRtspFps))
                         .build()
                         .apply {
-                            // Connect to encoder's input surface
+                            // CameraX calls this when it is ready to receive frames.
+                            // Start the encoder here on a background thread so that the slow
+                            // MediaCodec initialisation (createEncoderByType / configure / start)
+                            // never blocks the main thread.  SurfaceRequest.provideSurface() is
+                            // thread-safe and can be fulfilled asynchronously.
                             setSurfaceProvider { request ->
-                                val surface = h264Encoder?.getInputSurface()
-                                if (surface != null) {
-                                    request.provideSurface(
-                                        surface,
-                                        cameraExecutor
-                                    ) { }
-                                    Log.d(TAG, "H.264 encoder surface connected to camera with target FPS: $targetRtspFps")
-                                } else {
+                                val encoder = h264Encoder
+                                if (encoder == null) {
                                     request.willNotProvideSurface()
-                                    Log.w(TAG, "H.264 encoder surface not available - encoder may have failed to initialize or been stopped")
+                                    Log.w(TAG, "H.264 encoder not available when surface requested - RTSP may have been disabled")
+                                    return@setSurfaceProvider
+                                }
+                                serviceScope.launch(Dispatchers.Default) {
+                                    try {
+                                        encoder.start()
+                                        val surface = encoder.getInputSurface()
+                                        if (surface != null) {
+                                            request.provideSurface(surface, cameraExecutor) { }
+                                            Log.d(TAG, "H.264 encoder surface connected to camera with target FPS: $targetRtspFps")
+                                        } else {
+                                            request.willNotProvideSurface()
+                                            Log.w(TAG, "H.264 encoder started but no input surface available")
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to start H.264 encoder in SurfaceProvider", e)
+                                        request.willNotProvideSurface()
+                                    }
                                 }
                             }
                         }
-                    Log.i(TAG, "H.264 encoder created and connected with target FPS: $targetRtspFps")
+                    Log.i(TAG, "H.264 encoder created - will start on background thread when camera surface is requested")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create H.264 encoder", e)
                     h264Encoder = null
