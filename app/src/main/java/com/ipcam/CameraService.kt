@@ -497,14 +497,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Load saved settings
         loadSettings()
         
-        // Initialize camera characteristics cache early to avoid repeated IPC calls
-        // This queries hardware capabilities once and caches them for the service lifetime
-        initializeCameraCharacteristicsCache()
-        
-        // Check flash availability early so torch button is available on first page load
-        // This uses the cached characteristics to determine if current camera has flash
-        checkFlashAvailability()
-        Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
+        // Initialize camera characteristics cache on a background thread.
+        // getCameraCharacteristics() makes synchronous Binder IPC calls to the camera HAL that
+        // can take 1-3 seconds on slow devices.  Doing this on the main thread blocks the UI
+        // and can cause an ANR-style process kill before the permission dialog ever appears.
+        // Flash availability is checked right after the cache is populated (also in background).
+        // All callers of the cache (getSupportedResolutions, checkFlashAvailability) already
+        // handle the "not yet initialized" case with a safe fallback path.
+        serviceScope.launch(Dispatchers.IO) {
+            initializeCameraCharacteristicsCache()
+            checkFlashAvailability()
+            Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
+        }
         
         // Initialize bandwidth optimization components
         bandwidthMonitor = BandwidthMonitor()
@@ -563,7 +567,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
-            startServer()
+            // Dispatch to background: HttpServer.start() initializes the Ktor/CIO engine which
+            // can take 1+ seconds on slow devices.  Calling it directly here would block the
+            // main thread and can cause an ANR-style process kill before the UI becomes responsive.
+            serviceScope.launch { startServer() }
         }
         
         // NOTE: Camera is NOT automatically started in onStartCommand
