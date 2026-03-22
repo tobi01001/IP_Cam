@@ -826,40 +826,7 @@ class RTSPServer(
             } catch (e: Exception) {
                 Log.d(TAG, "Error closing RTP/RTCP sockets for $sessionId during disconnect", e)
             }
-            // Handle cleanup and consumer unregistration if session was playing
-            val wasPlaying = session.state == SessionState.PLAYING
-            
-            if (wasPlaying) {
-                val playingCount = activePlayingSessions.decrementAndGet()
-                Log.d(TAG, "Client $sessionId disconnected while playing (active sessions: $playingCount)")
-                
-                if (playingCount == 0 && cameraConsumerRegistered.get()) {
-                    // Last client disconnected - unregister RTSP consumer to deactivate camera
-                    Log.i(TAG, "Last RTSP client disconnected - unregistering consumer to deactivate camera")
-                    cameraService?.unregisterRtspConsumer()
-                    cameraConsumerRegistered.set(false)
-                }
-            } else if (activePlayingSessions.get() == 0 && cameraConsumerRegistered.compareAndSet(true, false)) {
-                // Session was registered (e.g. during DESCRIBE) but never reached PLAYING state –
-                // either because DESCRIBE returned a 500 error (SPS/PPS timeout) or the client
-                // disconnected before sending PLAY.  Without this branch the consumer leaks:
-                // cameraConsumerRegistered stays true and the camera is never deactivated even
-                // though no session will ever use it, which also prevents subsequent DESCRIBE
-                // attempts from re-registering the consumer to restart the camera pipeline.
-                //
-                // Double-check after compareAndSet: a concurrent handlePlay() may have already
-                // incremented activePlayingSessions and will notice cameraConsumerRegistered==false
-                // (set by our compareAndSet) and re-register the consumer itself.  If the counter
-                // has already been incremented we restore the flag so the playing session is not
-                // left without a registered consumer.
-                if (activePlayingSessions.get() > 0) {
-                    Log.d(TAG, "Session $sessionId: concurrent PLAY detected after compareAndSet – restoring consumer flag")
-                    cameraConsumerRegistered.set(true)
-                } else {
-                    Log.i(TAG, "Session $sessionId closed without playing - unregistering RTSP consumer (no active sessions)")
-                    cameraService?.unregisterRtspConsumer()
-                }
-            }
+
             sessions.remove(sessionId)
             try {
                 socket.close()
@@ -954,12 +921,7 @@ class RTSPServer(
         
         if (sps == null || pps == null) {
             Log.w(TAG, "SPS/PPS not available after ${retries * 100}ms. Encoder=${encoder != null}, Encoding=${isEncoding.get()}, Frames=${frameCount.get()}")
-            // Clear the consumer registration so the finally block will unregister it, and
-            // so the next DESCRIBE attempt can re-register and try again cleanly.  Without
-            // this reset, cameraConsumerRegistered would remain true even though the camera
-            // pipeline is not producing frames, causing future DESCRIBE calls to skip
-            // consumer registration and also time out.
-            cameraConsumerRegistered.set(false)
+
             writer.write("RTSP/1.0 500 Internal Server Error\r\n")
             writer.write("CSeq: $cseq\r\n")
             writer.write("Content-Type: text/plain\r\n")
