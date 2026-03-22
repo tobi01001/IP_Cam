@@ -204,7 +204,9 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     private var imageAnalysis: ImageAnalysis? = null
     private var selectedResolution: Size? = null
     // H.264 encoder for RTSP streaming (parallel pipeline)
-    private var h264Encoder: H264PreviewEncoder? = null
+    // @Volatile so that the null-check in registerRtspConsumer() (called from a coroutine
+    // thread) sees the value written by bindCamera()/stopCamera() on the main thread.
+    @Volatile private var h264Encoder: H264PreviewEncoder? = null
     private var videoCaptureUseCase: androidx.camera.core.Preview? = null // For H.264 encoding
     
     // MJPEG frame throttling
@@ -495,14 +497,18 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Load saved settings
         loadSettings()
         
-        // Initialize camera characteristics cache early to avoid repeated IPC calls
-        // This queries hardware capabilities once and caches them for the service lifetime
-        initializeCameraCharacteristicsCache()
-        
-        // Check flash availability early so torch button is available on first page load
-        // This uses the cached characteristics to determine if current camera has flash
-        checkFlashAvailability()
-        Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
+        // Initialize camera characteristics cache on a background thread.
+        // getCameraCharacteristics() makes synchronous Binder IPC calls to the camera HAL that
+        // can take 1-3 seconds on slow devices.  Doing this on the main thread blocks the UI
+        // and can cause an ANR-style process kill before the permission dialog ever appears.
+        // Flash availability is checked right after the cache is populated (also in background).
+        // All callers of the cache (getSupportedResolutions, checkFlashAvailability) already
+        // handle the "not yet initialized" case with a safe fallback path.
+        serviceScope.launch(Dispatchers.IO) {
+            initializeCameraCharacteristicsCache()
+            checkFlashAvailability()
+            Log.d(TAG, "Flash availability checked: hasFlashUnit=$hasFlashUnit for camera=${if (currentCamera == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"}")
+        }
         
         // Initialize bandwidth optimization components
         bandwidthMonitor = BandwidthMonitor()
@@ -561,7 +567,10 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         // Check if we should start the server based on intent extra
         val shouldStartServer = intent?.getBooleanExtra(EXTRA_START_SERVER, false) ?: false
         if (shouldStartServer && httpServer?.isAlive() != true) {
-            startServer()
+            // Dispatch to background: HttpServer.start() initializes the Ktor/CIO engine which
+            // can take 1+ seconds on slow devices.  Calling it directly here would block the
+            // main thread and can cause an ANR-style process kill before the UI becomes responsive.
+            serviceScope.launch { startServer() }
         }
         
         // NOTE: Camera is NOT automatically started in onStartCommand
@@ -883,8 +892,13 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         bitrate = if (rtspBitrate > 0) rtspBitrate else RTSPServer.calculateBitrate(resolution.width, resolution.height),
                         rtspServer = rtspServer
                     )
-                    h264Encoder?.start()
-                    
+                    // NOTE: h264Encoder.start() is intentionally NOT called here.
+                    // MediaCodec.createEncoderByType() + configure() + start() can take 2-5 seconds
+                    // on slow devices, which would block the main thread and cause an ANR.
+                    // Instead, start() is called asynchronously inside the SurfaceProvider callback
+                    // below (on Dispatchers.Default), so bindCamera() returns quickly and the main
+                    // thread remains responsive while the encoder initialises in the background.
+
                     // Create Preview for H.264 encoder (feeds to encoder's surface)
                     // CRITICAL: Must match the resolution that the encoder expects
                     val previewResolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
@@ -922,22 +936,37 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
                         .setTargetFrameRate(android.util.Range(targetRtspFps, targetRtspFps))
                         .build()
                         .apply {
-                            // Connect to encoder's input surface
+                            // CameraX calls this when it is ready to receive frames.
+                            // Start the encoder here on a background thread so that the slow
+                            // MediaCodec initialisation (createEncoderByType / configure / start)
+                            // never blocks the main thread.  SurfaceRequest.provideSurface() is
+                            // thread-safe and can be fulfilled asynchronously.
                             setSurfaceProvider { request ->
-                                val surface = h264Encoder?.getInputSurface()
-                                if (surface != null) {
-                                    request.provideSurface(
-                                        surface,
-                                        cameraExecutor
-                                    ) { }
-                                    Log.d(TAG, "H.264 encoder surface connected to camera with target FPS: $targetRtspFps")
-                                } else {
+                                val encoder = h264Encoder
+                                if (encoder == null) {
                                     request.willNotProvideSurface()
-                                    Log.w(TAG, "H.264 encoder surface not available - encoder may have failed to initialize or been stopped")
+                                    Log.w(TAG, "H.264 encoder not available when surface requested - RTSP may have been disabled")
+                                    return@setSurfaceProvider
+                                }
+                                serviceScope.launch(Dispatchers.Default) {
+                                    try {
+                                        encoder.start()
+                                        val surface = encoder.getInputSurface()
+                                        if (surface != null) {
+                                            request.provideSurface(surface, cameraExecutor) { }
+                                            Log.d(TAG, "H.264 encoder surface connected to camera with target FPS: $targetRtspFps")
+                                        } else {
+                                            request.willNotProvideSurface()
+                                            Log.w(TAG, "H.264 encoder started but no input surface available")
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to start H.264 encoder in SurfaceProvider", e)
+                                        request.willNotProvideSurface()
+                                    }
                                 }
                             }
                         }
-                    Log.i(TAG, "H.264 encoder created and connected with target FPS: $targetRtspFps")
+                    Log.i(TAG, "H.264 encoder created - will start on background thread when camera surface is requested")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to create H.264 encoder", e)
                     h264Encoder = null
@@ -3861,8 +3890,21 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
             Log.i(TAG, "Server is idling - camera will activate when clients connect and send PLAY")
             InMemoryLogBuffer.add("I", TAG, "RTSP server started on port 8554 (fps=$targetRtspFps, bitrate=$bitrateToUse, mode=$rtspBitrateMode)")
             
-            // DO NOT rebind camera here - it will activate on-demand when clients connect
-            
+            // Camera is NOT rebound here on purpose.
+            //
+            // If the camera is already ACTIVE (e.g. serving MJPEG/preview when RTSP auto-starts
+            // after 2 s) a proactive rebind at this moment adds MediaCodec creation + CameraX
+            // bindToLifecycle() onto the main thread during the critical startup window, which
+            // can trigger a WindowManager SurfaceSyncGroup timeout and kill the process.
+            //
+            // The encoder-missing case is handled lazily and safely by registerRtspConsumer():
+            // when the first RTSP client sends DESCRIBE, registerRtspConsumer() detects
+            // h264Encoder == null while the camera is ACTIVE and triggers requestBindCamera()
+            // at that point — well after startup completes.
+            //
+            // When the camera is IDLE the on-demand path in activateCameraForConsumers() calls
+            // bindCamera() with rtspEnabled=true so the encoder is included from the start.
+
             return true
             
         } catch (e: Exception) {
@@ -4164,6 +4206,23 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
     fun registerRtspConsumer() {
         Log.d(TAG, "RTSP client connected, registering consumer")
         registerConsumer(ConsumerType.RTSP)
+
+        // Safety-net: if the camera is already ACTIVE but the H264PreviewEncoder has not
+        // been initialised (e.g. RTSP was enabled after the camera was already bound for
+        // MJPEG, and the rebind in enableRTSPStreaming() hasn't completed yet), trigger
+        // another rebind so that the encoder is connected before the client waits for SPS/PPS.
+        // All three fields are @Volatile so each read is coherent; we capture them into
+        // local vals to keep the condition check consistent within this call even if another
+        // thread updates them concurrently (a spurious rebind is harmless – requestBindCamera
+        // has its own debounce protection).
+        val rtspOn = rtspEnabled
+        val encoderMissing = h264Encoder == null
+        val cameraActive = synchronized(cameraStateLock) { cameraState == CameraState.ACTIVE }
+        if (rtspOn && encoderMissing && cameraActive) {
+            Log.i(TAG, "RTSP consumer registered but H264 encoder absent – rebinding camera to add RTSP pipeline")
+            InMemoryLogBuffer.add("I", TAG, "RTSP consumer: rebinding camera to add H264 encoder")
+            serviceScope.launch { requestBindCamera() }
+        }
     }
     
     fun unregisterRtspConsumer() {
