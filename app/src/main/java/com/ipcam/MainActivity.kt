@@ -120,6 +120,7 @@ class MainActivity : AppCompatActivity() {
     private var isApiExpanded = false
     private var isDeviceOwnerExpanded = false
     private var isSoftwareUpdateExpanded = false
+    private var currentPreviewBitmap: android.graphics.Bitmap? = null
     
     private var cameraService: CameraService? = null
     private var isServiceBound = false
@@ -278,12 +279,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             
-            cameraService?.setOnFrameAvailableCallback { bitmap ->
-                runOnUiThread {
-                    previewImageView.setImageBitmap(bitmap)
-                }
-            }
-            
             cameraService?.setOnConnectionsChangedCallback {
                 runOnUiThread {
                     updateConnectionsUI()
@@ -311,6 +306,7 @@ class MainActivity : AppCompatActivity() {
                 Log.d(TAG, "Service connected with expanded preview, registering consumer...")
                 cameraService?.registerPreviewConsumer()
             }
+            updatePreviewFrameSubscription()
             
             // Start periodic metrics updates if server is running
             if (cameraService?.isServerRunning() == true) {
@@ -320,6 +316,7 @@ class MainActivity : AppCompatActivity() {
         
         override fun onServiceDisconnected(name: ComponentName?) {
             cameraService?.clearCallbacks()
+            clearPreviewFrame()
             cameraService = null
             isServiceBound = false
             updateUI()
@@ -1463,13 +1460,43 @@ class MainActivity : AppCompatActivity() {
                 if (newState) {
                     // Expanding preview - register consumer to activate camera
                     Log.d(TAG, "Preview expanded, registering preview consumer...")
+                    updatePreviewFrameSubscription()
                     cameraService?.registerPreviewConsumer()
                 } else {
                     // Collapsing preview - unregister consumer
                     Log.d(TAG, "Preview collapsed, unregistering preview consumer...")
                     cameraService?.unregisterPreviewConsumer()
+                    updatePreviewFrameSubscription()
                 }
             }
+        }
+    }
+
+    private fun updatePreviewFrameSubscription() {
+        val service = cameraService ?: return
+        if (isPreviewExpanded) {
+            service.setOnFrameAvailableCallback { bitmap ->
+                runOnUiThread {
+                    val previousBitmap = currentPreviewBitmap
+                    currentPreviewBitmap = bitmap
+                    previewImageView.setImageBitmap(bitmap)
+                    if (previousBitmap != null && previousBitmap != bitmap) {
+                        service.releasePreviewBitmap(previousBitmap)
+                    }
+                }
+            }
+        } else {
+            service.setOnFrameAvailableCallback(null)
+            clearPreviewFrame()
+        }
+    }
+
+    private fun clearPreviewFrame() {
+        val bitmap = currentPreviewBitmap
+        currentPreviewBitmap = null
+        previewImageView.setImageDrawable(null)
+        if (bitmap != null && !bitmap.isRecycled) {
+            cameraService?.releasePreviewBitmap(bitmap) ?: bitmap.recycle()
         }
     }
     
@@ -1598,6 +1625,8 @@ class MainActivity : AppCompatActivity() {
     
     override fun onDestroy() {
         super.onDestroy()
+        cameraService?.setOnFrameAvailableCallback(null)
+        clearPreviewFrame()
         // Unregister preview consumer if it was registered
         if (isPreviewExpanded) {
             Log.d(TAG, "Activity destroying with expanded preview, unregistering consumer...")

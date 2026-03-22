@@ -5,6 +5,7 @@ import android.graphics.Canvas  // Used for bitmap copying in pool-based copy() 
 import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Thread-safe bitmap pool for reusing bitmap allocations.
@@ -20,12 +21,12 @@ class BitmapPool(
     private val pools = ConcurrentHashMap<BitmapKey, ConcurrentLinkedQueue<Bitmap>>()
     
     // Track current pool size in bytes
-    @Volatile private var currentPoolSizeBytes: Long = 0
+    private val currentPoolSizeBytes = AtomicLong(0)
     
     // Statistics for monitoring
-    @Volatile private var hits: Long = 0
-    @Volatile private var misses: Long = 0
-    @Volatile private var evictions: Long = 0
+    private val hits = AtomicLong(0)
+    private val misses = AtomicLong(0)
+    private val evictions = AtomicLong(0)
     
     companion object {
         private const val TAG = "BitmapPool"
@@ -59,21 +60,32 @@ class BitmapPool(
         val key = BitmapKey(width, height, config)
         val queue = pools[key]
         
-        // Try to get from pool
-        val bitmap = queue?.poll()
-        if (bitmap != null && !bitmap.isRecycled) {
-            hits++
-            Log.v(TAG, "Bitmap pool HIT: ${width}x${height} $config (hits: $hits, misses: $misses)")
-            // Ensure bitmap is cleared for reuse
-            bitmap.eraseColor(0)
-            return bitmap
+        // Try to get from pool. Every bitmap removed from the queue must also be
+        // removed from the accounted pool size, even if it turns out to be unusable.
+        while (queue != null) {
+            val bitmap = queue.poll() ?: break
+            currentPoolSizeBytes.addAndGet(-getBitmapSize(bitmap))
+
+            if (!bitmap.isRecycled) {
+                hits.incrementAndGet()
+                Log.v(TAG, "Bitmap pool HIT: ${width}x${height} $config (hits: ${hits.get()}, misses: ${misses.get()})")
+                bitmap.eraseColor(0)
+                if (queue.isEmpty()) {
+                    pools.remove(key, queue)
+                }
+                return bitmap
+            }
+        }
+
+        if (queue != null && queue.isEmpty()) {
+            pools.remove(key, queue)
         }
         
         // Create new bitmap with OOME protection
-        misses++
+        misses.incrementAndGet()
         return try {
             val newBitmap = Bitmap.createBitmap(width, height, config)
-            Log.v(TAG, "Bitmap pool MISS: ${width}x${height} $config (hits: $hits, misses: $misses)")
+            Log.v(TAG, "Bitmap pool MISS: ${width}x${height} $config (hits: ${hits.get()}, misses: ${misses.get()})")
             newBitmap
         } catch (t: Throwable) {
             // Handle OutOfMemoryError and other allocation failures
@@ -110,7 +122,7 @@ class BitmapPool(
         
         val config = bitmap.config ?: Bitmap.Config.ARGB_8888
         val key = BitmapKey(bitmap.width, bitmap.height, config)
-        val queue = pools.getOrPut(key) { ConcurrentLinkedQueue() }
+        val queue = pools.computeIfAbsent(key) { ConcurrentLinkedQueue() }
         
         // Check if bucket is full
         if (queue.size >= MAX_BITMAPS_PER_BUCKET) {
@@ -121,15 +133,21 @@ class BitmapPool(
         
         // Check if adding this bitmap would exceed pool size limit
         val bitmapSize = getBitmapSize(bitmap)
-        if (currentPoolSizeBytes + bitmapSize > maxPoolSizeBytes) {
+        if (currentPoolSizeBytes.get() + bitmapSize > maxPoolSizeBytes) {
             // Evict oldest bitmaps until we have space
             evictToMakeSpace(bitmapSize)
+        }
+
+        if (currentPoolSizeBytes.get() + bitmapSize > maxPoolSizeBytes) {
+            Log.v(TAG, "Pool full after eviction for ${bitmap.width}x${bitmap.height}, recycling bitmap")
+            bitmap.recycle()
+            return false
         }
         
         // Add to pool
         if (queue.offer(bitmap)) {
-            currentPoolSizeBytes += bitmapSize
-            Log.v(TAG, "Returned bitmap to pool: ${bitmap.width}x${bitmap.height} (pool size: ${currentPoolSizeBytes / 1024 / 1024} MB)")
+            val newSize = currentPoolSizeBytes.addAndGet(bitmapSize)
+            Log.v(TAG, "Returned bitmap to pool: ${bitmap.width}x${bitmap.height} (pool size: ${newSize / 1024 / 1024} MB)")
             return true
         } else {
             bitmap.recycle()
@@ -194,13 +212,13 @@ class BitmapPool(
         
         // Iterate through all buckets and remove oldest bitmaps
         for ((key, queue) in pools) {
-            while (currentPoolSizeBytes + requiredBytes > maxPoolSizeBytes && queue.isNotEmpty()) {
+            while (currentPoolSizeBytes.get() + requiredBytes > maxPoolSizeBytes && queue.isNotEmpty()) {
                 val evicted = queue.poll()
                 if (evicted != null && !evicted.isRecycled) {
                     val size = getBitmapSize(evicted)
                     evicted.recycle()
-                    currentPoolSizeBytes -= size
-                    evictions++
+                    currentPoolSizeBytes.addAndGet(-size)
+                    evictions.incrementAndGet()
                     Log.v(TAG, "Evicted bitmap ${key.width}x${key.height} (${size / 1024} KB)")
                 }
             }
@@ -211,7 +229,7 @@ class BitmapPool(
             }
             
             // Check if we have enough space now
-            if (currentPoolSizeBytes + requiredBytes <= maxPoolSizeBytes) {
+            if (currentPoolSizeBytes.get() + requiredBytes <= maxPoolSizeBytes) {
                 break
             }
         }
@@ -248,7 +266,7 @@ class BitmapPool(
      * Clear all bitmaps from the pool
      */
     fun clear() {
-        Log.d(TAG, "Clearing bitmap pool (current size: ${currentPoolSizeBytes / 1024 / 1024} MB)")
+        Log.d(TAG, "Clearing bitmap pool (current size: ${currentPoolSizeBytes.get() / 1024 / 1024} MB)")
         
         for ((_, queue) in pools) {
             while (queue.isNotEmpty()) {
@@ -260,7 +278,7 @@ class BitmapPool(
         }
         
         pools.clear()
-        currentPoolSizeBytes = 0
+        currentPoolSizeBytes.set(0)
         Log.d(TAG, "Bitmap pool cleared")
     }
     
@@ -269,11 +287,11 @@ class BitmapPool(
      */
     fun getStats(): PoolStats {
         return PoolStats(
-            currentSizeBytes = currentPoolSizeBytes,
+            currentSizeBytes = currentPoolSizeBytes.get(),
             maxSizeBytes = maxPoolSizeBytes,
-            hits = hits,
-            misses = misses,
-            evictions = evictions,
+            hits = hits.get(),
+            misses = misses.get(),
+            evictions = evictions.get(),
             bucketCount = pools.size,
             totalBitmaps = pools.values.sumOf { it.size }
         )

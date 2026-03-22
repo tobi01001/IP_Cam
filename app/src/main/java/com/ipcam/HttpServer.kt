@@ -16,7 +16,6 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.util.pipeline.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
-import java.io.ByteArrayOutputStream
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -54,7 +53,6 @@ class HttpServer(
     
     companion object {
         private const val TAG = "HttpServer"
-        private const val JPEG_QUALITY_STREAM = 75
         /** Path of the log endpoint used in error responses and links. */
         private const val LOGS_PATH = "/logs"
 
@@ -150,6 +148,7 @@ class HttpServer(
                 
                 // Status and monitoring
                 get("/status") { serveStatus() }
+                get("/metrics") { serveMetrics() }
                 get("/events") { serveSSE() }
                 get("/connections") { serveConnections() }
                 get("/closeConnection") { serveCloseConnection() }
@@ -258,14 +257,7 @@ class HttpServer(
      */
     fun getActiveSseClientsCount(): Int = synchronized(sseClientsLock) { sseClients.size }
     
-    /**
-     * Broadcast connection count update to all SSE clients
-     */
-    fun broadcastConnectionCount() {
-        val activeConns = cameraService.getActiveConnectionsCount()
-        val maxConns = cameraService.getMaxConnections()
-        val message = "data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n"
-        
+    private fun broadcastSseMessage(message: String) {
         synchronized(sseClientsLock) {
             val iterator = sseClients.iterator()
             while (iterator.hasNext()) {
@@ -273,11 +265,17 @@ class HttpServer(
                 if (client.active) {
                     try {
                         runBlocking {
-                            client.channel.writeStringUtf8(message)
-                            client.channel.flush()
+                            withTimeout(500) {
+                                client.channel.writeStringUtf8(message)
+                                client.channel.flush()
+                            }
                         }
+                    } catch (e: TimeoutCancellationException) {
+                        Log.d(TAG, "SSE client ${client.id} write timeout")
+                        client.active = false
+                        iterator.remove()
                     } catch (e: Exception) {
-                        Log.d(TAG, "SSE client ${client.id} disconnected")
+                        Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
                         client.active = false
                         iterator.remove()
                     }
@@ -296,39 +294,11 @@ class HttpServer(
     fun broadcastCameraState() {
         // Get delta JSON (only changed fields)
         val stateJson = cameraService.getCameraStateDeltaJson() ?: return
+        broadcastSseMessage("event: state\ndata: $stateJson\n\n")
+    }
 
-        val message = "event: state\ndata: $stateJson\n\n"
-        
-        synchronized(sseClientsLock) {
-            // Collect inactive clients for removal to avoid concurrent modification
-            val toRemove = mutableListOf<SSEClient>()
-            
-            sseClients.forEach { client ->
-                if (client.active) {
-                    // Launch coroutine for each client to avoid blocking
-                    GlobalScope.launch(Dispatchers.IO) {
-                        try {
-                            // Write with timeout to avoid hanging
-                            withTimeout(500) {
-                                client.channel.writeStringUtf8(message)
-                                client.channel.flush()
-                            }
-                        } catch (e: TimeoutCancellationException) {
-                            Log.d(TAG, "SSE client ${client.id} write timeout")
-                            client.active = false
-                        } catch (e: Exception) {
-                            Log.d(TAG, "SSE client ${client.id} write failed: ${e.message}")
-                            client.active = false
-                        }
-                    }
-                } else {
-                    toRemove.add(client)
-                }
-            }
-            
-            // Remove inactive clients
-            sseClients.removeAll(toRemove)
-        }
+    fun broadcastMetrics(snapshot: RuntimeTelemetrySnapshot) {
+        broadcastSseMessage("event: metrics\ndata: ${snapshot.toJson()}\n\n")
     }
     
     // ==================== Asset Loading & Template Engine ====================
@@ -618,15 +588,25 @@ class HttpServer(
                     
                     if (jpegBytes != null) {
                         try {
-                            writeStringUtf8("--jpgboundary\r\n")
-                            writeStringUtf8("Content-Type: image/jpeg\r\n")
-                            writeStringUtf8("Content-Length: ${jpegBytes.size}\r\n\r\n")
+                            val boundary = "--jpgboundary\r\n"
+                            val contentTypeHeader = "Content-Type: image/jpeg\r\n"
+                            val contentLengthHeader = "Content-Length: ${jpegBytes.size}\r\n\r\n"
+                            val trailingCrLf = "\r\n"
+
+                            writeStringUtf8(boundary)
+                            writeStringUtf8(contentTypeHeader)
+                            writeStringUtf8(contentLengthHeader)
                             writeFully(jpegBytes, 0, jpegBytes.size)
-                            writeStringUtf8("\r\n")
+                            writeStringUtf8(trailingCrLf)
                             flush()
-                            
-                            // Track bandwidth
-                            cameraService.recordBytesSent(clientId, jpegBytes.size.toLong())
+
+                            val actualFrameBytes =
+                                boundary.length +
+                                contentTypeHeader.length +
+                                contentLengthHeader.length +
+                                jpegBytes.size +
+                                trailingCrLf.length
+                            cameraService.recordStreamingBytes(StreamTransport.MJPEG, actualFrameBytes.toLong())
                             
                             // Track MJPEG streaming FPS
                             cameraService.recordMjpegFrameServed()
@@ -651,7 +631,6 @@ class HttpServer(
                         if (ipQueue.isEmpty()) streamClientsByIp.remove(clientIp)
                     }
                 }
-                cameraService.removeClient(clientId)
                 val remainingStreams = activeStreams.decrementAndGet()
                 Log.d(TAG, "Stream connection closed. Client $clientId (IP: $clientIp). Active streams: $remainingStreams")
                 
@@ -691,7 +670,7 @@ class HttpServer(
         val deviceName = cameraService.getDeviceName()
         val cameraState = cameraService.getCameraStateString()
         
-        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/events\", \"/toggleFlashlight\", \"/flashOn\", \"/flashOff\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
+        val endpoints = "[\"/\", \"/snapshot\", \"/stream\", \"/switch\", \"/status\", \"/metrics\", \"/events\", \"/toggleFlashlight\", \"/flashOn\", \"/flashOff\", \"/formats\", \"/connections\", \"/stats\", \"/overrideBatteryLimit\", \"/cameraState\", \"/activateCamera\", \"/deactivateCamera\", \"/checkUpdate\", \"/triggerUpdate\", \"/reboot\"]"
         
         val json = """
             {
@@ -726,6 +705,10 @@ class HttpServer(
         
         call.respondText(json, ContentType.Application.Json)
     }
+
+    private suspend fun PipelineContext<Unit, ApplicationCall>.serveMetrics() {
+        call.respondText(cameraService.getRuntimeTelemetrySnapshot().toJson(), ContentType.Application.Json)
+    }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveSSE() {
         val clientId = System.currentTimeMillis()
@@ -739,15 +722,13 @@ class HttpServer(
             }
             
             try {
-                // Send initial connection count
-                val activeConns = cameraService.getActiveConnectionsCount()
-                val maxConns = cameraService.getMaxConnections()
-                writeStringUtf8("data: {\"connections\":\"$activeConns/$maxConns\",\"active\":$activeConns,\"max\":$maxConns}\n\n")
-                flush()
-                
                 // Send initial camera state (full state for new clients)
                 val stateJson = cameraService.getCameraStateJson()
                 writeStringUtf8("event: state\ndata: $stateJson\n\n")
+                flush()
+
+                val metricsJson = cameraService.getRuntimeTelemetrySnapshot().toJson()
+                writeStringUtf8("event: metrics\ndata: $metricsJson\n\n")
                 flush()
                 
                 // Initialize last broadcast state with current values to prevent
@@ -1245,17 +1226,15 @@ class HttpServer(
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableAdaptiveQuality() {
-        cameraService.setAdaptiveQualityEnabled(true)
         call.respondText(
-            """{"status":"ok","message":"Adaptive quality enabled","adaptiveQualityEnabled":true}""",
+            """{"status":"deprecated","message":"Adaptive quality has been removed","adaptiveQualityEnabled":false}""",
             ContentType.Application.Json
         )
     }
     
     private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableAdaptiveQuality() {
-        cameraService.setAdaptiveQualityEnabled(false)
         call.respondText(
-            """{"status":"ok","message":"Adaptive quality disabled. Using fixed quality settings.","adaptiveQualityEnabled":false}""",
+            """{"status":"deprecated","message":"Adaptive quality has been removed","adaptiveQualityEnabled":false}""",
             ContentType.Application.Json
         )
     }
@@ -1306,6 +1285,7 @@ class HttpServer(
         val rtspEnabled = cameraService.isRTSPEnabled()
         val metrics = cameraService.getRTSPMetrics()
         val rtspUrl = cameraService.getRTSPUrl()
+        val telemetry = cameraService.getRuntimeTelemetrySnapshot()
         
         if (rtspEnabled && metrics != null) {
             val encoderName = metrics.encoderName.replace("\"", "\\\"").replace("\n", "\\n")
@@ -1315,12 +1295,12 @@ class HttpServer(
             val bitrateMbps = metrics.bitrateMbps
             val bitrateMode = metrics.bitrateMode
             call.respondText(
-                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"bitrateMode":"$bitrateMode","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"maxSessions":${metrics.maxSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"url":"$rtspUrl","port":8554}""",
+                """{"status":"ok","rtspEnabled":true,"encoder":"$encoderName","isHardware":${metrics.isHardware},"colorFormat":"$colorFormat","colorFormatHex":"$colorFormatHex","resolution":"$resolution","bitrateMbps":$bitrateMbps,"bitrateMode":"$bitrateMode","activeSessions":${metrics.activeSessions},"playingSessions":${metrics.playingSessions},"maxSessions":${metrics.maxSessions},"framesEncoded":${metrics.framesEncoded},"droppedFrames":${metrics.droppedFrames},"targetFps":${metrics.targetFps},"encodedFps":${metrics.encodedFps},"currentRtspBandwidthBps":${telemetry.rtspBandwidthBps},"currentStreamingBandwidthBps":${telemetry.bandwidthBps},"url":"$rtspUrl","port":8554}""",
                 ContentType.Application.Json
             )
         } else {
             call.respondText(
-                """{"status":"ok","rtspEnabled":false,"message":"RTSP streaming is not enabled"}""",
+                """{"status":"ok","rtspEnabled":false,"currentRtspBandwidthBps":${telemetry.rtspBandwidthBps},"currentStreamingBandwidthBps":${telemetry.bandwidthBps},"message":"RTSP streaming is not enabled"}""",
                 ContentType.Application.Json
             )
         }
