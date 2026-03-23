@@ -60,21 +60,28 @@ class BitmapPool(
         val key = BitmapKey(width, height, config)
         val queue = pools[key]
         
-        // Try to get from pool. Every bitmap removed from the queue must also be
-        // removed from the accounted pool size, even if it turns out to be unusable.
+        // Try to get from pool.
         while (queue != null) {
             val bitmap = queue.poll() ?: break
-            currentPoolSizeBytes.addAndGet(-getBitmapSize(bitmap))
 
-            if (!bitmap.isRecycled) {
-                hits.incrementAndGet()
-                Log.v(TAG, "Bitmap pool HIT: ${width}x${height} $config (hits: ${hits.get()}, misses: ${misses.get()})")
-                bitmap.eraseColor(0)
-                if (queue.isEmpty()) {
-                    pools.remove(key, queue)
+            if (bitmap.isRecycled) {
+                // Bitmap was recycled while in pool - correct accounting as best we can.
+                // getBitmapSize() (allocationByteCount) may throw for recycled bitmaps,
+                // so guard with try-catch to prevent a crash in this edge case.
+                try { currentPoolSizeBytes.addAndGet(-getBitmapSize(bitmap)) } catch (e: Exception) {
+                    Log.w(TAG, "Failed to get size of recycled bitmap for pool accounting", e)
                 }
-                return bitmap
+                continue
             }
+
+            currentPoolSizeBytes.addAndGet(-getBitmapSize(bitmap))
+            hits.incrementAndGet()
+            Log.v(TAG, "Bitmap pool HIT: ${width}x${height} $config (hits: ${hits.get()}, misses: ${misses.get()})")
+            bitmap.eraseColor(0)
+            if (queue.isEmpty()) {
+                pools.remove(key, queue)
+            }
+            return bitmap
         }
 
         if (queue != null && queue.isEmpty()) {

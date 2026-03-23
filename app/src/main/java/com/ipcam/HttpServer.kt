@@ -258,31 +258,31 @@ class HttpServer(
     fun getActiveSseClientsCount(): Int = synchronized(sseClientsLock) { sseClients.size }
     
     private fun broadcastSseMessage(message: String) {
-        synchronized(sseClientsLock) {
-            val iterator = sseClients.iterator()
-            while (iterator.hasNext()) {
-                val client = iterator.next()
-                if (client.active) {
-                    try {
-                        runBlocking {
-                            withTimeout(500) {
-                                client.channel.writeStringUtf8(message)
-                                client.channel.flush()
-                            }
-                        }
-                    } catch (e: TimeoutCancellationException) {
-                        Log.d(TAG, "SSE client ${client.id} write timeout")
-                        client.active = false
-                        iterator.remove()
-                    } catch (e: Exception) {
-                        Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
-                        client.active = false
-                        iterator.remove()
+        val snapshot = synchronized(sseClientsLock) { sseClients.filter { it.active }.toList() }
+        if (snapshot.isEmpty()) return
+
+        val failed = mutableListOf<SSEClient>()
+        for (client in snapshot) {
+            if (!client.active) continue
+            try {
+                runBlocking {
+                    withTimeout(500) {
+                        client.channel.writeStringUtf8(message)
+                        client.channel.flush()
                     }
-                } else {
-                    iterator.remove()
                 }
+            } catch (e: TimeoutCancellationException) {
+                Log.d(TAG, "SSE client ${client.id} write timeout")
+                client.active = false
+                failed.add(client)
+            } catch (e: Exception) {
+                Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
+                client.active = false
+                failed.add(client)
             }
+        }
+        if (failed.isNotEmpty()) {
+            synchronized(sseClientsLock) { sseClients.removeAll(failed) }
         }
     }
     

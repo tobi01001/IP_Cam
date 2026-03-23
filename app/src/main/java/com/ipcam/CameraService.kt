@@ -4079,12 +4079,11 @@ class CameraService : Service(), LifecycleOwner, CameraServiceInterface {
         try {
             rtspEnabled = false
             
-            // Stop RTSP server (this will unregister consumers if clients were connected)
+            // Stop RTSP server (this releases all camera leases held by active RTSP sessions)
             rtspServer?.stop()
             rtspServer = null
             
-            // NOTE: Consumer unregistration is handled by RTSPServer.stop()
-            // which checks for active playing sessions and unregisters accordingly
+            // NOTE: Consumer unregistration is handled by RTSPServer.stop() via releaseAllCameraLeases()
             
             // Reset RTSP FPS counter to avoid showing stale values
             resetRtspFpsCounters("RTSP disabled", broadcastImmediately = false)
