@@ -16,6 +16,7 @@ import io.ktor.server.plugins.statuspages.*
 import io.ktor.util.pipeline.*
 import io.ktor.utils.io.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
@@ -66,11 +67,14 @@ class HttpServer(
     }
     
     /**
-     * Represents a Server-Sent Events client connection
+     * Represents a Server-Sent Events client connection.
+     * [messageQueue] serializes all outbound SSE messages so that [serveSSE]'s
+     * coroutine is the sole writer to [channel], avoiding concurrent-write corruption.
      */
     private data class SSEClient(
         val id: Long,
         val channel: ByteWriteChannel,
+        val messageQueue: Channel<String> = Channel(64),
         @Volatile var active: Boolean = true
     )
 
@@ -261,28 +265,18 @@ class HttpServer(
         val snapshot = synchronized(sseClientsLock) { sseClients.filter { it.active }.toList() }
         if (snapshot.isEmpty()) return
 
-        val failed = mutableListOf<SSEClient>()
         for (client in snapshot) {
             if (!client.active) continue
-            try {
-                runBlocking {
-                    withTimeout(500) {
-                        client.channel.writeStringUtf8(message)
-                        client.channel.flush()
-                    }
+            val result = client.messageQueue.trySend(message)
+            if (!result.isSuccess) {
+                if (result.isClosed) {
+                    Log.d(TAG, "SSE client ${client.id} queue closed — removing")
+                } else {
+                    Log.d(TAG, "SSE client ${client.id} queue full — dropping and removing")
                 }
-            } catch (e: TimeoutCancellationException) {
-                Log.d(TAG, "SSE client ${client.id} write timeout")
                 client.active = false
-                failed.add(client)
-            } catch (e: Exception) {
-                Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
-                client.active = false
-                failed.add(client)
+                synchronized(sseClientsLock) { sseClients.remove(client) }
             }
-        }
-        if (failed.isNotEmpty()) {
-            synchronized(sseClientsLock) { sseClients.removeAll(failed) }
         }
     }
     
@@ -735,16 +729,31 @@ class HttpServer(
                 // full state from being sent again on next delta broadcast
                 cameraService.initializeLastBroadcastState()
                 
-                // Keep connection alive with periodic keepalive
+                // Drain messages from queue; send keepalive when idle for 30 s
                 while (client.active && isActive) {
-                    delay(30000)
-                    writeStringUtf8(": keepalive\n\n")
-                    flush()
+                    val message = withTimeoutOrNull(30000L) {
+                        client.messageQueue.receive()
+                    }
+                    if (message != null) {
+                        writeStringUtf8(message)
+                        // Drain any additional queued messages before flushing once
+                        var next = client.messageQueue.tryReceive().getOrNull()
+                        while (next != null) {
+                            writeStringUtf8(next)
+                            next = client.messageQueue.tryReceive().getOrNull()
+                        }
+                        flush()
+                    } else {
+                        // No message within 30 s — send keepalive
+                        writeStringUtf8(": keepalive\n\n")
+                        flush()
+                    }
                 }
             } catch (e: Exception) {
                 Log.d(TAG, "SSE client $clientId disconnected: ${e.message}")
             } finally {
                 client.active = false
+                client.messageQueue.close()
                 synchronized(sseClientsLock) {
                     sseClients.remove(client)
                 }
