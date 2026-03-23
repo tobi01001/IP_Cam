@@ -304,7 +304,7 @@ class PerformanceMetrics(private val context: Context) {
         // CPU stats
         val cpu = cpuStatsOverride ?: getCpuUsage()
         sb.append("\nCPU:\n")
-        sb.append("  Process CPU (0-100% of device): ${String.format("%.1f", cpu.processUsagePercent)}%\n")
+        sb.append("  Process (all cores): ${String.format("%.1f", cpu.processUsagePercent)}%\n")
         sb.append("  Equivalent busy cores: ${String.format("%.2f", cpu.equivalentBusyCores)}/${cpu.availableCores}\n")
         sb.append("  High usage: ${cpu.isHighUsage}\n")
         
