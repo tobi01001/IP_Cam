@@ -261,28 +261,25 @@ class HttpServer(
         val snapshot = synchronized(sseClientsLock) { sseClients.filter { it.active }.toList() }
         if (snapshot.isEmpty()) return
 
-        val failed = mutableListOf<SSEClient>()
         for (client in snapshot) {
             if (!client.active) continue
-            try {
-                runBlocking {
+            serverScope.launch {
+                if (!client.active) return@launch
+                try {
                     withTimeout(500) {
                         client.channel.writeStringUtf8(message)
                         client.channel.flush()
                     }
+                } catch (e: TimeoutCancellationException) {
+                    Log.d(TAG, "SSE client ${client.id} write timeout")
+                    client.active = false
+                    synchronized(sseClientsLock) { sseClients.remove(client) }
+                } catch (e: Exception) {
+                    Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
+                    client.active = false
+                    synchronized(sseClientsLock) { sseClients.remove(client) }
                 }
-            } catch (e: TimeoutCancellationException) {
-                Log.d(TAG, "SSE client ${client.id} write timeout")
-                client.active = false
-                failed.add(client)
-            } catch (e: Exception) {
-                Log.d(TAG, "SSE client ${client.id} disconnected: ${e.message}")
-                client.active = false
-                failed.add(client)
             }
-        }
-        if (failed.isNotEmpty()) {
-            synchronized(sseClientsLock) { sseClients.removeAll(failed) }
         }
     }
     
