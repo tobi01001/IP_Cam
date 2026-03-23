@@ -56,12 +56,12 @@ interface CameraServiceInterface {
     fun restartServer()
     
     // Bandwidth and monitoring
-    fun recordBytesSent(clientId: Long, bytes: Long)
-    fun removeClient(clientId: Long)
+    fun recordStreamingBytes(transport: StreamTransport, bytes: Long)
     fun getDetailedStats(): String
     fun getCameraStateJson(): String
     fun getCpuUsagePercent(): Double
     fun getBandwidthBps(): Long
+    fun getRuntimeTelemetrySnapshot(): RuntimeTelemetrySnapshot
 
     fun getCameraStateDeltaJson(): String?
     fun recordMjpegFrameServed() // Track MJPEG streaming FPS
