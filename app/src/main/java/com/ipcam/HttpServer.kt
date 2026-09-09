@@ -56,6 +56,8 @@ class HttpServer(
         private const val TAG = "HttpServer"
         /** Path of the log endpoint used in error responses and links. */
         private const val LOGS_PATH = "/logs"
+        private const val SNAPSHOT_FRAME_TIMEOUT_MS = 5_000L
+        private const val SNAPSHOT_FRAME_POLL_INTERVAL_MS = 100L
 
         /**
          * Compute the maximum number of concurrent /stream connections allowed from a
@@ -381,28 +383,28 @@ class HttpServer(
         }
 
         try {
-            // Wait for camera to become active (needed when camera was IDLE)
-            var attempts = 0
-            val maxAttempts = 20 // 2 seconds total (20 × 100 ms)
-            while (attempts < maxAttempts && cameraService.getCameraStateString() != "ACTIVE") {
-                delay(100)
-                attempts++
-            }
-
-            if (cameraService.getCameraStateString() != "ACTIVE") {
-                Log.w(TAG, "Camera failed to activate within timeout for snapshot")
-            }
-
-            val jpegBytes = cameraService.getLastFrameJpegBytes()
-
-            if (jpegBytes != null) {
-                call.respondBytes(jpegBytes, ContentType.Image.JPEG)
-            } else {
-                call.respondText(
-                    "No frame available - Camera may be initializing",
-                    ContentType.Text.Plain,
-                    HttpStatusCode.ServiceUnavailable
+            when (
+                val snapshotResult = awaitSnapshotFrame(
+                    timeoutMs = SNAPSHOT_FRAME_TIMEOUT_MS,
+                    pollIntervalMs = SNAPSHOT_FRAME_POLL_INTERVAL_MS,
+                    frameProvider = cameraService::getLastFrameJpegBytes,
+                    stateProvider = cameraService::getCameraStateString
                 )
+            ) {
+                is SnapshotFrameResult.Available -> {
+                    Log.d(TAG, "Snapshot frame ready, serving JPEG (${snapshotResult.jpegBytes.size} bytes)")
+                    call.respondBytes(snapshotResult.jpegBytes, ContentType.Image.JPEG)
+                }
+                is SnapshotFrameResult.Unavailable -> {
+                    val message = when (snapshotResult.reason) {
+                        SnapshotUnavailableReason.CAMERA_ERROR ->
+                            "Snapshot unavailable - Camera entered ERROR state during initialization"
+                        SnapshotUnavailableReason.TIMEOUT ->
+                            "Snapshot unavailable - Timed out waiting for camera frame (state=${snapshotResult.cameraState})"
+                    }
+                    Log.w(TAG, message)
+                    call.respondText(message, ContentType.Text.Plain, HttpStatusCode.ServiceUnavailable)
+                }
             }
         } finally {
             val remaining = activeSnapshots.decrementAndGet()
