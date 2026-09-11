@@ -4,36 +4,36 @@
 
 [versions]
 # Plugin versions
-agp = "8.13.2"
-kotlin = "2.1.0"
+agp = "9.3.2"
+kotlin = "2.4.20"
 
 # Android SDK versions
 minSdk = "30"
-compileSdk = "35"
-targetSdk = "33"
+compileSdk = "37"
+targetSdk = "35"
 
 # AndroidX Core
-androidx-core-ktx = "1.15.0"
-androidx-appcompat = "1.7.0"
-androidx-constraintlayout = "2.2.0"
+androidx-core-ktx = "1.19.0"
+androidx-appcompat = "1.8.0"
+androidx-constraintlayout = "2.2.2"
 
 # Material Design
-material = "1.12.0"
+material = "1.14.0"
 
 # CameraX
-camerax = "1.4.1"
+camerax = "1.6.2"
 
 # Lifecycle
-androidx-lifecycle = "2.8.7"
+androidx-lifecycle = "2.11.0"
 
 # Ktor Server
-ktor = "2.3.12"
+ktor = "3.5.2"
 
 # Coroutines
-kotlinx-coroutines = "1.9.0"
+kotlinx-coroutines = "1.11.0"
 
 # JSON Serialization
-kotlinx-serialization = "1.7.3"
+kotlinx-serialization = "1.11.0"
 
 # Testing
 junit = "4.13.2"
@@ -42,7 +42,6 @@ androidx-test-espresso = "3.6.1"
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 
 [libraries]

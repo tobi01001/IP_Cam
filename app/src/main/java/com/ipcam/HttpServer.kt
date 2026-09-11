@@ -44,7 +44,7 @@ class HttpServer(
     private val cameraService: CameraServiceInterface,
     private val context: Context
 ) {
-    private var server: ApplicationEngine? = null
+    private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private val activeStreams = AtomicInteger(0)
     private val activeSnapshots = AtomicInteger(0)
     private val sseClients = mutableListOf<SSEClient>()
@@ -325,7 +325,7 @@ class HttpServer(
     
     // ==================== Route Handlers ====================
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveIndexPage() {
+    private suspend fun RoutingContext.serveIndexPage() {
         val activeConns = cameraService.getActiveConnectionsCount()
         val maxConns = cameraService.getMaxConnections()
         val connectionDisplay = "$activeConns/$maxConns"
@@ -353,7 +353,7 @@ class HttpServer(
     /**
      * Serve static assets (CSS, JavaScript) from the web directory
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveStaticAsset(filename: String) {
+    private suspend fun RoutingContext.serveStaticAsset(filename: String) {
         val content = loadAsset(filename)
         if (content.isEmpty()) {
             call.respond(HttpStatusCode.NotFound, "Asset not found: $filename")
@@ -370,7 +370,7 @@ class HttpServer(
         call.respondText(content, contentType)
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSnapshot() {
+    private suspend fun RoutingContext.serveSnapshot() {
         // Use a dedicated SNAPSHOT consumer type so that snapshot requests never
         // interfere with MJPEG streams or RTSP sessions.  The activeSnapshots counter
         // ensures camera activation on the first concurrent snapshot and deactivation
@@ -415,7 +415,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveStream() {
+    private suspend fun RoutingContext.serveStream() {
         // Check if streaming is allowed based on battery status
         if (!cameraService.isStreamingAllowed()) {
             // Serve battery-limited info page instead of stream
@@ -573,7 +573,7 @@ class HttpServer(
         
         call.respondBytesWriter(ContentType.parse("multipart/x-mixed-replace; boundary=--jpgboundary")) {
             try {
-                while (isActive && !newClient.cancelled) {
+                while (currentCoroutineContext().isActive && !newClient.cancelled) {
                     // Check if streaming is still allowed (battery might have dropped during stream)
                     if (!cameraService.isStreamingAllowed()) {
                         Log.d(TAG, "Stream client $clientId - streaming no longer allowed (critical battery)")
@@ -639,7 +639,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSwitch() {
+    private suspend fun RoutingContext.serveSwitch() {
         val newCamera = if (cameraService.getCurrentCamera() == CameraSelector.DEFAULT_BACK_CAMERA) {
             CameraSelector.DEFAULT_FRONT_CAMERA
         } else {
@@ -655,7 +655,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveStatus() {
+    private suspend fun RoutingContext.serveStatus() {
         val cameraName = if (cameraService.getCurrentCamera() == CameraSelector.DEFAULT_BACK_CAMERA) "back" else "front"
         val activeConns = cameraService.getActiveConnectionsCount()
         val maxConns = cameraService.getMaxConnections()
@@ -702,11 +702,11 @@ class HttpServer(
         call.respondText(json, ContentType.Application.Json)
     }
 
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveMetrics() {
+    private suspend fun RoutingContext.serveMetrics() {
         call.respondText(cameraService.getRuntimeTelemetrySnapshot().toJson(), ContentType.Application.Json)
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSSE() {
+    private suspend fun RoutingContext.serveSSE() {
         val clientId = System.currentTimeMillis()
         Log.d(TAG, "SSE client $clientId connected")
         
@@ -732,7 +732,7 @@ class HttpServer(
                 cameraService.initializeLastBroadcastState()
                 
                 // Drain messages from queue; send keepalive when idle for 30 s
-                while (client.active && isActive) {
+                while (client.active && currentCoroutineContext().isActive) {
                     val message = withTimeoutOrNull(30000L) {
                         client.messageQueue.receive()
                     }
@@ -764,7 +764,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveConnections() {
+    private suspend fun RoutingContext.serveConnections() {
         val jsonArray = mutableListOf<String>()
         
         // Add active streaming connections with real per-client metadata
@@ -805,7 +805,7 @@ class HttpServer(
         call.respondText(json, ContentType.Application.Json)
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCloseConnection() {
+    private suspend fun RoutingContext.serveCloseConnection() {
         val idStr = call.parameters["id"]
         
         if (idStr == null) {
@@ -851,7 +851,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveFormats() {
+    private suspend fun RoutingContext.serveFormats() {
         val formats = cameraService.getSupportedResolutions()
         val jsonFormats = formats.joinToString(",") {
             val label = cameraService.sizeLabel(it)
@@ -867,7 +867,7 @@ class HttpServer(
         call.respondText(json, ContentType.Application.Json)
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetFormat() {
+    private suspend fun RoutingContext.serveSetFormat() {
         val value = call.parameters["value"]
         if (value.isNullOrBlank()) {
             cameraService.setResolutionAndRebind(null)
@@ -922,7 +922,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetCameraOrientation() {
+    private suspend fun RoutingContext.serveSetCameraOrientation() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val newOrientation = when (value) {
@@ -945,7 +945,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRotation() {
+    private suspend fun RoutingContext.serveSetRotation() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val newRotation = when (value) {
@@ -970,7 +970,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetResolutionOverlay() {
+    private suspend fun RoutingContext.serveSetResolutionOverlay() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val showOverlay = when (value) {
@@ -993,7 +993,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetDateTimeOverlay() {
+    private suspend fun RoutingContext.serveSetDateTimeOverlay() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val showOverlay = when (value) {
@@ -1016,7 +1016,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetBatteryOverlay() {
+    private suspend fun RoutingContext.serveSetBatteryOverlay() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val showOverlay = when (value) {
@@ -1039,7 +1039,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetFpsOverlay() {
+    private suspend fun RoutingContext.serveSetFpsOverlay() {
         val value = call.parameters["value"]?.lowercase(Locale.getDefault())
         
         val showOverlay = when (value) {
@@ -1062,7 +1062,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetMjpegFps() {
+    private suspend fun RoutingContext.serveSetMjpegFps() {
         val valueStr = call.parameters["value"]
         
         if (valueStr == null) {
@@ -1091,7 +1091,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRtspFps() {
+    private suspend fun RoutingContext.serveSetRtspFps() {
         val valueStr = call.parameters["value"]
         
         if (valueStr == null) {
@@ -1120,7 +1120,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetMaxConnections() {
+    private suspend fun RoutingContext.serveSetMaxConnections() {
         val valueStr = call.parameters["value"]
         
         if (valueStr == null) {
@@ -1156,7 +1156,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveToggleFlashlight() {
+    private suspend fun RoutingContext.serveToggleFlashlight() {
         if (!cameraService.isFlashlightAvailable()) {
             call.respondText(
                 """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}""",
@@ -1173,7 +1173,7 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveFlashlightOn() {
+    private suspend fun RoutingContext.serveFlashlightOn() {
         if (!cameraService.isFlashlightAvailable()) {
             call.respondText(
                 """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}""",
@@ -1198,7 +1198,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveFlashlightOff() {
+    private suspend fun RoutingContext.serveFlashlightOff() {
         if (!cameraService.isFlashlightAvailable()) {
             call.respondText(
                 """{"status":"error","message":"Flashlight not available. Ensure back camera is selected and device has flash unit.","available":false}""",
@@ -1223,7 +1223,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRestartServer() {
+    private suspend fun RoutingContext.serveRestartServer() {
         cameraService.restartServer()
         call.respondText(
             """{"status":"ok","message":"Server restart initiated. Please wait 2-3 seconds before reconnecting."}""",
@@ -1231,19 +1231,19 @@ class HttpServer(
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDetailedStats() {
+    private suspend fun RoutingContext.serveDetailedStats() {
         val stats = cameraService.getDetailedStats()
         call.respondText(stats, ContentType.Text.Plain)
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableAdaptiveQuality() {
+    private suspend fun RoutingContext.serveEnableAdaptiveQuality() {
         call.respondText(
             """{"status":"deprecated","message":"Adaptive quality has been removed","adaptiveQualityEnabled":false}""",
             ContentType.Application.Json
         )
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableAdaptiveQuality() {
+    private suspend fun RoutingContext.serveDisableAdaptiveQuality() {
         call.respondText(
             """{"status":"deprecated","message":"Adaptive quality has been removed","adaptiveQualityEnabled":false}""",
             ContentType.Application.Json
@@ -1255,7 +1255,7 @@ class HttpServer(
     /**
      * Enable RTSP streaming
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveEnableRTSP() {
+    private suspend fun RoutingContext.serveEnableRTSP() {
         val success = cameraService.enableRTSPStreaming()
         
         if (success) {
@@ -1281,7 +1281,7 @@ class HttpServer(
     /**
      * Disable RTSP streaming
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDisableRTSP() {
+    private suspend fun RoutingContext.serveDisableRTSP() {
         cameraService.disableRTSPStreaming()
         call.respondText(
             """{"status":"ok","message":"RTSP streaming disabled","rtspEnabled":false}""",
@@ -1292,7 +1292,7 @@ class HttpServer(
     /**
      * Get RTSP status and metrics
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRTSPStatus() {
+    private suspend fun RoutingContext.serveRTSPStatus() {
         val rtspEnabled = cameraService.isRTSPEnabled()
         val metrics = cameraService.getRTSPMetrics()
         val rtspUrl = cameraService.getRTSPUrl()
@@ -1320,7 +1320,7 @@ class HttpServer(
     /**
      * Set RTSP bitrate (in Mbps)
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRTSPBitrate() {
+    private suspend fun RoutingContext.serveSetRTSPBitrate() {
         val mbps = call.request.queryParameters["value"]?.toFloatOrNull()
         
         if (mbps == null || mbps <= 0) {
@@ -1351,7 +1351,7 @@ class HttpServer(
     /**
      * Set RTSP bitrate mode (VBR or CBR)
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveSetRTSPBitrateMode() {
+    private suspend fun RoutingContext.serveSetRTSPBitrateMode() {
         val mode = call.request.queryParameters["value"]?.uppercase()
         
         if (mode == null || (mode != "VBR" && mode != "CBR" && mode != "CQ")) {
@@ -1387,7 +1387,7 @@ class HttpServer(
      * Override critical battery limit and restore streaming
      * Only works if battery > CRITICAL threshold
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveOverrideBatteryLimit() {
+    private suspend fun RoutingContext.serveOverrideBatteryLimit() {
         val criticalPercent = cameraService.getBatteryCriticalPercent()
         val success = cameraService.overrideBatteryLimit()
         
@@ -1413,7 +1413,7 @@ class HttpServer(
      * Get current camera state (IDLE, INITIALIZING, ACTIVE, STOPPING, ERROR)
      * Includes consumer count for debugging
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCameraState() {
+    private suspend fun RoutingContext.serveCameraState() {
         val cameraState = cameraService.getCameraStateString()
         val activeStreamCount = activeStreams.get()
         
@@ -1427,7 +1427,7 @@ class HttpServer(
      * Manually activate camera (for testing/debugging)
      * This registers a temporary consumer to keep camera active
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveActivateCamera() {
+    private suspend fun RoutingContext.serveActivateCamera() {
         try {
             cameraService.manualActivateCamera()
             val cameraState = cameraService.getCameraStateString()
@@ -1449,7 +1449,7 @@ class HttpServer(
      * Manually deactivate camera (for testing/debugging)
      * This unregisters the temporary consumer, camera will stop if no other consumers
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveDeactivateCamera() {
+    private suspend fun RoutingContext.serveDeactivateCamera() {
         try {
             cameraService.manualDeactivateCamera()
             val cameraState = cameraService.getCameraStateString()
@@ -1471,7 +1471,7 @@ class HttpServer(
      * Manual camera reset endpoint
      * Triggers a full camera service reset to recover from frozen/broken camera states
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveResetCamera() {
+    private suspend fun RoutingContext.serveResetCamera() {
         try {
             Log.i(TAG, "Manual camera reset requested via API")
             val success = cameraService.fullCameraReset()
@@ -1506,7 +1506,7 @@ class HttpServer(
      * Note: No authentication is applied here, consistent with all other endpoints.
      * This API is designed for use on trusted local/private networks only.
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveLogs() {
+    private suspend fun RoutingContext.serveLogs() {
         val logs = cameraService.getLogs()
         val content = if (logs.isBlank()) "No log entries captured yet." else logs
         call.respondText(content, ContentType.Text.Plain)
@@ -1543,7 +1543,7 @@ class HttpServer(
      *   "releaseNotes": "Automated build from commit abc123..."
      * }
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCheckUpdate() {
+    private suspend fun RoutingContext.serveCheckUpdate() {
         try {
             val updateManager = UpdateManager(this@HttpServer.context)
             val updateInfo = updateManager.checkForUpdate()
@@ -1617,7 +1617,7 @@ class HttpServer(
      *   "silentInstall": true/false
      * }
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveTriggerUpdate() {
+    private suspend fun RoutingContext.serveTriggerUpdate() {
         try {
             val updateManager = UpdateManager(this@HttpServer.context)
             
@@ -1659,7 +1659,7 @@ class HttpServer(
         }
     }
     
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveReboot() {
+    private suspend fun RoutingContext.serveReboot() {
         try {
             Log.i(TAG, "Remote reboot requested via HTTP API")
             
@@ -1722,7 +1722,7 @@ class HttpServer(
      * Diagnostic endpoint for camera status
      * Returns detailed information about camera health and state
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveCameraDiagnostics() {
+    private suspend fun RoutingContext.serveCameraDiagnostics() {
         try {
             val cameraState = cameraService.getCameraStateString()
             val consumerCount = cameraService.getTotalCameraClientCount()
@@ -1770,7 +1770,7 @@ class HttpServer(
      * Diagnostic endpoint for reboot capability
      * Returns detailed information about device reboot capability and restrictions
      */
-    private suspend fun PipelineContext<Unit, ApplicationCall>.serveRebootDiagnostics() {
+    private suspend fun RoutingContext.serveRebootDiagnostics() {
         try {
             val diagnostics = RebootHelper.diagnoseRebootCapability(this@HttpServer.context)
             
