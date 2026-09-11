@@ -1,6 +1,6 @@
 # Version catalog for IP_Cam project
 # Centralizes all dependency and plugin version management
-# Updated to support targetSdk 35 with latest stable versions
+# Updated to support targetSdk 34 with latest stable versions
 
 [versions]
 # Plugin versions
@@ -10,7 +10,7 @@ kotlin = "2.4.20"
 # Android SDK versions
 minSdk = "30"
 compileSdk = "37"
-targetSdk = "35"
+targetSdk = "34"
 
 # AndroidX Core
 androidx-core-ktx = "1.19.0"
