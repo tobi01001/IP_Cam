@@ -92,6 +92,7 @@ lint/tmp/
 /.idea/markdown.xml
 /.idea/migrations.xml
 /.idea/misc.xml
+/.idea/planningMode.xml
 /.idea/runConfigurations.xml
 /.idea/.gitignore
 /.idea/deviceManager.xml
